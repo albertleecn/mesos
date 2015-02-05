@@ -1,0 +1,183 @@
+#ifndef __PROCESS_SHARED_HPP__
+#define __PROCESS_SHARED_HPP__
+
+#include <glog/logging.h>
+
+#include <process/future.hpp>
+
+#include <stout/memory.hpp>
+
+namespace process {
+
+// Forward declaration.
+template <typename T>
+class Owned;
+
+
+// Represents a shared pointer and therefore enforces 'const' access.
+template <typename T>
+class Shared
+{
+public:
+  Shared();
+  explicit Shared(T* t);
+
+  bool operator == (const Shared<T>& that) const;
+  bool operator < (const Shared<T>& that) const;
+
+  // Enforces const access semantics.
+  const T& operator * () const;
+  const T* operator -> () const;
+  const T* get() const;
+
+  bool unique() const;
+
+  void reset();
+  void reset(T* t);
+  void swap(Shared<T>& that);
+
+  // Transfers ownership of the pointer by waiting for exclusive
+  // access (i.e., no other Shared instances). This shared pointer
+  // will be reset after this function is invoked. If multiple shared
+  // pointers pointing to the same object all want to be upgraded,
+  // only one of them may succeed and the rest will get failures.
+  Future<Owned<T> > own();
+
+private:
+  struct Data
+  {
+    explicit Data(T* _t);
+    ~Data();
+
+    T* t;
+    volatile bool owned;
+    Promise<Owned<T> > promise;
+  };
+
+  memory::shared_ptr<Data> data;
+};
+
+
+template <typename T>
+Shared<T>::Shared() {}
+
+
+template <typename T>
+Shared<T>::Shared(T* t)
+{
+  if (t != NULL) {
+    data.reset(new Data(t));
+  }
+}
+
+
+template <typename T>
+bool Shared<T>::operator == (const Shared<T>& that) const
+{
+  return data == that.data;
+}
+
+
+template <typename T>
+bool Shared<T>::operator < (const Shared<T>& that) const
+{
+  return data < that.data;
+}
+
+
+template <typename T>
+const T& Shared<T>::operator * () const
+{
+  return *CHECK_NOTNULL(get());
+}
+
+
+template <typename T>
+const T* Shared<T>::operator -> () const
+{
+  return CHECK_NOTNULL(get());
+}
+
+
+template <typename T>
+const T* Shared<T>::get() const
+{
+  if (data.get() == NULL) {
+    return NULL;
+  } else {
+    return data->t;
+  }
+}
+
+
+template <typename T>
+bool Shared<T>::unique() const
+{
+  return data.unique();
+}
+
+
+template <typename T>
+void Shared<T>::reset()
+{
+  data.reset();
+}
+
+
+template <typename T>
+void Shared<T>::reset(T* t)
+{
+  if (t == NULL) {
+    data.reset();
+  } else {
+    data.reset(new Data(t));
+  }
+}
+
+
+template <typename T>
+void Shared<T>::swap(Shared<T>& that)
+{
+  data.swap(that.data);
+}
+
+
+template <typename T>
+Future<Owned<T> > Shared<T>::own()
+{
+  // If two threads simultaneously access this object and at least one
+  // of them is a write, the behavior is undefined. This is similar to
+  // boost::shared_ptr. For more details, please refer to the boost
+  // shared_ptr document (section "Thread Safety").
+  if (data.get() == NULL) {
+    return Owned<T>(NULL);
+  }
+
+  if (!__sync_bool_compare_and_swap(&data->owned, false, true)) {
+    return Failure("Ownership has already been transferred");
+  }
+
+  Future<Owned<T> > future = data->promise.future();
+  data.reset();
+  return future;
+}
+
+
+template <typename T>
+Shared<T>::Data::Data(T* _t)
+  : t(CHECK_NOTNULL(_t)), owned(false) {}
+
+
+template <typename T>
+Shared<T>::Data::~Data()
+{
+  if (owned) {
+    promise.set(Owned<T>(t));
+  } else {
+    delete t;
+  }
+}
+
+} // namespace process {
+
+#endif // __PROCESS_SHARED_HPP__

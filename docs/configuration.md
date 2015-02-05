@@ -1,0 +1,1518 @@
+---
+layout: documentation
+---
+
+
+# Mesos Configuration
+
+The Mesos master and slave can take a variety of configuration options through command-line arguments, or environment variables. A list of the available options can be seen by running `mesos-master --help` or `mesos-slave --help`. Each option can be set in two ways:
+
+* By passing it to the binary using `--option_name=value`.
+* By setting the environment variable `MESOS_OPTION_NAME` (the option name with a `MESOS_` prefix added to it).
+
+Configuration values are searched for first in the environment, then on the command-line.
+
+**Important Options**
+
+If you have special compilation requirements, please refer to `./configure --help` when configuring Mesos. Additionally, the documentation lists only a subset of the options. A definitive source for which flags your version of Mesos supports can be found by running the binary with the flag `--help`, for example `mesos-master --help`.
+
+## Master and Slave Options
+
+*These options can be supplied to both masters and slaves.*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+
+  <tr>
+    <td>
+      --ip=VALUE
+    </td>
+    <td>
+      IP address to listen on
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]help
+    </td>
+    <td>
+      Prints this help message (default: false)
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]initialize_driver_logging
+    </td>
+    <td>
+      Whether to automatically initialize google logging of scheduler
+      and/or executor drivers. (default: true)
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --log_dir=VALUE
+    </td>
+    <td>
+      Location to put log files (no default, nothing
+      is written to disk unless specified;
+      does not affect logging to stderr)
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --logbufsecs=VALUE
+    </td>
+    <td>
+      How many seconds to buffer log messages for (default: 0)
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --logging_level=VALUE
+    </td>
+    <td>
+      Log message at or above this level; possible values:
+      'INFO', 'WARNING', 'ERROR'; if quiet flag is used, this
+      will affect just the logs from log_dir (if specified) (default: INFO)
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --port=VALUE
+    </td>
+    <td>
+      Port to listen on (master default: 5050 and slave default: 5051)
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]quiet
+    </td>
+    <td>
+      Disable logging to stderr (default: false)
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]version
+    </td>
+    <td>
+      Show version and exit. (default: false)
+</table>
+
+## Master Options
+
+*Required Flags*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      --quorum=VALUE
+    </td>
+    <td>
+      The size of the quorum of replicas when using 'replicated_log' based
+      registry. It is imperative to set this value to be a majority of
+      masters i.e., quorum > (number of masters)/2.
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --work_dir=VALUE
+    </td>
+    <td>
+      Where to store the persistent information stored in the Registry.
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --zk=VALUE
+    </td>
+    <td>
+      ZooKeeper URL (used for leader election amongst masters)
+      May be one of:
+<pre><code>zk://host1:port1,host2:port2,.../path
+zk://username:password@host1:port1,host2:port2,.../path
+file://path/to/file (where file contains one of the above)</code></pre>
+    </td>
+  </tr>
+</table>
+
+*Optional Flags*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      --acls=VALUE
+    </td>
+    <td>
+      The value could be a JSON formatted string of ACLs
+      or a file path containing the JSON formatted ACLs used
+      for authorization. Path could be of the form <code>file:///path/to/file</code>
+      or <code>/path/to/file</code>.
+      <p/>
+      See the ACLs protobuf in mesos.proto for the expected format.
+      <p/>
+      JSON file example:
+<pre><code>{
+  "register_frameworks": [
+    {
+      "principals": { "type": "ANY" },
+      "roles": { "values": ["a"] }
+    }
+  ],
+  "run_tasks": [
+    {
+      "principals": { "values": ["a", "b"] },
+      "users": { "values": ["c"] }
+    }
+  ],
+  "shutdown_frameworks": [
+    {
+      "principals": { "values": ["a", "b"] },
+      "framework_principals": { "values": ["c"] }
+    }
+  ]
+}</code></pre>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --allocation_interval=VALUE
+    </td>
+    <td>
+      Amount of time to wait between performing
+      (batch) allocations (e.g., 500ms, 1sec, etc). (default: 1secs)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]authenticate
+    </td>
+    <td>
+      If authenticate is 'true' only authenticated frameworks are allowed
+      to register. If 'false' unauthenticated frameworks are also
+      allowed to register. (default: false)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]authenticate_slaves
+    </td>
+    <td>
+      If 'true' only authenticated slaves are allowed to register.
+      <p/>
+      If 'false' unauthenticated slaves are also allowed to register. (default: false)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --authenticators=VALUE
+    </td>
+    <td>
+      Authenticator implementation to use when authenticating frameworks
+      and/or slaves. Use the default <code>crammd5</code>, or
+        load an alternate authenticator module using <code>--modules</code>. (default: crammd5)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --cluster=VALUE
+    </td>
+    <td>
+      Human readable name for the cluster,
+      displayed in the webui.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --credentials=VALUE
+    </td>
+    <td>
+      Either a path to a text file with a list of credentials,
+      each line containing 'principal' and 'secret' separated by whitespace,
+      or, a path to a JSON-formatted file containing credentials.
+      Path could be of the form <code>file:///path/to/file</code> or <code>/path/to/file</code>.
+      <p/>
+      JSON file Example:
+<pre><code>{
+  "credentials": [
+    {
+      "principal": "sherman",
+      "secret": "kitesurf"
+    }
+  ]
+}</code></pre>
+
+      <p/>
+      Text file Example:
+<pre><code>    username secret </code></pre>
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --framework_sorter=VALUE
+    </td>
+    <td>
+      Policy to use for allocating resources
+      between a given user's frameworks. Options
+      are the same as for user_allocator. (default: drf)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --hostname=VALUE
+    </td>
+    <td>
+      The hostname the master should advertise in ZooKeeper.
+      If left unset, the hostname is resolved from the IP address
+      that the master binds to.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]log_auto_initialize
+    </td>
+    <td>
+      Whether to automatically initialize the replicated log used for the
+      registry. If this is set to false, the log has to be manually
+      initialized when used for the very first time. (default: true)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --modules=VALUE
+    </td>
+    <td>
+      List of modules to be loaded and be available to the internal
+      subsystems.
+      <p/>
+      Use <code>--modules=filepath</code> to specify the list of modules via a
+      file containing a JSON formatted string. 'filepath' can be
+      of the form <code>file:///path/to/file</code> or <code>/path/to/file</code>.
+      <p/>
+      Use <code>--modules="{...}"</code> to specify the list of modules inline.
+      <p/>
+      JSON file example:
+<pre><code>{
+  "libraries": [
+    {
+      "file": "/path/to/libfoo.so",
+      "modules": [
+        {
+          "name": "org_apache_mesos_bar",
+          "parameters": [
+            {
+              "key": "X",
+              "value": "Y"
+            }
+          ]
+        },
+        {
+          "name": "org_apache_mesos_baz"
+        }
+      ]
+    },
+    {
+      "name": "qux",
+      "modules": [
+        {
+          "name": "org_apache_mesos_norf"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --offer_timeout=VALUE
+    </td>
+    <td>
+      Duration of time before an offer is rescinded from a framework.
+      <p/>
+      This helps fairness when running frameworks that hold on to offers,
+      or frameworks that accidentally drop offers.
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --rate_limits=VALUE
+    </td>
+    <td>
+      The value could be a JSON formatted string of rate limits
+      or a file path containing the JSON formatted rate limits used
+      for framework rate limiting.
+      <p/>
+      Path could be of the form <code>file:///path/to/file</code>
+        or <code>/path/to/file</code>.
+      <p/>
+
+      See the RateLimits protobuf in mesos.proto for the expected format.
+      <p/>
+
+      Example:
+<pre><code>{
+  "limits": [
+    {
+      "principal": "foo",
+      "qps": 55.5
+    },
+    {
+      "principal": "bar"
+    }
+  ],
+  "aggregate_default_qps": 33.3
+}</code></pre>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --recovery_slave_removal_limit=VALUE
+    </td>
+    <td>
+      For failovers, limit on the percentage of slaves that can be removed
+      from the registry *and* shutdown after the re-registration timeout
+      elapses. If the limit is exceeded, the master will fail over rather
+      than remove the slaves.
+      <p/>
+      This can be used to provide safety guarantees for production
+      environments. Production environments may expect that across Master
+      failovers, at most a certain percentage of slaves will fail
+      permanently (e.g. due to rack-level failures).
+      <p/>
+      Setting this limit would ensure that a human needs to get
+      involved should an unexpected widespread failure of slaves occur
+      in the cluster.
+      <p/>
+      Values: [0%-100%] (default: 100%)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --registry=VALUE
+    </td>
+    <td>
+      Persistence strategy for the registry;
+      <p/>
+      available options are 'replicated_log', 'in_memory' (for testing). (default: replicated_log)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --registry_fetch_timeout=VALUE
+    </td>
+    <td>
+      Duration of time to wait in order to fetch data from the registry
+      after which the operation is considered a failure. (default: 1mins)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --registry_store_timeout=VALUE
+    </td>
+    <td>
+      Duration of time to wait in order to store data in the registry
+      after which the operation is considered a failure. (default: 5secs)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]registry_strict
+    </td>
+    <td>
+      Whether the Master will take actions based on the persistent
+      information stored in the Registry. Setting this to false means
+      that the Registrar will never reject the admission, readmission,
+      or removal of a slave. Consequently, 'false' can be used to
+      bootstrap the persistent state on a running cluster.
+      <p/>
+      NOTE: This flag is *experimental* and should not be used in
+      production yet. (default: false)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --roles=VALUE
+    </td>
+    <td>
+      A comma separated list of the allocation
+      roles that frameworks in this cluster may
+      belong to.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]root_submissions
+    </td>
+    <td>
+      Can root submit frameworks? (default: true)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --slave_reregister_timeout=VALUE
+    </td>
+    <td>
+      The timeout within which all slaves are expected to re-register
+      when a new master is elected as the leader. Slaves that do not
+      re-register within the timeout will be removed from the registry
+      and will be shutdown if they attempt to communicate with master.
+      <p/>
+      NOTE: This value has to be atleast 10mins. (default: 10mins)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --user_sorter=VALUE
+    </td>
+    <td>
+      Policy to use for allocating resources
+      between users. May be one of:
+      <p/>
+      dominant_resource_fairness (drf) (default: drf)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --webui_dir=VALUE
+    </td>
+    <td>
+      Directory path of the webui files/assets (default: /usr/local/share/mesos/webui)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --weights=VALUE
+    </td>
+    <td>
+      A comma separated list of role/weight pairs
+      of the form 'role=weight,role=weight'. Weights
+      are used to indicate forms of priority.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --whitelist=VALUE
+    </td>
+    <td>
+      Path to a file with a list of slaves
+      (one per line) to advertise offers for.
+      <p/>
+      Path could be of the form <code>file:///path/to/file</code> or <code>/path/to/file</code>. (default: *)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --zk_session_timeout=VALUE
+    </td>
+    <td>
+      ZooKeeper session timeout. (default: 10secs)
+    </td>
+  </tr>
+</table>
+
+*Flags available when configured with '--with-network-isolator'*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+  <tr>
+    <td>
+      --max_executors_per_slave=VALUE
+    </td>
+    <td>
+      Maximum number of executors allowed per slave. The network
+      monitoring/isolation technique imposes an implicit resource
+      acquisition on each executor (# ephemeral ports), as a result
+      one can only run a certain number of executors on each slave.
+      <p/>
+      This flag was added as a hack to avoid frameworks getting offers
+      when we have allocated all of the ephemeral port range on the slave.
+    </td>
+  </tr>
+</table>
+
+## Slave Options
+
+*Required Flags*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      --master=VALUE
+    </td>
+    <td>
+      This specifies how to connect to a master or a quorum of masters. This flag works with 3 different techniques. It may be one of:
+      <ol>
+        <li> hostname or ip to a master or comma-delimited list of masters, e.g.,
+<pre><code>--master=localhost:5050
+--master=10.0.0.5:5050,10.0.0.6:5050
+</code></pre>
+        </li>
+
+        <li> zookeeper or quorum hostname/ip + port + master registration path </li>
+<pre><code>--master=zk://host1:port1,host2:port2,.../path
+--master=zk://username:password@host1:port1,host2:port2,.../path
+</code></pre>
+        </li>
+
+        <li> a path to a file containing either one of the above options </li>
+<pre><code> --master=file://path/to/file (where file contains one of the above)</code></pre>
+        </li>
+      </ol>
+      Examples:
+
+    </td>
+  </tr>
+</table>
+
+*Optional Flags*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      --attributes=VALUE
+    </td>
+    <td>
+      Attributes of machine, in the form:
+      <p/>
+      <code>rack:2</code> or <code>'rack:2;u:1'</code>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]cgroups_enable_cfs
+    </td>
+    <td>
+      Cgroups feature flag to enable hard limits on CPU resources
+      via the CFS bandwidth limiting subfeature.
+      (default: false)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --cgroups_hierarchy=VALUE
+    </td>
+    <td>
+      The path to the cgroups hierarchy root
+      (default: /sys/fs/cgroup)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]cgroups_limit_swap
+    </td>
+    <td>
+      Cgroups feature flag to enable memory limits on both memory and
+      swap instead of just memory.
+      (default: false)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --cgroups_root=VALUE
+    </td>
+    <td>
+      Name of the root cgroup
+      (default: mesos)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]checkpoint
+    </td>
+    <td>
+      This flag is deprecated and will be removed in a future release.
+      Whether to checkpoint slave and frameworks information
+      to disk. This enables a restarted slave to recover
+      status updates and reconnect with (--recover=reconnect) or
+      kill (--recover=cleanup) old executors (default: true)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --containerizer_path=VALUE
+    </td>
+    <td>
+      The path to the external containerizer executable used when
+      external isolation is activated (--isolation=external).
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --containerizers=VALUE
+    </td>
+    <td>
+      Comma separated list of containerizer implementations
+      to compose in order to provide containerization.
+      <p/>
+      Available options are 'mesos', 'external', and
+      'docker' (on Linux). The order the containerizers
+      are specified is the order they are tried
+      (--containerizers=mesos).
+      (default: mesos)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --credential=VALUE
+    </td>
+    <td>
+      Either a path to a text with a single line
+      containing 'principal' and 'secret' separated by whitespace.
+      <p/>
+      Or a path containing the JSON formatted information used for one credential.
+      <p/>
+      Path could be of the form <code>file:///path/to/file< code> or <code>/path/to/file</code>.
+      <p/>
+      JSON file example:
+<pre><code>{
+  "principal": "username",
+  "secret": "secret"
+}</code></pre>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --default_container_image=VALUE
+    </td>
+    <td>
+      The default container image to use if not specified by a task,
+      when using external containerizer.
+
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --default_container_info=VALUE
+    </td>
+    <td>
+      JSON formatted ContainerInfo that will be included into
+      any ExecutorInfo that does not specify a ContainerInfo.
+      <p/>
+      See the ContainerInfo protobuf in mesos.proto for
+      the expected format.
+      <p/>
+      Example:
+<pre><code>{
+  "type": "MESOS",
+  "volumes": [
+    {
+      "host_path": "./.private/tmp",
+      "container_path": "/tmp",
+      "mode": "RW"
+    }
+  ]
+}</code></pre>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --docker_stop_timeout=VALUE
+    </td>
+    <td>
+      The time as a duration for docker to wait after stopping an instance
+      before it kills that instance. (default: 0secs)
+    </td>
+  </tr>
+    <tr>
+    <td>
+      --network_enable_socket_statistics
+    </td>
+    <td>
+      Whether to collect socket statistics (e.g., TCP RTT) for
+      each container. (default: false)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --default_role=VALUE
+    </td>
+    <td>
+      Any resources in the --resources flag that
+      omit a role, as well as any resources that
+      are not present in --resources but that are
+      automatically detected, will be assigned to
+      this role. (default: *)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disk_watch_interval=VALUE
+    </td>
+    <td>
+      Periodic time interval (e.g., 10secs, 2mins, etc)
+      to check the disk usage (default: 1mins)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --docker=VALUE
+    </td>
+    <td>
+      The absolute path to the docker executable for docker
+      containerizer.
+      (default: docker)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --docker_remove_delay=VALUE
+    </td>
+    <td>
+      The amount of time to wait before removing docker containers
+      (e.g., 3days, 2weeks, etc).
+      (default: 6hrs)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --docker_sandbox_directory=VALUE
+    </td>
+    <td>
+      The absolute path for the directory in the container where the
+      sandbox is mapped to.
+      (default: /mnt/mesos/sandbox)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --executor_registration_timeout=VALUE
+    </td>
+    <td>
+      Amount of time to wait for an executor
+      to register with the slave before considering it hung and
+      shutting it down (e.g., 60secs, 3mins, etc) (default: 1mins)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --executor_shutdown_grace_period=VALUE
+    </td>
+    <td>
+      Amount of time to wait for an executor
+      to shut down (e.g., 60secs, 3mins, etc) (default: 5secs)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --frameworks_home=VALUE
+    </td>
+    <td>
+      Directory path prepended to relative executor URIs (default: )
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --gc_delay=VALUE
+    </td>
+    <td>
+      Maximum amount of time to wait before cleaning up
+      executor directories (e.g., 3days, 2weeks, etc).
+      <p/>
+      Note that this delay may be shorter depending on
+      the available disk usage. (default: 1weeks)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --hadoop_home=VALUE
+    </td>
+    <td>
+      Path to find Hadoop installed (for
+      fetching framework executors from HDFS)
+      (no default, look for HADOOP_HOME in
+      environment or find hadoop on PATH) (default: )
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --hostname=VALUE
+    </td>
+    <td>
+      The hostname the slave should report.
+      <p/>
+      If left unset, the hostname is resolved from the IP address
+      that the slave binds to.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --isolation=VALUE
+    </td>
+    <td>
+      Isolation mechanisms to use, e.g., 'posix/cpu,posix/mem', or
+      'cgroups/cpu,cgroups/mem', or network/port_mapping
+      (configure with flag: --with-network-isolator to enable),
+      or 'external', or load an alternate isolator module using
+      the <code>--modules</code> flag. (default: posix/cpu,posix/mem)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --launcher_dir=VALUE
+    </td>
+    <td>
+      Directory path of Mesos binaries (default: /usr/local/lib/mesos)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --modules=VALUE
+    </td>
+    <td>
+      List of modules to be loaded and be available to the internal
+      subsystems.
+      <p/>
+      Use <code>--modules=filepath</code> to specify the list of modules via a
+      file containing a JSON formatted string. 'filepath' can be
+      of the form <code>file:///path/to/file</code> or <code>/path/to/file</code>.
+      <p/>
+      Use <code>--modules="{...}"</code> to specify the list of modules inline.
+      <p/>
+      JSON file example:
+<pre><code>
+{
+  "libraries": [
+    {
+      "file": "/path/to/libfoo.so",
+      "modules": [
+        {
+          "name": "org_apache_mesos_bar",
+          "parameters": [
+            {
+              "key": "X",
+              "value": "Y"
+            }
+          ]
+        },
+        {
+          "name": "org_apache_mesos_baz"
+        }
+      ]
+    },
+    {
+      "name": "qux",
+      "modules": [
+        {
+          "name": "org_apache_mesos_norf"
+        }
+      ]
+    }
+  ]
+}</code></pre>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --perf_duration=VALUE
+    </td>
+    <td>
+      Duration of a perf stat sample. The duration must be less
+      that the perf_interval. (default: 10secs)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --perf_events=VALUE
+    </td>
+    <td>
+      List of command-separated perf events to sample for each container
+      when using the perf_event isolator. Default is none.
+      <p/>
+      Run command 'perf list' to see all events. Event names are
+      sanitized by downcasing and replacing hyphens with underscores
+      when reported in the PerfStatistics protobuf, e.g., cpu-cycles
+      becomes cpu_cycles; see the PerfStatistics protobuf for all names.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --perf_interval=VALUE
+    </td>
+    <td>
+      Interval between the start of perf stat samples. Perf samples are
+      obtained periodically according to perf_interval and the most
+      recently obtained sample is returned rather than sampling on
+      demand. For this reason, perf_interval is independent of the
+      resource monitoring interval (default: 1mins)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --recover=VALUE
+    </td>
+    <td>
+      Whether to recover status updates and reconnect with old executors.
+      <p/>
+      Valid values for 'recover' are
+      <p/>
+      reconnect: Reconnect with any old live executors.
+      <p/>
+      cleanup  : Kill any old live executors and exit.
+      <p/>
+      Use this option when doing an incompatible slave
+      or executor upgrade!).
+      <p/>
+      NOTE: If checkpointed slave doesn't exist, no recovery is performed
+      and the slave registers with the master as a new slave. (default: reconnect)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --recovery_timeout=VALUE
+    </td>
+    <td>
+      Amount of time alloted for the slave to recover. If the slave takes
+      longer than recovery_timeout to recover, any executors that are
+      waiting to reconnect to the slave will self-terminate.
+      <p/>
+      NOTE: This flag is only applicable when checkpoint is enabled.
+      (default: 15mins)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --registration_backoff_factor=VALUE
+    </td>
+    <td>
+      Slave initially picks a random amount of time between [0, b], where
+      b = registration_backoff_factor, to (re-)register with a new master.
+      <p/>
+      Subsequent retries are exponentially backed off based on this
+      interval (e.g., 1st retry uses a random value between [0, b * 2^1],
+      2nd retry between [0, b * 2^2], 3rd retry between [0, b * 2^3] etc)
+      up to a maximum of 1mins (default: 1secs)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --resource_monitoring_interval=VALUE
+    </td>
+    <td>
+      Periodic time interval for monitoring executor
+      resource usage (e.g., 10secs, 1min, etc) (default: 1secs)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --resources=VALUE
+    </td>
+    <td>
+      Total consumable resources per slave, in the form
+      </p>
+      <code>name(role):value;name(role):value...</code>.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --slave_subsystems=VALUE
+    </td>
+    <td>
+      List of comma-separated cgroup subsystems to run the slave binary
+      in, e.g., <code>memory,cpuacct</code>. The default is none.
+      Present functionality is intended for resource monitoring and
+      no cgroup limits are set, they are inherited from the root mesos
+      cgroup.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]strict
+    </td>
+    <td>
+      If strict=true, any and all recovery errors are considered fatal.
+      <p/>
+      If strict=false, any expected errors (e.g., slave cannot recover
+      information about an executor, because the slave died right before
+      the executor registered.) during recovery are ignored and as much
+      state as possible is recovered.
+      (default: true)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]switch_user
+    </td>
+    <td>
+      Whether to run tasks as the user who
+      submitted them rather than the user running
+      the slave (requires setuid permission) (default: true)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --work_dir=VALUE
+    </td>
+    <td>
+      Directory path to place framework work directories
+      (default: /tmp/mesos)
+    </td>
+  </tr>
+</table>
+
+*Flags available when configured with '--with-network-isolator'*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      --ephemeral_ports_per_container=VALUE
+    </td>
+    <td>
+      Number of ephemeral ports allocated to a container by the network
+      isolator. This number has to be a power of 2.
+      (default: 1024)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --eth0_name=VALUE
+    </td>
+    <td>
+      The name of the public network interface (e.g., eth0). If it is
+      not specified, the network isolator will try to guess it based
+      on the host default gateway.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --lo_name=VALUE
+    </td>
+    <td>
+      The name of the loopback network interface (e.g., lo). If it is
+      not specified, the network isolator will try to guess it.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --egress_rate_limit_per_container=VALUE
+    </td>
+    <td>
+      The limit of the egress traffic for each container, in Bytes/s.
+      If not specified or specified as zero, the network isolator will
+      impose no limits to containers' egress traffic throughput.
+      This flag uses the Bytes type, defined in stout.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --[no-]network_enable_socket_statistics
+    </td>
+    <td>
+      Whether to collect socket statistics (e.g., TCP RTT) for
+      each container. (default: false)
+    </td>
+  </tr>
+</table>
+
+
+## Mesos Build Configuration Options
+
+###The configure script has the following flags for optional features:
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      --enable-shared[=PKGS]
+    </td>
+    <td>
+      build shared libraries [default=yes]
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --enable-static[=PKGS]
+    </td>
+    <td>
+      build static libraries [default=yes]
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --enable-fast-install[=PKGS]
+    </td>
+    <td>
+
+      optimize for fast installation [default=yes]
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-libtool-lock
+    </td>
+    <td>
+      avoid locking (might break parallel builds)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-java
+    </td>
+    <td>
+      don't build Java bindings
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-python
+    </td>
+    <td>
+      don't build Python bindings
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --enable-debug
+    </td>
+    <td>
+      enable debugging. If CFLAGS/CXXFLAGS are set, this
+      option won't change them default: no
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --enable-optimize
+    </td>
+    <td>
+      enable optimizations. If CFLAGS/CXXFLAGS are set,
+      this option won't change them default: no
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-bundled
+    </td>
+    <td>
+      build against preinstalled dependencies instead of
+      bundled libraries
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-bundled-distribute
+    </td>
+    <td>
+
+      excludes building and using the bundled distribute
+      package in lieu of an installed version in
+      PYTHONPATH
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-bundled-pip
+    </td>
+    <td>
+      excludes building and using the bundled pip package
+      in lieu of an installed version in PYTHONPATH
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-bundled-wheel
+    </td>
+    <td>
+      excludes building and using the bundled wheel
+      package in lieu of an installed version in
+      PYTHONPATH
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-python-dependency-install
+    </td>
+    <td>
+      when the python packages are installed during make
+      install, no external dependencies are downloaded or
+      installed
+    </td>
+  </tr>
+</table>
+
+### The configure script has the following flags for optional packages:
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      --with-gnu-ld
+    </td>
+    <td>
+      assume the C compiler uses GNU ld [default=no]
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-sysroot=DIR
+    </td>
+    <td>
+      Search for dependent libraries within DIR
+      (or the compiler's sysroot if not specified).
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-zookeeper[=DIR]
+    </td>
+    <td>
+      excludes building and using the bundled ZooKeeper
+      package in lieu of an installed version at a
+      location prefixed by the given path
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-leveldb[=DIR]
+    </td>
+    <td>
+      excludes building and using the bundled LevelDB
+      package in lieu of an installed version at a
+      location prefixed by the given path
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-glog[=DIR]
+    </td>
+    <td>
+      excludes building and using the bundled glog package
+      in lieu of an installed version at a location
+      prefixed by the given path
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-protobuf[=DIR]
+    </td>
+    <td>
+      excludes building and using the bundled protobuf
+      package in lieu of an installed version at a
+      location prefixed by the given path
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-gmock[=DIR]
+    </td>
+    <td>
+      excludes building and using the bundled gmock
+      package in lieu of an installed version at a
+      location prefixed by the given path
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-curl=[=DIR]
+    </td>
+    <td>
+      specify where to locate the curl library
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-sasl=[=DIR]
+    </td>
+    <td>
+      specify where to locate the sasl2 library
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-zlib=[=DIR]
+    </td>
+    <td>
+      specify where to locate the zlib library
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-apr=[=DIR]
+    </td>
+    <td>
+      specify where to locate the apr-1 library
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-svn=[=DIR]
+    </td>
+    <td>
+      specify where to locate the svn-1 library
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --with-network-isolator
+    </td>
+    <td>
+      builds the network isolator
+    </td>
+  </tr>
+</table>
+
+### Some influential environment variables for configure script:
+
+Use these variables to override the choices made by `configure' or to help
+it to find libraries and programs with nonstandard names/locations.
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Flag
+      </th>
+      <th>
+        Explanation
+      </th>
+  </thead>
+  <tr>
+    <td>
+      JAVA_HOME
+    </td>
+    <td>
+      location of Java Development Kit (JDK)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      JAVA_CPPFLAGS
+    </td>
+    <td>
+      preprocessor flags for JNI
+    </td>
+  </tr>
+  <tr>
+    <td>
+      JAVA_JVM_LIBRARY
+    </td>
+    <td>
+      full path to libjvm.so
+    </td>
+  </tr>
+  <tr>
+    <td>
+      MAVEN_HOME
+    </td>
+    <td>
+      looks for mvn at MAVEN_HOME/bin/mvn
+    </td>
+  </tr>
+  <tr>
+    <td>
+      PROTOBUF_JAR
+    </td>
+    <td>
+      full path to protobuf jar on prefixed builds
+    </td>
+  </tr>
+  <tr>
+    <td>
+      PYTHON
+    </td>
+    <td>
+      which Python interpreter to use
+    </td>
+  </tr>
+  <tr>
+    <td>
+      PYTHON_VERSION
+    </td>
+    <td>
+      The installed Python version to use, for example '2.3'. This
+      string will be appended to the Python interpreter canonical
+      name.
+    </td>
+  </tr>
+</table>
