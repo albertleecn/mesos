@@ -138,8 +138,7 @@ bool operator == (const SlaveInfo& left, const SlaveInfo& right)
 {
   return left.hostname() == right.hostname() &&
     Resources(left.resources()) == Resources(right.resources()) &&
-    internal::Attributes(left.attributes()) ==
-    internal::Attributes(right.attributes()) &&
+    Attributes(left.attributes()) == Attributes(right.attributes()) &&
     left.has_id() == right.has_id() &&
     (!left.has_id() || (left.id() == right.id())) &&
     left.has_checkpoint() == right.has_checkpoint() &&
@@ -155,8 +154,6 @@ bool operator == (const Volume& left, const Volume& right)
     (!left.has_host_path() || (left.host_path() == right.host_path()));
 }
 
-
-namespace internal {
 
 bool operator == (const Task& left, const Task& right)
 {
@@ -190,5 +187,4 @@ std::ostream& operator << (
     << " of framework " << update.framework_id();
 }
 
-} // namespace internal {
 } // namespace mesos {

@@ -57,18 +57,17 @@
 #include "tests/mesos.hpp"
 
 using namespace mesos;
-using namespace mesos::internal;
-using namespace mesos::internal::tests;
+using namespace mesos::tests;
 
-using mesos::internal::master::Master;
+using mesos::master::Master;
 
-using mesos::internal::master::allocator::AllocatorProcess;
-using mesos::internal::master::allocator::HierarchicalDRFAllocatorProcess;
+using mesos::master::allocator::AllocatorProcess;
+using mesos::master::allocator::HierarchicalDRFAllocatorProcess;
 
-using mesos::internal::slave::GarbageCollectorProcess;
-using mesos::internal::slave::Slave;
-using mesos::internal::slave::Containerizer;
-using mesos::internal::slave::MesosContainerizerProcess;
+using mesos::slave::GarbageCollectorProcess;
+using mesos::slave::Slave;
+using mesos::slave::Containerizer;
+using mesos::slave::MesosContainerizerProcess;
 
 using process::Clock;
 using process::Future;
@@ -2881,7 +2880,7 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
   EXPECT_SOME(portsArray);
 
   JSON::Array portsArray_ = portsArray.get();
-  EXPECT_EQ(2, portsArray_.values.size());
+  EXPECT_EQ(2u, portsArray_.values.size());
 
   // Verify the content of '8888:myport1:tcp' port.
   Try<JSON::Value> expected = JSON::parse(
@@ -2909,7 +2908,7 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
   EXPECT_SOME(labelsArray);
 
   JSON::Array labelsArray_ = labelsArray.get();
-  EXPECT_EQ(2, labelsArray_.values.size());
+  EXPECT_EQ(2u, labelsArray_.values.size());
 
   // Verify the content of 'clearance:high' pair.
   expected = JSON::parse(

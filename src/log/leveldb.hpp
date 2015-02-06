@@ -28,7 +28,6 @@
 #include "log/storage.hpp"
 
 namespace mesos {
-namespace internal {
 namespace log {
 
 // Concrete implementation of the storage interface using leveldb.
@@ -51,7 +50,6 @@ private:
 };
 
 } // namespace log {
-} // namespace internal {
 } // namespace mesos {
 
 #endif // __LOG_LEVELDB_HPP__

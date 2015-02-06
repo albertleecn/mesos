@@ -30,7 +30,6 @@
 #include "messages/log.hpp"
 
 namespace mesos {
-namespace internal {
 namespace log {
 
 // Abstract interface for reading and writing records.
@@ -59,7 +58,6 @@ public:
 };
 
 } // namespace log {
-} // namespace internal {
 } // namespace mesos {
 
 #endif // __LOG_STORAGE_HPP__
