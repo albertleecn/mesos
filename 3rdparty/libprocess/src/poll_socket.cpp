@@ -1,6 +1,7 @@
 #include <netinet/tcp.h>
 
 #include <process/io.hpp>
+#include <process/network.hpp>
 #include <process/socket.hpp>
 
 #include "config.hpp"
@@ -100,9 +101,9 @@ Future<Nothing> connect(const Socket& socket)
 } // namespace internal {
 
 
-Future<Nothing> PollSocketImpl::connect(const Node& node)
+Future<Nothing> PollSocketImpl::connect(const Address& address)
 {
-  Try<int> connect = network::connect(get(), node);
+  Try<int> connect = network::connect(get(), address);
   if (connect.isError()) {
     if (errno == EINPROGRESS) {
       return io::poll(get(), io::WRITE)

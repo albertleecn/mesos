@@ -37,7 +37,7 @@
 
 namespace process {
 
-// Forward declaration (instead of include to break circular dependency).
+// Forward declarations (instead of include to break circular dependency).
 template <typename _F>
 struct _Defer;
 
@@ -468,6 +468,15 @@ public:
 #undef TEMPLATE
 #endif // __cplusplus >= 201103L
 
+  // Installs callbacks that get executed if this future completes
+  // because it failed.
+  Future<T> repair(
+      const lambda::function<Future<T>(const Future<T>&)>& f) const;
+
+  // TODO(benh): Add overloads of 'repair' that don't require passing
+  // in a function that takes the 'const Future<T>&' parameter and use
+  // Prefer/LessPrefer to disambiguate.
+
   // Invokes the specified function after some duration if this future
   // has not been completed (set, failed, or discarded). Note that
   // this function is agnostic of discard semantics and while it will
@@ -481,48 +490,6 @@ public:
   // TODO(benh): Add overloads of 'after' that don't require passing
   // in a function that takes the 'const Future<T>&' parameter and use
   // Prefer/LessPrefer to disambiguate.
-
-#if __cplusplus >= 201103L
-  template <typename F>
-  Future<T> after(
-      const Duration& duration,
-      _Deferred<F>&& f,
-      typename std::enable_if<std::is_convertible<_Deferred<F>, std::function<Future<T>(const Future<T>&)>>::value>::type* = NULL) const // NOLINT(whitespace/line_length)
-  {
-    return after(duration, std::function<Future<T>(const Future<T>&)>(f));
-  }
-
-  template <typename F>
-  Future<T> after(
-      const Duration& duration,
-      _Deferred<F>&& f,
-      typename std::enable_if<std::is_convertible<_Deferred<F>, std::function<Future<T>()>>::value>::type* = NULL) const // NOLINT(whitespace/line_length)
-  {
-    return after(
-        duration,
-        std::function<Future<T>(const Future<T>&)>(std::bind(f)));
-  }
-#else
-  template <typename F>
-  Future<T> after(
-      const Duration& duration,
-      const _Defer<F>& f,
-      typename boost::enable_if<boost::is_convertible<_Defer<F>, std::tr1::function<Future<T>(const Future<T>&)> > >::type* = NULL) const // NOLINT(whitespace/line_length)
-  {
-    return after(duration, std::tr1::function<Future<T>(const Future<T>&)>(f));
-  }
-
-  template <typename F>
-  Future<T> after(
-      const Duration& duration,
-      const _Defer<F>& f,
-      typename boost::enable_if<boost::is_convertible<_Defer<F>, std::tr1::function<Future<T>()> > >::type* = NULL) const // NOLINT(whitespace/line_length)
-  {
-    return after(
-        duration,
-        std::tr1::function<Future<T>(const Future<T>&)>(std::tr1::bind(f)));
-  }
-#endif // __cplusplus >= 201103L
 
 private:
   friend class Promise<T>;
@@ -1467,9 +1434,12 @@ const Future<T>& Future<T>::onAny(const AnyCallback& callback) const
 
 namespace internal {
 
+// NOTE: We need to name this 'thenf' versus 'then' to distinguish it
+// from the function 'then' whose parameter 'f' doesn't return a
+// Future since the compiler can't properly infer otherwise.
 template <typename T, typename X>
-void thenf(const memory::shared_ptr<Promise<X> >& promise,
-           const lambda::function<Future<X>(const T&)>& f,
+void thenf(const lambda::function<Future<X>(const T&)>& f,
+           const memory::shared_ptr<Promise<X>>& promise,
            const Future<T>& future)
 {
   if (future.isReady()) {
@@ -1487,8 +1457,8 @@ void thenf(const memory::shared_ptr<Promise<X> >& promise,
 
 
 template <typename T, typename X>
-void then(const memory::shared_ptr<Promise<X> >& promise,
-          const lambda::function<X(const T&)>& f,
+void then(const lambda::function<X(const T&)>& f,
+          const memory::shared_ptr<Promise<X>>& promise,
           const Future<T>& future)
 {
   if (future.isReady()) {
@@ -1501,6 +1471,21 @@ void then(const memory::shared_ptr<Promise<X> >& promise,
     promise->fail(future.failure());
   } else if (future.isDiscarded()) {
     promise->discard();
+  }
+}
+
+
+template <typename T>
+void repair(
+    const lambda::function<Future<T>(const Future<T>&)>& f,
+    const memory::shared_ptr<Promise<T>>& promise,
+    const Future<T>& future)
+{
+  CHECK(!future.isPending());
+  if (future.isFailed()) {
+    promise->associate(f(future));
+  } else {
+    promise->associate(future);
   }
 }
 
@@ -1546,10 +1531,10 @@ template <typename T>
 template <typename X>
 Future<X> Future<T>::then(const lambda::function<Future<X>(const T&)>& f) const
 {
-  memory::shared_ptr<Promise<X> > promise(new Promise<X>());
+  memory::shared_ptr<Promise<X>> promise(new Promise<X>());
 
   lambda::function<void(const Future<T>&)> thenf =
-    lambda::bind(&internal::thenf<T, X>, promise, f, lambda::_1);
+    lambda::bind(&internal::thenf<T, X>, f, promise, lambda::_1);
 
   onAny(thenf);
 
@@ -1566,12 +1551,29 @@ template <typename T>
 template <typename X>
 Future<X> Future<T>::then(const lambda::function<X(const T&)>& f) const
 {
-  memory::shared_ptr<Promise<X> > promise(new Promise<X>());
+  memory::shared_ptr<Promise<X>> promise(new Promise<X>());
 
   lambda::function<void(const Future<T>&)> then =
-    lambda::bind(&internal::then<T, X>, promise, f, lambda::_1);
+    lambda::bind(&internal::then<T, X>, f, promise, lambda::_1);
 
   onAny(then);
+
+  // Propagate discarding up the chain. To avoid cyclic dependencies,
+  // we keep a weak future in the callback.
+  promise->future().onDiscard(
+      lambda::bind(&internal::discard<T>, WeakFuture<T>(*this)));
+
+  return promise->future();
+}
+
+
+template <typename T>
+Future<T> Future<T>::repair(
+    const lambda::function<Future<T>(const Future<T>&)>& f) const
+{
+  memory::shared_ptr<Promise<T>> promise(new Promise<T>());
+
+  onAny(lambda::bind(&internal::repair<T>, f, promise, lambda::_1));
 
   // Propagate discarding up the chain. To avoid cyclic dependencies,
   // we keep a weak future in the callback.
