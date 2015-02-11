@@ -21,11 +21,11 @@
 
 #include <string>
 
+#include <mesos/slave/isolator.hpp>
+
 #include <stout/hashmap.hpp>
 
 #include "slave/flags.hpp"
-
-#include "slave/containerizer/isolator.hpp"
 
 #include "slave/containerizer/isolators/cgroups/constants.hpp"
 
@@ -44,7 +44,7 @@ public:
   virtual ~CgroupsCpushareIsolatorProcess();
 
   virtual process::Future<Nothing> recover(
-      const std::list<state::RunState>& states);
+      const std::list<ExecutorRunState>& states);
 
   virtual process::Future<Option<CommandInfo> > prepare(
       const ContainerID& containerId,

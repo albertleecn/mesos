@@ -33,6 +33,11 @@
 #include <mesos/mesos.hpp>
 #include <mesos/module.hpp>
 #include <mesos/scheduler.hpp>
+#include <mesos/type_utils.hpp>
+
+#include <mesos/authentication/authenticatee.hpp>
+
+#include <mesos/module/authenticatee.hpp>
 
 #include <mesos/scheduler/scheduler.hpp>
 
@@ -62,11 +67,9 @@
 #include <stout/utils.hpp>
 #include <stout/uuid.hpp>
 
-#include "authentication/authenticatee.hpp"
 #include "authentication/cram_md5/authenticatee.hpp"
 
 #include "common/lock.hpp"
-#include "common/type_utils.hpp"
 
 #include "local/flags.hpp"
 #include "local/local.hpp"
@@ -78,7 +81,6 @@
 
 #include "messages/messages.hpp"
 
-#include "module/authenticatee.hpp"
 #include "module/manager.hpp"
 
 #include "sched/constants.hpp"

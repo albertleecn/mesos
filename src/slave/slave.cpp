@@ -29,6 +29,10 @@
 #include <string>
 #include <vector>
 
+#include <mesos/type_utils.hpp>
+
+#include <mesos/module/authenticatee.hpp>
+
 #include <process/async.hpp>
 #include <process/check.hpp>
 #include <process/defer.hpp>
@@ -64,7 +68,6 @@
 
 #include "common/build.hpp"
 #include "common/protobuf_utils.hpp"
-#include "common/type_utils.hpp"
 #include "common/status_utils.hpp"
 
 #include "credentials/credentials.hpp"
@@ -73,7 +76,6 @@
 
 #include "logging/logging.hpp"
 
-#include "module/authenticatee.hpp"
 #include "module/manager.hpp"
 
 #include "slave/constants.hpp"
@@ -1857,6 +1859,32 @@ void Slave::checkpointResources(const vector<Resource>& _checkpointedResources)
       newCheckpointedResources))
     << "Failed to checkpoint resources " << newCheckpointedResources;
 
+  // Creates persistent volumes that do not exist and schedules
+  // releasing those persistent volumes that are no longer needed.
+  //
+  // TODO(jieyu): Consider introducing a volume manager once we start
+  // to support multiple disks, or raw disks. Depending on the
+  // DiskInfo, we may want to create either directories under a root
+  // directory, or LVM volumes from a given device.
+  foreach (const Resource& volume, newCheckpointedResources) {
+    if (!volume.has_disk() || !volume.disk().has_persistence()) {
+      continue;
+    }
+
+    // This is validated in master.
+    CHECK_NE(volume.role(), "*");
+
+    string path = paths::getPersistentVolumePath(
+        flags.work_dir,
+        volume.role(),
+        volume.disk().persistence().id());
+
+    if (!os::exists(path)) {
+      CHECK_SOME(os::mkdir(path, true))
+        << "Failed to create persistent volume at '" << path << "'";
+    }
+  }
+
   // TODO(jieyu): Schedule gc for released persistent volumes. We need
   // to consider dynamic reservation here because the framework can
   // release dynamic reservation while still wants to keep the
@@ -2441,7 +2469,7 @@ void Slave::statusUpdate(const StatusUpdate& update, const UPID& pid)
   if (protobuf::isTerminalState(status.state()) &&
       (executor->queuedTasks.contains(status.task_id()) ||
        executor->launchedTasks.contains(status.task_id()))) {
-    executor->terminateTask(status.task_id(), status.state());
+    executor->terminateTask(status.task_id(), status);
 
     // Wait until the container's resources have been updated before
     // sending the status update.
@@ -4322,7 +4350,7 @@ Task* Executor::addTask(const TaskInfo& task)
 
 void Executor::terminateTask(
     const TaskID& taskId,
-    const mesos::TaskState& state)
+    const mesos::TaskStatus& status)
 {
   VLOG(1) << "Terminating task " << taskId;
 
@@ -4330,7 +4358,7 @@ void Executor::terminateTask(
   // Remove the task if it's queued.
   if (queuedTasks.contains(taskId)) {
     task = new Task(
-        protobuf::createTask(queuedTasks[taskId], state, frameworkId));
+        protobuf::createTask(queuedTasks[taskId], status.state(), frameworkId));
     queuedTasks.erase(taskId);
   } else if (launchedTasks.contains(taskId)) {
     // Update the resources if it's been launched.
@@ -4339,7 +4367,7 @@ void Executor::terminateTask(
     launchedTasks.erase(taskId);
   }
 
-  switch (state) {
+  switch (status.state()) {
     case TASK_FINISHED:
       ++slave->metrics.tasks_finished;
       break;
@@ -4353,10 +4381,12 @@ void Executor::terminateTask(
       ++slave->metrics.tasks_lost;
       break;
     default:
-      LOG(WARNING) << "Unhandled task state " << state << " on completion.";
+      LOG(WARNING) << "Unhandled task state " << status.state()
+                   << " on completion.";
       break;
   }
 
+  // TODO(dhamon): Update source/reason metrics.
   terminatedTasks[taskId] = CHECK_NOTNULL(task);
 }
 
@@ -4439,7 +4469,7 @@ void Executor::recoverTask(const TaskState& state)
     // terminal updates (e.g., when slave recovery is always enabled).
     if (protobuf::isTerminalState(update.status().state()) &&
         launchedTasks.contains(state.id)) {
-      terminateTask(state.id, update.status().state());
+      terminateTask(state.id, update.status());
 
       // If the terminal update has been acknowledged, remove it.
       if (state.acks.contains(UUID::fromBytes(update.uuid()))) {

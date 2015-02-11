@@ -30,6 +30,9 @@
 #include <mesos/mesos.hpp>
 #include <mesos/resources.hpp>
 #include <mesos/scheduler.hpp>
+#include <mesos/type_utils.hpp>
+
+#include <mesos/module/authenticator.hpp>
 
 #include <process/http.hpp>
 #include <process/owned.hpp>
@@ -46,7 +49,6 @@
 #include <stout/option.hpp>
 
 #include "common/protobuf_utils.hpp"
-#include "common/type_utils.hpp"
 
 #include "files/files.hpp"
 
@@ -71,7 +73,6 @@ namespace registry {
 class Slaves;
 }
 
-class Authenticator;
 class Authorizer;
 class WhitelistWatcher;
 
@@ -479,6 +480,10 @@ private:
     process::Future<process::http::Response> shutdown(
         const process::http::Request& request);
 
+    // /master/slaves
+    process::Future<process::http::Response> slaves(
+        const process::http::Request& request);
+
     // /master/state.json
     process::Future<process::http::Response> state(
         const process::http::Request& request);
@@ -495,6 +500,7 @@ private:
     const static std::string OBSERVE_HELP;
     const static std::string REDIRECT_HELP;
     const static std::string SHUTDOWN_HELP;
+    const static std::string SLAVES_HELP;
     const static std::string TASKS_HELP;
 
   private:
@@ -667,6 +673,8 @@ private:
 
   // NOTE: It is safe to use a 'shared_ptr' because 'Metrics' is
   // thread safe.
+  // TODO(dhamon): Does this need to be a shared_ptr? Metrics contains copyable
+  // metric types only.
   memory::shared_ptr<Metrics> metrics;
 
   // Gauge handlers.

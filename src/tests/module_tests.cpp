@@ -18,14 +18,17 @@
 
 #include <mesos/module.hpp>
 
+#include <mesos/module/isolator.hpp>
+#include <mesos/module/module.hpp>
+
+#include <mesos/slave/isolator.hpp>
+
 #include <stout/dynamiclibrary.hpp>
 #include <stout/os.hpp>
 
 #include "common/parse.hpp"
 #include "examples/test_module.hpp"
-#include "module/isolator.hpp"
 #include "module/manager.hpp"
-#include "slave/containerizer/isolator.hpp"
 
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
@@ -33,9 +36,9 @@
 using std::string;
 
 using namespace mesos;
+using namespace mesos::modules;
 using namespace mesos::slave;
 using namespace mesos::tests;
-using namespace mesos::modules;
 
 const char* DEFAULT_MODULE_LIBRARY_NAME = "examplemodule";
 const char* DEFAULT_MODULE_NAME = "org_apache_mesos_TestModule";

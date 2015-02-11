@@ -16,9 +16,9 @@
  * limitations under the License.
  */
 
-#include <process/dispatch.hpp>
+#include <mesos/slave/isolator.hpp>
 
-#include "slave/containerizer/isolator.hpp"
+#include <process/dispatch.hpp>
 
 using namespace process;
 
@@ -43,7 +43,7 @@ Isolator::~Isolator()
 }
 
 
-Future<Nothing> Isolator::recover(const list<state::RunState>& state)
+Future<Nothing> Isolator::recover(const list<ExecutorRunState>& state)
 {
   return dispatch(process.get(), &IsolatorProcess::recover, state);
 }

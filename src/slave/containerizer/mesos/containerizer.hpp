@@ -22,11 +22,14 @@
 #include <list>
 #include <vector>
 
+#include <mesos/slave/isolator.hpp>
+
 #include <stout/hashmap.hpp>
 #include <stout/multihashmap.hpp>
 
+#include "slave/state.hpp"
+
 #include "slave/containerizer/containerizer.hpp"
-#include "slave/containerizer/isolator.hpp"
 #include "slave/containerizer/launcher.hpp"
 
 namespace mesos {
@@ -156,10 +159,10 @@ public:
 
 private:
   process::Future<Nothing> _recover(
-      const std::list<state::RunState>& recoverable);
+      const std::list<ExecutorRunState>& recoverable);
 
   process::Future<Nothing> __recover(
-      const std::list<state::RunState>& recovered);
+      const std::list<ExecutorRunState>& recovered);
 
   process::Future<std::list<Option<CommandInfo>>> prepare(
       const ContainerID& containerId,
@@ -254,6 +257,9 @@ private:
     // We keep track of the resources for each container so we can set the
     // ResourceStatistics limits in usage().
     Resources resources;
+
+    // The executor's working directory on the host.
+    std::string directory;
 
     // The path to the container's rootfs, if full filesystem
     // isolation is used.

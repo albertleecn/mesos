@@ -31,6 +31,11 @@
 
 #include <mesos/mesos.hpp>
 #include <mesos/scheduler.hpp>
+#include <mesos/type_utils.hpp>
+
+#include <mesos/authentication/authenticatee.hpp>
+
+#include <mesos/module/authenticatee.hpp>
 
 #include <process/async.hpp>
 #include <process/defer.hpp>
@@ -53,10 +58,8 @@
 #include <stout/os.hpp>
 #include <stout/uuid.hpp>
 
-#include "authentication/authenticatee.hpp"
 #include "authentication/cram_md5/authenticatee.hpp"
 
-#include "common/type_utils.hpp"
 
 #include "master/detector.hpp"
 

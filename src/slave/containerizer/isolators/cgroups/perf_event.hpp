@@ -21,6 +21,8 @@
 
 #include <set>
 
+#include <mesos/slave/isolator.hpp>
+
 #include <process/time.hpp>
 
 #include <stout/hashmap.hpp>
@@ -28,8 +30,6 @@
 #include "linux/perf.hpp"
 
 #include "slave/flags.hpp"
-
-#include "slave/containerizer/isolator.hpp"
 
 namespace mesos {
 namespace slave {
@@ -42,7 +42,7 @@ public:
   virtual ~CgroupsPerfEventIsolatorProcess();
 
   virtual process::Future<Nothing> recover(
-      const std::list<state::RunState>& states);
+      const std::list<ExecutorRunState>& states);
 
   virtual process::Future<Option<CommandInfo> > prepare(
       const ContainerID& containerId,

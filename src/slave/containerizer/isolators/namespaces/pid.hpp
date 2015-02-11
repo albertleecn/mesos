@@ -19,9 +19,9 @@
 #ifndef __NAMESPACES_PID_ISOLATOR_HPP__
 #define __NAMESPACES_PID_ISOLATOR_HPP__
 
-#include "slave/flags.hpp"
+#include <mesos/slave/isolator.hpp>
 
-#include "slave/containerizer/isolator.hpp"
+#include "slave/flags.hpp"
 
 #include <sys/types.h>
 
@@ -56,7 +56,7 @@ public:
   virtual ~NamespacesPidIsolatorProcess() {}
 
   virtual process::Future<Nothing> recover(
-      const std::list<state::RunState>& states);
+      const std::list<ExecutorRunState>& states);
 
   virtual process::Future<Option<CommandInfo> > prepare(
       const ContainerID& containerId,

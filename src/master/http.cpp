@@ -24,6 +24,8 @@
 
 #include <boost/array.hpp>
 
+#include <mesos/type_utils.hpp>
+
 #include <process/help.hpp>
 
 #include <process/metrics/metrics.hpp>
@@ -45,7 +47,6 @@
 #include "common/build.hpp"
 #include "common/http.hpp"
 #include "common/protobuf_utils.hpp"
-#include "common/type_utils.hpp"
 
 #include "logging/logging.hpp"
 
@@ -363,6 +364,32 @@ Future<Response> Master::Http::redirect(const Request& request)
 
   return TemporaryRedirect(
       "http://" + hostname.get() + ":" + stringify(info.port()));
+}
+
+
+const string Master::Http::SLAVES_HELP = HELP(
+    TLDR(
+        "Information about registered slaves."),
+    USAGE(
+        "/master/slaves"),
+    DESCRIPTION(
+        "This endpoint shows information about the slaves registered in",
+        "this master formated as a json object."));
+
+
+Future<Response> Master::Http::slaves(const Request& request) {
+  LOG(INFO) << "HTTP request for '" << request.path << "'";
+
+  JSON::Array array;
+  foreachvalue (const Slave* slave, master->slaves.registered) {
+    JSON::Object object = model(*slave);
+    array.values.push_back(object);
+  }
+
+  JSON::Object object;
+  object.values["slaves"] = array;
+
+  return OK(object, request.query.get("jsonp"));
 }
 
 

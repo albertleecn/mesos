@@ -27,6 +27,10 @@
 
 #include <mesos/module.hpp>
 
+#include <mesos/authentication/authenticator.hpp>
+
+#include <mesos/module/authenticator.hpp>
+
 #include <process/check.hpp>
 #include <process/collect.hpp>
 #include <process/defer.hpp>
@@ -53,7 +57,6 @@
 #include <stout/utils.hpp>
 #include <stout/uuid.hpp>
 
-#include "authentication/authenticator.hpp"
 #include "authentication/cram_md5/authenticator.hpp"
 
 #include "authorizer/authorizer.hpp"
@@ -74,7 +77,6 @@
 #include "master/flags.hpp"
 #include "master/master.hpp"
 
-#include "module/authenticator.hpp"
 #include "module/manager.hpp"
 
 #include "watcher/whitelist_watcher.hpp"
@@ -727,6 +729,9 @@ void Master::initialize()
   route("/shutdown",
         Http::SHUTDOWN_HELP,
         lambda::bind(&Http::shutdown, http, lambda::_1));
+  route("/slaves",
+        Http::SLAVES_HELP,
+        lambda::bind(&Http::slaves, http, lambda::_1));
   route("/state.json",
         None(),
         lambda::bind(&Http::state, http, lambda::_1));
@@ -2244,6 +2249,11 @@ void Master::accept(
         metrics->tasks_lost++;
         stats.tasks[TASK_LOST]++;
 
+        metrics->incrementTasksStates(
+            TASK_LOST,
+            TaskStatus::SOURCE_MASTER,
+            TaskStatus::REASON_INVALID_OFFERS);
+
         forward(update, UPID(), framework);
       }
     }
@@ -2334,6 +2344,9 @@ void Master::_accept(
       }
 
       foreach (const TaskInfo& task, operation.launch().task_infos()) {
+        const TaskStatus::Reason reason =
+            slave == NULL ? TaskStatus::REASON_SLAVE_REMOVED
+                          : TaskStatus::REASON_SLAVE_DISCONNECTED;
         const StatusUpdate& update = protobuf::createStatusUpdate(
             framework->id,
             task.slave_id(),
@@ -2341,12 +2354,15 @@ void Master::_accept(
             TASK_LOST,
             TaskStatus::SOURCE_MASTER,
             slave == NULL ? "Slave removed" : "Slave disconnected",
-            slave == NULL ?
-                TaskStatus::REASON_SLAVE_REMOVED :
-                TaskStatus::REASON_SLAVE_DISCONNECTED);
+            reason);
 
         metrics->tasks_lost++;
         stats.tasks[TASK_LOST]++;
+
+        metrics->incrementTasksStates(
+            TASK_LOST,
+            TaskStatus::SOURCE_MASTER,
+            reason);
 
         forward(update, UPID(), framework);
       }
@@ -2479,6 +2495,11 @@ void Master::_accept(
             metrics->tasks_error++;
             stats.tasks[TASK_ERROR]++;
 
+            metrics->incrementTasksStates(
+                TASK_ERROR,
+                TaskStatus::SOURCE_MASTER,
+                TaskStatus::REASON_TASK_UNAUTHORIZED);
+
             forward(update, UPID(), framework);
 
             continue;
@@ -2503,6 +2524,11 @@ void Master::_accept(
 
             metrics->tasks_error++;
             stats.tasks[TASK_ERROR]++;
+
+            metrics->incrementTasksStates(
+                TASK_ERROR,
+                TaskStatus::SOURCE_MASTER,
+                TaskStatus::REASON_TASK_INVALID);
 
             forward(update, UPID(), framework);
 
@@ -4614,12 +4640,20 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
       framework->taskTerminated(task);
     }
 
-    switch (task->state()) {
+    switch (status.state()) {
       case TASK_FINISHED: ++metrics->tasks_finished; break;
       case TASK_FAILED:   ++metrics->tasks_failed;   break;
       case TASK_KILLED:   ++metrics->tasks_killed;   break;
       case TASK_LOST:     ++metrics->tasks_lost;     break;
-      default: break;
+      case TASK_ERROR:    ++metrics->tasks_error;    break;
+      default:                                       break;
+    }
+
+    if (status.has_reason()) {
+      metrics->incrementTasksStates(
+          status.state(),
+          status.source(),
+          status.reason());
     }
   }
 }

@@ -28,6 +28,9 @@
 #include <boost/circular_buffer.hpp>
 
 #include <mesos/resources.hpp>
+#include <mesos/type_utils.hpp>
+
+#include <mesos/module/authenticatee.hpp>
 
 #include <process/http.hpp>
 #include <process/future.hpp>
@@ -57,7 +60,6 @@
 
 #include "common/attributes.hpp"
 #include "common/protobuf_utils.hpp"
-#include "common/type_utils.hpp"
 
 #include "files/files.hpp"
 
@@ -66,8 +68,6 @@
 namespace mesos {
 
 class MasterDetector; // Forward declaration.
-
-class Authenticatee;
 
 namespace slave {
 
@@ -491,7 +491,7 @@ struct Executor
   ~Executor();
 
   Task* addTask(const TaskInfo& task);
-  void terminateTask(const TaskID& taskId, const mesos::TaskState& state);
+  void terminateTask(const TaskID& taskId, const mesos::TaskStatus& status);
   void completeTask(const TaskID& taskId);
   void checkpointExecutor();
   void checkpointTask(const TaskInfo& task);
