@@ -38,12 +38,10 @@ namespace clock {
 
 map<ProcessBase*, Time>* currents = new map<ProcessBase*, Time>();
 
-// TODO(dhamon): These static non-POD instances should be replaced by pointers
-// or functions.
-Time initial = Time::epoch();
-Time current = Time::epoch();
+Time* initial = new Time(Time::epoch());
+Time* current = new Time(Time::epoch());
 
-Duration advanced = Duration::zero();
+Duration* advanced = new Duration(Duration::zero());
 
 bool paused = false;
 
@@ -53,7 +51,8 @@ bool paused = false;
 bool settling = false;
 
 // Lambda function to invoke when timers have expired.
-lambda::function<void(const list<Timer>&)> callback;
+lambda::function<void(const list<Timer>&)>* callback =
+    new lambda::function<void(const list<Timer>&)>();
 
 
 // Helper for determining the duration until the next timer elapses,
@@ -126,7 +125,7 @@ void tick()
     }
   }
 
-  clock::callback(timedout);
+  (*clock::callback)(timedout);
 
   // Mark 'settling' as false since there are not any more timers
   // that will expire before the paused time and we've finished
@@ -134,7 +133,7 @@ void tick()
   synchronized (timers) {
     if (clock::paused &&
         (timers->size() == 0 ||
-         timers->begin()->first > clock::current)) {
+         timers->begin()->first > *clock::current)) {
       VLOG(3) << "Clock has settled";
       clock::settling = false;
     }
@@ -144,7 +143,7 @@ void tick()
 
 void Clock::initialize(lambda::function<void(const list<Timer>&)>&& callback)
 {
-  clock::callback = callback;
+  (*clock::callback) = callback;
 }
 
 
@@ -162,10 +161,10 @@ Time Clock::now(ProcessBase* process)
         if (clock::currents->count(process) != 0) {
           return (*clock::currents)[process];
         } else {
-          return (*clock::currents)[process] = clock::initial;
+          return (*clock::currents)[process] = *clock::initial;
         }
       } else {
-        return clock::current;
+        return *clock::current;
       }
     }
   }
@@ -250,7 +249,7 @@ void Clock::pause()
 
   synchronized (timers) {
     if (!clock::paused) {
-      clock::initial = clock::current = now();
+      *clock::initial = *clock::current = now();
       clock::paused = true;
       VLOG(2) << "Clock paused at " << clock::initial;
     }
@@ -294,8 +293,8 @@ void Clock::advance(const Duration& duration)
 {
   synchronized (timers) {
     if (clock::paused) {
-      clock::advanced += duration;
-      clock::current += duration;
+      *clock::advanced += duration;
+      *clock::current += duration;
 
       VLOG(2) << "Clock advanced ("  << duration << ") to " << clock::current;
 
@@ -327,9 +326,9 @@ void Clock::update(const Time& time)
 {
   synchronized (timers) {
     if (clock::paused) {
-      if (clock::current < time) {
-        clock::advanced += (time - clock::current);
-        clock::current = Time(time);
+      if (*clock::current < time) {
+        *clock::advanced += (time - *clock::current);
+        *clock::current = Time(time);
         VLOG(2) << "Clock updated to " << clock::current;
 
         // Schedule another "tick" if necessary.
@@ -372,7 +371,7 @@ bool Clock::settled()
       VLOG(3) << "Clock still not settled";
       return false;
     } else if (timers->size() == 0 ||
-               timers->begin()->first > clock::current) {
+               timers->begin()->first > *clock::current) {
       VLOG(3) << "Clock is settled";
       return true;
     }
@@ -392,7 +391,7 @@ Try<Time> Time::create(double seconds)
   Try<Duration> duration = Duration::create(seconds);
   if (duration.isSome()) {
     // In production code, clock::advanced will always be zero!
-    return Time(duration.get() + clock::advanced);
+    return Time(duration.get() + *clock::advanced);
   } else {
     return Error("Argument too large for Time: " + duration.error());
   }

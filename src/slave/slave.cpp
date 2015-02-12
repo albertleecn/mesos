@@ -269,14 +269,12 @@ void Slave::initialize()
   authenticateeName = flags.authenticatee;
 
   if (flags.credential.isSome()) {
-    const string& path =
-      strings::remove(flags.credential.get(), "file://", strings::PREFIX);
-
-    Result<Credential> _credential = credentials::readCredential(path);
+    Result<Credential> _credential =
+      credentials::readCredential(flags.credential.get());
     if (_credential.isError()) {
       EXIT(1) << _credential.error() << " (see --credential flag)";
     } else if (_credential.isNone()) {
-      EXIT(1) << "Empty credential file '" << path
+      EXIT(1) << "Empty credential file '" << flags.credential.get()
               << "' (see --credential flag)";
     } else {
       credential = _credential.get();
@@ -987,8 +985,6 @@ void Slave::doReliableRegistration(Duration maxBackoff)
     // Include checkpointed resources.
     message.mutable_checkpointed_resources()->CopyFrom(checkpointedResources);
 
-    // TODO(bmahler): Remove in 0.22.0.
-    message.mutable_slave_id()->CopyFrom(info.id());
     message.mutable_slave()->CopyFrom(info);
 
     foreachvalue (Framework* framework, frameworks) {
