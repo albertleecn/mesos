@@ -26,8 +26,9 @@
 #include <stout/strings.hpp>
 #include <stout/uuid.hpp>
 
-#include "master/hierarchical_allocator_process.hpp"
 #include "master/master.hpp"
+
+#include "master/allocator/mesos/hierarchical.hpp"
 
 #include "slave/slave.hpp"
 
@@ -35,8 +36,6 @@
 
 using namespace mesos;
 using namespace mesos::tests;
-
-using mesos::master::allocator::HierarchicalDRFAllocatorProcess;
 
 using mesos::master::Master;
 
@@ -883,7 +882,7 @@ TEST_F(ResourceOffersTest, ResourcesGetReofferedAfterTaskInfoError)
 
 TEST_F(ResourceOffersTest, Request)
 {
-  TestAllocatorProcess<HierarchicalDRFAllocatorProcess> allocator;
+  TestAllocator<master::allocator::HierarchicalDRFAllocator> allocator;
 
   EXPECT_CALL(allocator, initialize(_, _, _))
     .Times(1);

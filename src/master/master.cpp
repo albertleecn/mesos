@@ -73,9 +73,10 @@
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
 
-#include "master/allocator.hpp"
 #include "master/flags.hpp"
 #include "master/master.hpp"
+
+#include "master/allocator/allocator.hpp"
 
 #include "module/manager.hpp"
 
@@ -582,7 +583,7 @@ void Master::initialize()
       defer(self(), &Master::offer, lambda::_1, lambda::_2),
       roleInfos);
 
-  // Parse the whitelist. Passing allocator::updateWhitelist()
+  // Parse the whitelist. Passing Allocator::updateWhitelist()
   // callback is safe because we shut down the whitelistWatcher in
   // Master::finalize(), while allocator lifetime is greater than
   // masters. Therefore there is no risk of calling into an allocator

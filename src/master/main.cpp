@@ -46,14 +46,14 @@
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
 
-#include "master/allocator.hpp"
 #include "master/contender.hpp"
 #include "master/detector.hpp"
-#include "master/drf_sorter.hpp"
-#include "master/hierarchical_allocator_process.hpp"
 #include "master/master.hpp"
 #include "master/registrar.hpp"
 #include "master/repairer.hpp"
+
+#include "master/allocator/allocator.hpp"
+#include "master/allocator/mesos/hierarchical.hpp"
 
 #include "module/manager.hpp"
 
@@ -187,10 +187,7 @@ int main(int argc, char** argv)
     LOG(INFO) << "Git SHA: " << build::GIT_SHA.get();
   }
 
-  allocator::AllocatorProcess* allocatorProcess =
-    new allocator::HierarchicalDRFAllocatorProcess();
-  allocator::Allocator* allocator =
-    new allocator::Allocator(allocatorProcess);
+  allocator::Allocator* allocator = new allocator::HierarchicalDRFAllocator();
 
   Storage* storage = NULL;
   Log* log = NULL;
@@ -312,7 +309,6 @@ int main(int argc, char** argv)
   process::wait(master->self());
   delete master;
   delete allocator;
-  delete allocatorProcess;
 
   delete registrar;
   delete repairer;

@@ -33,11 +33,12 @@
 #include <stout/some.hpp>
 #include <stout/strings.hpp>
 
-#include "master/allocator.hpp"
 #include "master/constants.hpp"
 #include "master/detector.hpp"
-#include "master/hierarchical_allocator_process.hpp"
 #include "master/master.hpp"
+
+#include "master/allocator/allocator.hpp"
+#include "master/allocator/mesos/hierarchical.hpp"
 
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
@@ -46,8 +47,7 @@ using namespace mesos;
 using namespace mesos::tests;
 
 using mesos::master::allocator::Allocator;
-using mesos::master::allocator::AllocatorProcess;
-using mesos::master::allocator::HierarchicalDRFAllocatorProcess;
+using mesos::master::allocator::HierarchicalDRFAllocator;
 
 using mesos::master::Master;
 
@@ -73,17 +73,11 @@ template <typename T>
 class MasterAllocatorTest : public MesosTest
 {
 protected:
-  void StopAllocator()
-  {
-    process::terminate(allocator.real);
-    process::wait(allocator.real);
-  }
-
-  TestAllocatorProcess<T> allocator;
+  TestAllocator<T> allocator;
 };
 
 
-typedef ::testing::Types<HierarchicalDRFAllocatorProcess> AllocatorTypes;
+typedef ::testing::Types<HierarchicalDRFAllocator> AllocatorTypes;
 
 
 // Causes all TYPED_TEST(MasterAllocatorTest, ...) to be run for
@@ -1285,9 +1279,8 @@ TYPED_TEST(MasterAllocatorTest, FrameworkReregistersFirst)
     .WillRepeatedly(DoDefault());
 
   this->ShutdownMasters();
-  this->StopAllocator();
 
-  TestAllocatorProcess<TypeParam> allocator2;
+  TestAllocator<TypeParam> allocator2;
 
   EXPECT_CALL(allocator2, initialize(_, _, _));
 
@@ -1398,9 +1391,8 @@ TYPED_TEST(MasterAllocatorTest, SlaveReregistersFirst)
     .WillRepeatedly(DoDefault());
 
   this->ShutdownMasters();
-  this->StopAllocator();
 
-  TestAllocatorProcess<TypeParam> allocator2;
+  TestAllocator<TypeParam> allocator2;
 
   EXPECT_CALL(allocator2, initialize(_, _, _));
 
