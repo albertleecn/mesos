@@ -83,6 +83,7 @@ using testing::_;
 using testing::AtMost;
 using testing::DoAll;
 using testing::Eq;
+using testing::Not;
 using testing::Return;
 using testing::SaveArg;
 
@@ -142,7 +143,7 @@ TEST_F(MasterTest, TaskRunning)
   EXPECT_CALL(containerizer,
               update(_, Resources(offers.get()[0].resources())))
     .WillOnce(DoAll(FutureSatisfy(&update),
-                    Return(Future<Nothing>())));
+                    Return(Nothing())));
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -221,7 +222,7 @@ TEST_F(MasterTest, ShutdownFrameworkWhileTaskRunning)
   EXPECT_CALL(containerizer,
               update(_, Resources(offer.resources())))
     .WillOnce(DoAll(FutureSatisfy(&update),
-                    Return(Future<Nothing>())));
+                    Return(Nothing())));
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -1643,10 +1644,10 @@ TEST_F(MasterTest, SlavesEndpointTwoSlaves)
   // to the master.
   Future<SlaveRegisteredMessage> slave1RegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), master.get(), _);
-  Future<SlaveRegisteredMessage> slave2RegisteredMessage =
-    FUTURE_PROTOBUF(SlaveRegisteredMessage(), master.get(), _);
+  Try<PID<Slave>> slave1 = StartSlave();
 
-  StartSlave();
+  Future<SlaveRegisteredMessage> slave2RegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), master.get(), Not(slave1.get()));
   StartSlave();
 
   // Wait for the slaves to be registered.
@@ -2717,7 +2718,7 @@ TEST_F(MasterTest, TaskLabels)
   EXPECT_CALL(containerizer,
               update(_, Resources(offers.get()[0].resources())))
     .WillOnce(DoAll(FutureSatisfy(&update),
-                    Return(Future<Nothing>())));
+                    Return(Nothing())));
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -2926,7 +2927,7 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
   EXPECT_CALL(containerizer,
               update(_, Resources(offers.get()[0].resources())))
     .WillOnce(DoAll(FutureSatisfy(&update),
-                    Return(Future<Nothing>())));
+                    Return(Nothing())));
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
