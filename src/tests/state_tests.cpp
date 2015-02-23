@@ -59,32 +59,32 @@
 #include "tests/zookeeper.hpp"
 #endif
 
-using namespace mesos;
-using namespace mesos::log;
+using namespace mesos::internal::log;
 
 using namespace process;
-
-using mesos::state::InMemoryStorage;
-using mesos::state::LevelDBStorage;
-using mesos::state::LogStorage;
-using mesos::state::Operation;
-using mesos::state::Storage;
-#ifdef MESOS_HAS_JAVA
-using mesos::state::ZooKeeperStorage;
-#endif
-
-using mesos::state::protobuf::State;
-using mesos::state::protobuf::Variable;
 
 using std::list;
 using std::set;
 using std::string;
 using std::vector;
 
-using mesos::tests::TemporaryDirectoryTest;
+namespace mesos {
+namespace internal {
+namespace tests {
 
-typedef mesos::Registry::Slaves Slaves;
-typedef mesos::Registry::Slave Slave;
+using state::LevelDBStorage;
+using state::Operation;
+using state::Storage;
+#ifdef MESOS_HAS_JAVA
+using state::ZooKeeperStorage;
+#endif
+
+using state::protobuf::State;
+using state::protobuf::Variable;
+
+typedef mesos::internal::Registry::Slaves Slaves;
+typedef mesos::internal::Registry::Slave Slave;
+
 
 void FetchAndStoreAndFetch(State* state)
 {
@@ -336,7 +336,7 @@ public:
 protected:
   virtual void SetUp()
   {
-    storage = new InMemoryStorage();
+    storage = new state::InMemoryStorage();
     state = new State(storage);
   }
 
@@ -346,7 +346,7 @@ protected:
     delete storage;
   }
 
-  Storage* storage;
+  state::Storage* storage;
   State* state;
 };
 
@@ -405,7 +405,7 @@ protected:
   virtual void SetUp()
   {
     os::rmdir(path);
-    storage = new LevelDBStorage(path);
+    storage = new state::LevelDBStorage(path);
     state = new State(storage);
   }
 
@@ -416,7 +416,7 @@ protected:
     os::rmdir(path);
   }
 
-  Storage* storage;
+  state::Storage* storage;
   State* state;
 
 private:
@@ -500,7 +500,7 @@ protected:
     pids.insert(replica2->pid());
 
     log = new Log(2, path1, pids);
-    storage = new LogStorage(log, 1024);
+    storage = new state::LogStorage(log, 1024);
     state = new State(storage);
   }
 
@@ -515,7 +515,7 @@ protected:
     TemporaryDirectoryTest::TearDown();
   }
 
-  Storage* storage;
+  state::Storage* storage;
   State* state;
 
   Replica* replica2;
@@ -698,7 +698,7 @@ protected:
   virtual void SetUp()
   {
     ZooKeeperTest::SetUp();
-    storage = new ZooKeeperStorage(
+    storage = new state::ZooKeeperStorage(
         server->connectString(),
         NO_TIMEOUT,
         "/state/");
@@ -712,7 +712,7 @@ protected:
     ZooKeeperTest::TearDown();
   }
 
-  Storage* storage;
+  state::Storage* storage;
   State* state;
 };
 
@@ -758,3 +758,7 @@ TEST_F(ZooKeeperStateTest, Names)
   Names(state);
 }
 #endif // MESOS_HAS_JAVA
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

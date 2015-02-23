@@ -24,10 +24,12 @@
 
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
-
 using namespace process;
+
+namespace mesos {
+namespace internal {
+namespace tests {
+
 
 class AuthorizationTest : public MesosTest {};
 
@@ -348,3 +350,7 @@ TEST_F(AuthorizationTest, PrincipalNotOfferedAnyRoleRestrictive)
   request3.mutable_roles()->add_values("ads");
   AWAIT_EXPECT_EQ(false, authorizer.get()->authorize(request3));
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

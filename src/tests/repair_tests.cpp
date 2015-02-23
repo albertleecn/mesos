@@ -29,11 +29,7 @@
 
 #include "tests/mesos.hpp"
 
-
-using namespace mesos;
-using namespace mesos::tests;
-
-using mesos::master::Master;
+using mesos::internal::master::Master;
 
 using process::Future;
 using process::PID;
@@ -46,6 +42,10 @@ using std::string;
 using std::vector;
 
 using testing::_;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class HealthTest : public MesosTest {};
@@ -70,7 +70,7 @@ string stringify(const JsonResponse& response)
 
   object.values["isHealthy"] = response.isHealthy;
 
-  return stringify(object);
+  return ::stringify(object);
 }
 
 
@@ -198,3 +198,7 @@ TEST_F(HealthTest, ObserveEndpoint)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

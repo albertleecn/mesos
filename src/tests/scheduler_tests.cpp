@@ -47,13 +47,10 @@
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
+using mesos::internal::master::Master;
 
-using mesos::master::Master;
-
-using mesos::slave::Containerizer;
-using mesos::slave::Slave;
+using mesos::internal::slave::Containerizer;
+using mesos::internal::slave::Slave;
 
 using mesos::scheduler::Call;
 using mesos::scheduler::Event;
@@ -77,6 +74,10 @@ using testing::_;
 using testing::AtMost;
 using testing::DoAll;
 using testing::Return;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class SchedulerTest : public MesosTest
@@ -513,3 +514,7 @@ TEST_F(MesosSchedulerDriverTest, ExplicitAcknowledgementsUnsetSlaveID)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

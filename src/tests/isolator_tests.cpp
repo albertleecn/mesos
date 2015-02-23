@@ -71,33 +71,28 @@
 #include "tests/module.hpp"
 #include "tests/utils.hpp"
 
-using namespace mesos;
-
-using namespace mesos;
-using namespace mesos::tests;
-
 using namespace process;
 
-using mesos::master::Master;
+using mesos::internal::master::Master;
 #ifdef __linux__
-using mesos::slave::CgroupsCpushareIsolatorProcess;
-using mesos::slave::CgroupsMemIsolatorProcess;
-using mesos::slave::CgroupsPerfEventIsolatorProcess;
-using mesos::slave::Fetcher;
-using mesos::slave::SharedFilesystemIsolatorProcess;
+using mesos::internal::slave::CgroupsCpushareIsolatorProcess;
+using mesos::internal::slave::CgroupsMemIsolatorProcess;
+using mesos::internal::slave::CgroupsPerfEventIsolatorProcess;
+using mesos::internal::slave::Fetcher;
+using mesos::internal::slave::SharedFilesystemIsolatorProcess;
 #endif // __linux__
+using mesos::internal::slave::Launcher;
+using mesos::internal::slave::MesosContainerizer;
+using mesos::internal::slave::Slave;
+#ifdef __linux__
+using mesos::internal::slave::LinuxLauncher;
+#endif // __linux__
+using mesos::internal::slave::PosixLauncher;
+using mesos::internal::slave::PosixCpuIsolatorProcess;
+using mesos::internal::slave::PosixMemIsolatorProcess;
+
 using mesos::slave::Isolator;
 using mesos::slave::IsolatorProcess;
-using mesos::slave::Launcher;
-using mesos::slave::MesosContainerizer;
-using mesos::slave::Slave;
-#ifdef __linux__
-using mesos::slave::LinuxLauncher;
-#endif // __linux__
-using mesos::slave::PosixLauncher;
-using mesos::slave::PosixCpuIsolatorProcess;
-using mesos::slave::PosixMemIsolatorProcess;
-
 
 using std::ostringstream;
 using std::set;
@@ -108,6 +103,10 @@ using testing::_;
 using testing::DoAll;
 using testing::Return;
 using testing::SaveArg;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 static int childSetup(int pipes[2])
@@ -1143,3 +1142,7 @@ TYPED_TEST(UserCgroupIsolatorTest, ROOT_CGROUPS_UserCgroup)
   delete isolator.get();
 }
 #endif // __linux__
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

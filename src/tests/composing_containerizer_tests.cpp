@@ -33,9 +33,7 @@
 
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::slave;
-using namespace mesos::tests;
+using namespace mesos::internal::slave;
 
 using namespace process;
 
@@ -43,6 +41,11 @@ using std::vector;
 
 using testing::_;
 using testing::Return;
+
+namespace mesos {
+namespace internal {
+namespace tests {
+
 
 class ComposingContainerizerTest : public MesosTest {};
 
@@ -162,3 +165,7 @@ TEST_F(ComposingContainerizerTest, DestroyWhileLaunching)
   launchPromise.set(false);
   AWAIT_FAILED(launch);
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

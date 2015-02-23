@@ -47,12 +47,9 @@
 
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
+using mesos::internal::master::Master;
 
-using mesos::master::Master;
-
-using mesos::slave::Slave;
+using mesos::internal::slave::Slave;
 
 using process::Clock;
 using process::Future;
@@ -66,6 +63,11 @@ using testing::_;
 using testing::AtMost;
 using testing::Return;
 using testing::SaveArg;
+
+namespace mesos {
+namespace internal {
+namespace tests {
+
 
 // TODO(benh): Move this into utils, make more generic, and use in
 // other tests.
@@ -856,3 +858,7 @@ TEST_F(StatusUpdateManagerTest, LatestTaskState)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

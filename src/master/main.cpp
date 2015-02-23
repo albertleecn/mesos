@@ -22,6 +22,8 @@
 
 #include <mesos/mesos.hpp>
 
+#include <mesos/module/anonymous.hpp>
+
 #include <process/owned.hpp>
 #include <process/pid.hpp>
 
@@ -65,13 +67,14 @@
 
 #include "zookeeper/detector.hpp"
 
-using namespace mesos;
-using namespace mesos::log;
-using namespace mesos::master;
-using namespace mesos::state;
+using namespace mesos::internal;
+using namespace mesos::internal::log;
+using namespace mesos::internal::master;
 using namespace zookeeper;
 
 using mesos::MasterInfo;
+
+using mesos::modules::Anonymous;
 using mesos::modules::ModuleManager;
 
 using process::Owned;
@@ -189,7 +192,7 @@ int main(int argc, char** argv)
 
   allocator::Allocator* allocator = new allocator::HierarchicalDRFAllocator();
 
-  Storage* storage = NULL;
+  state::Storage* storage = NULL;
   Log* log = NULL;
 
   if (flags.registry == "in_memory") {
@@ -197,7 +200,7 @@ int main(int argc, char** argv)
       EXIT(1) << "Cannot use '--registry_strict' when using in-memory storage"
               << " based registry";
     }
-    storage = new InMemoryStorage();
+    storage = new state::InMemoryStorage();
   } else if (flags.registry == "replicated_log" ||
              flags.registry == "log_storage") {
     // TODO(bmahler): "log_storage" is present for backwards
@@ -240,7 +243,7 @@ int main(int argc, char** argv)
           set<UPID>(),
           flags.log_auto_initialize);
     }
-    storage = new LogStorage(log);
+    storage = new state::LogStorage(log);
   } else {
     EXIT(1) << "'" << flags.registry << "' is not a supported"
             << " option for registry persistence";
@@ -248,8 +251,7 @@ int main(int argc, char** argv)
 
   CHECK_NOTNULL(storage);
 
-  mesos::state::protobuf::State* state =
-    new mesos::state::protobuf::State(storage);
+  state::protobuf::State* state = new state::protobuf::State(storage);
   Registrar* registrar = new Registrar(flags, state);
   Repairer* repairer = new Repairer();
 
@@ -285,6 +287,22 @@ int main(int argc, char** argv)
     authorizer = authorizer__.release();
   }
 
+  // Create anonymous modules.
+  foreach (const string& name, ModuleManager::find<Anonymous>()) {
+    Try<Anonymous*> create = ModuleManager::create<Anonymous>(name);
+    if (create.isError()) {
+      EXIT(1) << "Failed to create anonymous module named '" << name << "'";
+    }
+
+    // We don't bother keeping around the pointer to this anonymous
+    // module, when we exit that will effectively free it's memory.
+    //
+    // TODO(benh): We might want to add explicit finalization (and
+    // maybe explicit initialization too) in order to let the module
+    // do any housekeeping necessary when the master is cleanly
+    // terminating.
+  }
+
   LOG(INFO) << "Starting Mesos master";
 
   Master* master =
@@ -305,8 +323,8 @@ int main(int argc, char** argv)
   }
 
   process::spawn(master);
-
   process::wait(master->self());
+
   delete master;
   delete allocator;
 

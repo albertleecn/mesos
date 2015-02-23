@@ -40,20 +40,17 @@
 #include "slave/slave.hpp"
 #include "slave/state.hpp"
 
-
-using namespace mesos;
-using namespace mesos::slave::paths;
-using namespace mesos::slave::state;
-using namespace mesos::tests;
+using namespace mesos::internal::slave::paths;
+using namespace mesos::internal::slave::state;
 
 using namespace process;
 
-using mesos::master::Master;
+using mesos::internal::master::Master;
 
-using mesos::slave::DockerContainerizer;
-using mesos::slave::DockerContainerizerProcess;
-using mesos::slave::Fetcher;
-using mesos::slave::Slave;
+using mesos::internal::slave::DockerContainerizer;
+using mesos::internal::slave::DockerContainerizerProcess;
+using mesos::internal::slave::Fetcher;
+using mesos::internal::slave::Slave;
 
 using process::Future;
 using process::Message;
@@ -70,6 +67,10 @@ using testing::DoDefault;
 using testing::Eq;
 using testing::Invoke;
 using testing::Return;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class MockDocker : public Docker
@@ -2596,3 +2597,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhilePulling)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

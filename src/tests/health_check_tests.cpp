@@ -32,16 +32,13 @@
 #include "tests/mesos.hpp"
 #include "tests/utils.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
+using mesos::internal::master::Master;
 
-using mesos::master::Master;
-
-using mesos::slave::Containerizer;
-using mesos::slave::Fetcher;
-using mesos::slave::MesosContainerizer;
-using mesos::slave::MesosContainerizerProcess;
-using mesos::slave::Slave;
+using mesos::internal::slave::Containerizer;
+using mesos::internal::slave::Fetcher;
+using mesos::internal::slave::MesosContainerizer;
+using mesos::internal::slave::MesosContainerizerProcess;
+using mesos::internal::slave::Slave;
 
 using process::Clock;
 using process::Future;
@@ -56,6 +53,10 @@ using std::vector;
 using std::queue;
 using std::string;
 using std::map;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class HealthCheckTest : public MesosTest
@@ -614,3 +615,7 @@ TEST_F(HealthCheckTest, DISABLED_GracePeriod)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

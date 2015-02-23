@@ -42,14 +42,11 @@
 #include "tests/mesos.hpp"
 #include "tests/flags.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
-
 using namespace process;
 
-using mesos::master::Master;
-using mesos::slave::Containerizer;
-using mesos::slave::Slave;
+using mesos::internal::master::Master;
+using mesos::internal::slave::Containerizer;
+using mesos::internal::slave::Slave;
 
 using std::string;
 using std::vector;
@@ -59,6 +56,10 @@ using testing::DoAll;
 using testing::Return;
 using testing::SaveArg;
 using testing::Invoke;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 // The external containerizer tests currently rely on a Python script
 // which needs the Mesos Python egg being built.
@@ -262,3 +263,7 @@ TEST_F(ExternalContainerizerTest, DISABLED_Launch)
 }
 
 #endif // MESOS_HAS_PYTHON
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

@@ -39,13 +39,11 @@
 #include "master/allocator/allocator.hpp"
 #include "master/allocator/mesos/hierarchical.hpp"
 
-using namespace mesos;
+using mesos::internal::master::MIN_CPUS;
+using mesos::internal::master::MIN_MEM;
 
-using mesos::master::MIN_CPUS;
-using mesos::master::MIN_MEM;
-
-using mesos::master::allocator::Allocator;
-using mesos::master::allocator::HierarchicalDRFAllocator;
+using mesos::internal::master::allocator::Allocator;
+using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 
 using process::Clock;
 using process::Future;
@@ -54,6 +52,10 @@ using process::Shared;
 using std::queue;
 using std::string;
 using std::vector;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 struct Allocation
@@ -782,3 +784,7 @@ TEST_F(HierarchicalAllocatorTest, Whitelist)
   EXPECT_TRUE(allocation.get().resources.contains(slave.id()));
   EXPECT_EQ(slave.resources(), sum(allocation.get().resources.values()));
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

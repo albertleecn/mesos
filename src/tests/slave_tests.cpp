@@ -58,19 +58,16 @@
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
-
 using namespace process;
 
-using mesos::master::Master;
+using mesos::internal::master::Master;
 
-using mesos::slave::Containerizer;
-using mesos::slave::Fetcher;
-using mesos::slave::GarbageCollectorProcess;
-using mesos::slave::MesosContainerizer;
-using mesos::slave::MesosContainerizerProcess;
-using mesos::slave::Slave;
+using mesos::internal::slave::Containerizer;
+using mesos::internal::slave::Fetcher;
+using mesos::internal::slave::GarbageCollectorProcess;
+using mesos::internal::slave::MesosContainerizer;
+using mesos::internal::slave::MesosContainerizerProcess;
+using mesos::internal::slave::Slave;
 
 using std::map;
 using std::string;
@@ -85,6 +82,10 @@ using testing::InvokeWithoutArgs;
 using testing::Return;
 using testing::SaveArg;
 using testing::Sequence;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 // Those of the overall Mesos master/slave/scheduler/driver tests
 // that seem vaguely more slave than master-related are in this file.
@@ -1799,3 +1800,7 @@ TEST_F(SlaveTest, TaskLabels)
 
   Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

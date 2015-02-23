@@ -38,9 +38,6 @@
 
 #include "tests/containerizer.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
-
 using process::Clock;
 using process::Future;
 
@@ -55,6 +52,10 @@ using std::string;
 using testing::_;
 using testing::DoAll;
 using testing::Return;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 TEST(MonitorTest, Collection)
@@ -296,3 +297,7 @@ TEST(MonitorTest, Statistics)
       response);
   AWAIT_EXPECT_RESPONSE_BODY_EQ("[]", response);
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

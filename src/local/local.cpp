@@ -21,6 +21,8 @@
 #include <sstream>
 #include <vector>
 
+#include <mesos/module/anonymous.hpp>
+
 #include <process/owned.hpp>
 #include <process/pid.hpp>
 
@@ -64,21 +66,24 @@
 #include "state/protobuf.hpp"
 #include "state/storage.hpp"
 
-using namespace mesos;
-using namespace mesos::log;
+using namespace mesos::internal;
+using namespace mesos::internal::log;
 
-using mesos::master::allocator::Allocator;
-using mesos::master::allocator::HierarchicalDRFAllocator;
+using mesos::internal::master::allocator::Allocator;
+using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 
-using mesos::master::Master;
-using mesos::master::Registrar;
-using mesos::master::Repairer;
+using mesos::internal::master::Master;
+using mesos::internal::master::Registrar;
+using mesos::internal::master::Repairer;
 
-using mesos::slave::Containerizer;
-using mesos::slave::Fetcher;
-using mesos::slave::GarbageCollector;
-using mesos::slave::Slave;
-using mesos::slave::StatusUpdateManager;
+using mesos::internal::slave::Containerizer;
+using mesos::internal::slave::Fetcher;
+using mesos::internal::slave::GarbageCollector;
+using mesos::internal::slave::Slave;
+using mesos::internal::slave::StatusUpdateManager;
+
+using mesos::modules::Anonymous;
+using mesos::modules::ModuleManager;
 
 using process::Owned;
 using process::PID;
@@ -92,6 +97,7 @@ using std::vector;
 
 
 namespace mesos {
+namespace internal {
 namespace local {
 
 static Allocator* allocator = NULL;
@@ -139,7 +145,7 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
     // Load modules. Note that this covers both, master and slave
     // specific modules as both use the same flag (--modules).
     if (flags.modules.isSome()) {
-      Try<Nothing> result = modules::ModuleManager::load(flags.modules.get());
+      Try<Nothing> result = ModuleManager::load(flags.modules.get());
       if (result.isError()) {
         EXIT(1) << "Error loading modules: " << result.error();
       }
@@ -192,6 +198,22 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
       }
       Owned<Authorizer> authorizer__ = authorizer_.get();
       authorizer = authorizer__.release();
+    }
+
+    // Create anonymous modules.
+    foreach (const string& name, ModuleManager::find<Anonymous>()) {
+      Try<Anonymous*> create = ModuleManager::create<Anonymous>(name);
+      if (create.isError()) {
+        EXIT(1) << "Failed to create anonymous module named '" << name << "'";
+      }
+
+      // We don't bother keeping around the pointer to this anonymous
+      // module, when we exit that will effectively free it's memory.
+      //
+      // TODO(benh): We might want to add explicit finalization (and
+      // maybe explicit initialization too) in order to let the module
+      // do any housekeeping necessary when the master is cleanly
+      // terminating.
     }
 
     master = new Master(
@@ -334,4 +356,5 @@ void shutdown()
 }
 
 } // namespace local {
+} // namespace internal {
 } // namespace mesos {

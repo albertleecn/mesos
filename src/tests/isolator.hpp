@@ -24,23 +24,25 @@
 #include <mesos/slave/isolator.hpp>
 
 namespace mesos {
+namespace internal {
 namespace tests {
 
-
-class TestIsolatorProcess : public slave::IsolatorProcess
+class TestIsolatorProcess : public mesos::slave::IsolatorProcess
 {
 public:
-  static Try<slave::Isolator*> create(const Option<CommandInfo>& commandInfo)
+  static Try<mesos::slave::Isolator*> create(
+      const Option<CommandInfo>& commandInfo)
   {
-    process::Owned<slave::IsolatorProcess> process(
+    process::Owned<mesos::slave::IsolatorProcess> process(
         new TestIsolatorProcess(commandInfo));
 
-    return new slave::Isolator(process);
+    return new mesos::slave::Isolator(process);
   }
 
   MOCK_METHOD1(
       recover,
-      process::Future<Nothing>(const std::list<slave::ExecutorRunState>&));
+      process::Future<Nothing>(
+          const std::list<mesos::slave::ExecutorRunState>&));
 
   virtual process::Future<Option<CommandInfo> > prepare(
       const ContainerID& containerId,
@@ -57,7 +59,7 @@ public:
 
   MOCK_METHOD1(
       watch,
-      process::Future<slave::Limitation>(const ContainerID&));
+      process::Future<mesos::slave::Limitation>(const ContainerID&));
 
   MOCK_METHOD2(
       update,
@@ -88,10 +90,11 @@ private:
 
   const Option<CommandInfo> commandInfo;
 
-  process::Promise<slave::Limitation> promise;
+  process::Promise<mesos::slave::Limitation> promise;
 };
 
 } // namespace tests {
+} // namespace internal {
 } // namespace mesos {
 
 #endif // __TEST_ISOLATOR_HPP__

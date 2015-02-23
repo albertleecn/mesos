@@ -39,12 +39,10 @@
 
 using std::string;
 
-using namespace mesos;
-using namespace mesos::tests;
 using namespace mesos::modules;
 
-using mesos::master::Master;
-using mesos::slave::Slave;
+using mesos::internal::master::Master;
+using mesos::internal::slave::Slave;
 
 using process::Future;
 using process::PID;
@@ -54,6 +52,10 @@ using std::vector;
 
 using testing::_;
 using testing::Return;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 const char* HOOK_MODULE_LIBRARY_NAME = "testhook";
 const char* HOOK_MODULE_NAME = "org_apache_mesos_TestHook";
@@ -269,3 +271,7 @@ TEST_F(HookTest, DISABLED_VerifySlaveLaunchExecutorHook)
   // Verify that the file is not present.
   EXPECT_FALSE(os::isfile(path.get()));
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

@@ -46,20 +46,21 @@
 #include "tests/mesos.hpp"
 #include "tests/utils.hpp"
 
-using namespace mesos;
-using namespace mesos::slave;
-using namespace mesos::tests;
-
 using namespace process;
+
 using process::Subprocess;
 using process::Future;
 
-using slave::Fetcher;
+using mesos::internal::slave::Fetcher;
 
 using std::string;
 using std::map;
 
 using mesos::fetcher::FetcherInfo;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 class FetcherEnvironmentTest : public ::testing::Test {};
 
@@ -338,7 +339,7 @@ TEST_F(FetcherTest, FileURI)
 
   Try<Subprocess> fetcherSubprocess =
     process::subprocess(
-      path::join(mesos::tests::flags.build_dir, "src/mesos-fetcher"),
+      path::join(mesos::internal::tests::flags.build_dir, "src/mesos-fetcher"),
       environment);
 
   ASSERT_SOME(fetcherSubprocess);
@@ -374,7 +375,7 @@ TEST_F(FetcherTest, FilePath)
 
   Try<Subprocess> fetcherSubprocess =
     process::subprocess(
-      path::join(mesos::tests::flags.build_dir, "src/mesos-fetcher"),
+      path::join(mesos::internal::tests::flags.build_dir, "src/mesos-fetcher"),
       environment);
 
   ASSERT_SOME(fetcherSubprocess);
@@ -427,7 +428,7 @@ TEST_F(FetcherTest, OSNetUriTest)
 
   Try<Subprocess> fetcherSubprocess =
     process::subprocess(
-      path::join(mesos::tests::flags.build_dir, "src/mesos-fetcher"),
+      path::join(mesos::internal::tests::flags.build_dir, "src/mesos-fetcher"),
       environment);
 
   ASSERT_SOME(fetcherSubprocess);
@@ -463,7 +464,7 @@ TEST_F(FetcherTest, FileLocalhostURI)
 
   Try<Subprocess> fetcherSubprocess =
     process::subprocess(
-      path::join(mesos::tests::flags.build_dir, "src/mesos-fetcher"),
+      path::join(mesos::internal::tests::flags.build_dir, "src/mesos-fetcher"),
       environment);
 
   ASSERT_SOME(fetcherSubprocess);
@@ -634,3 +635,7 @@ TEST_F(FetcherTest, ExtractNotExecutable)
 
   ASSERT_SOME(os::rm(path.get()));
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

@@ -34,12 +34,9 @@
 
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
+using mesos::internal::master::Master;
 
-using mesos::master::Master;
-
-using mesos::slave::Slave;
+using mesos::internal::slave::Slave;
 
 using process::Future;
 using process::PID;
@@ -49,6 +46,10 @@ using std::vector;
 using testing::_;
 using testing::AtMost;
 using testing::Return;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 // TODO(jieyu): All of the task validation tests have the same flow:
@@ -926,3 +927,7 @@ TEST_F(ResourceOffersTest, Request)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

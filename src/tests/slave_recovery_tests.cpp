@@ -58,18 +58,13 @@
 #include "tests/mesos.hpp"
 #include "tests/utils.hpp"
 
-using namespace mesos;
-using namespace mesos::slave;
-using namespace mesos::tests;
+using namespace mesos::internal::slave;
 
 using namespace process;
 
 using google::protobuf::RepeatedPtrField;
 
-using mesos::master::Master;
-using mesos::slave::Containerizer;
-using mesos::slave::Fetcher;
-using mesos::slave::GarbageCollectorProcess;
+using mesos::internal::master::Master;
 
 using std::map;
 using std::string;
@@ -81,6 +76,10 @@ using testing::DoAll;
 using testing::Eq;
 using testing::Return;
 using testing::SaveArg;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class SlaveStateTest : public TemporaryDirectoryTest {};
@@ -283,7 +282,7 @@ TYPED_TEST(SlaveRecoveryTest, RecoverSlaveState)
                 .runs[containerId.get()]
                 .tasks.contains(task.task_id()));
 
-  const Task& t = mesos::protobuf::createTask(
+  const Task& t = mesos::internal::protobuf::createTask(
       task, TASK_STAGING, frameworkId);
 
   ASSERT_SOME_EQ(
@@ -3783,3 +3782,7 @@ TEST_F(MesosContainerizerSlaveRecoveryTest, CGROUPS_ROOT_PidNamespaceBackward)
 }
 
 #endif // __linux__
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

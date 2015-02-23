@@ -23,9 +23,11 @@
 
 #include "common/attributes.hpp"
 
-using namespace mesos;
-
 using std::string;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 TEST(AttributesTest, Parsing)
@@ -64,3 +66,7 @@ TEST(AttributesTest, Equality)
   EXPECT_NE(a, Attributes::parse("cpus:45.55;ports:45.55;rack:45.55"));
   EXPECT_NE(Attributes::parse(""), a);
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

@@ -53,18 +53,12 @@
 
 #include "tests/utils.hpp"
 
-using namespace mesos;
+using namespace mesos::internal::master;
 
 using namespace process;
 
-using mesos::log::Log;
-using mesos::log::Replica;
-
-using mesos::state::Entry;
-using mesos::state::LogStorage;
-using mesos::state::Storage;
-
-using mesos::state::protobuf::State;
+using mesos::internal::log::Log;
+using mesos::internal::log::Replica;
 
 using std::map;
 using std::set;
@@ -76,12 +70,19 @@ using testing::DoAll;
 using testing::Eq;
 using testing::Return;
 
-using mesos::tests::TemporaryDirectoryTest;
+using mesos::internal::tests::TemporaryDirectoryTest;
 
 using ::testing::WithParamInterface;
 
 namespace mesos {
-namespace master {
+namespace internal {
+namespace tests {
+
+using state::Entry;
+using state::LogStorage;
+using state::Storage;
+
+using state::protobuf::State;
 
 // TODO(xujyan): This class copies code from LogStateTest. It would
 // be nice to find a common location for log related base tests when
@@ -527,5 +528,6 @@ TEST_P(Registrar_BENCHMARK_Test, performance)
   LOG(INFO) << "Removed " << slaveCount << " slaves in " << watch.elapsed();
 }
 
-} // namespace master {
+} // namespace tests {
+} // namespace internal {
 } // namespace mesos {

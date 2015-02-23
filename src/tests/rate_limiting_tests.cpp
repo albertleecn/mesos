@@ -32,12 +32,9 @@
 
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
+using namespace mesos::internal::master;
 
-using mesos::master::Master;
-
-using mesos::master::allocator::MesosAllocatorProcess;
+using mesos::internal::master::allocator::MesosAllocatorProcess;
 
 using process::metrics::internal::MetricsProcess;
 
@@ -52,7 +49,8 @@ using testing::Eq;
 using testing::Return;
 
 namespace mesos {
-namespace master {
+namespace internal {
+namespace tests {
 
 // Query Mesos metrics snapshot endpoint and return a JSON::Object
 // result.
@@ -1055,7 +1053,7 @@ TEST_F(RateLimitingTest, CapacityReached)
   Future<Nothing> error;
   EXPECT_CALL(sched, error(
       driver,
-      "Message mesos.RegisterFrameworkMessage dropped: capacity(2) "
+      "Message mesos.internal.RegisterFrameworkMessage dropped: capacity(2) "
       "exceeded"))
     .WillOnce(FutureSatisfy(&error));
 
@@ -1114,5 +1112,6 @@ TEST_F(RateLimitingTest, CapacityReached)
   Shutdown();
 }
 
-} // namespace master {
+} // namespace tests {
+} // namespace internal {
 } // namespace mesos {

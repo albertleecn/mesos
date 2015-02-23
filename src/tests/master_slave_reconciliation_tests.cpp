@@ -41,13 +41,11 @@
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::protobuf;
-using namespace mesos::tests;
+using namespace mesos::internal::protobuf;
 
-using mesos::master::Master;
+using mesos::internal::master::Master;
 
-using mesos::slave::Slave;
+using mesos::internal::slave::Slave;
 
 using process::Clock;
 using process::Future;
@@ -60,6 +58,10 @@ using testing::_;
 using testing::AtMost;
 using testing::Return;
 using testing::SaveArg;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class MasterSlaveReconciliationTest : public MesosTest {};
@@ -530,3 +532,7 @@ TEST_F(MasterSlaveReconciliationTest, SlaveReregisterTerminalTask)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

@@ -71,7 +71,7 @@ public:
   template <typename T>
   static Try<T*> create(const std::string& moduleName)
   {
-    mesos::Lock lock(&mutex);
+    mesos::internal::Lock lock(&mutex);
     if (!moduleBases.contains(moduleName)) {
       return Error(
           "Module '" + moduleName + "' unknown");
@@ -102,9 +102,32 @@ public:
   template <typename T>
   static bool contains(const std::string& moduleName)
   {
-    mesos::Lock lock(&mutex);
+    mesos::internal::Lock lock(&mutex);
     return (moduleBases.contains(moduleName) &&
             moduleBases[moduleName]->kind == stringify(kind<T>()));
+  }
+
+  // Returns all module names that have been loaded that implement the
+  // specified interface 'T'. For example:
+  //
+  //   std::vector<std::string> modules = ModuleManager::find<Hook>();
+  //
+  // Will return all of the module names for modules that implement
+  // the Isolator interface.
+  template <typename T>
+  static std::vector<std::string> find()
+  {
+    mesos::internal::Lock lock(&mutex);
+
+    std::vector<std::string> names;
+
+    foreachpair (const std::string& name, ModuleBase* base, moduleBases) {
+      if (base->kind == stringify(kind<T>())) {
+        names.push_back(name);
+      }
+    }
+
+    return names;
   }
 
   // Exposed just for testing so that we can unload a given

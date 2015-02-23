@@ -51,13 +51,11 @@
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::protobuf;
-using namespace mesos::tests;
+using namespace mesos::internal::protobuf;
 
-using mesos::master::Master;
+using mesos::internal::master::Master;
 
-using mesos::slave::Slave;
+using mesos::internal::slave::Slave;
 
 using process::Clock;
 using process::Future;
@@ -79,6 +77,10 @@ using testing::Eq;
 using testing::Not;
 using testing::Return;
 using testing::SaveArg;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class FaultToleranceTest : public MesosTest {};
@@ -807,7 +809,7 @@ TEST_F(FaultToleranceTest, SchedulerFailoverRetriedReregistration)
   AWAIT_READY(reregistrationMessage);
 
   // Trigger the re-registration retry.
-  Clock::advance(scheduler::REGISTRATION_BACKOFF_FACTOR);
+  Clock::advance(internal::scheduler::REGISTRATION_BACKOFF_FACTOR);
 
   AWAIT_READY(sched2Registered);
 
@@ -861,7 +863,7 @@ TEST_F(FaultToleranceTest, FrameworkReliableRegistration)
   AWAIT_READY(frameworkRegisteredMessage);
 
   Clock::pause();
-  Clock::advance(scheduler::REGISTRATION_BACKOFF_FACTOR);
+  Clock::advance(internal::scheduler::REGISTRATION_BACKOFF_FACTOR);
 
   AWAIT_READY(registered); // Ensures registered message is received.
 
@@ -1882,3 +1884,7 @@ TEST_F(FaultToleranceTest, SplitBrainMasters)
 
   Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

@@ -43,15 +43,12 @@
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
+using mesos::internal::master::allocator::Allocator;
+using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 
-using mesos::master::allocator::Allocator;
-using mesos::master::allocator::HierarchicalDRFAllocator;
+using mesos::internal::master::Master;
 
-using mesos::master::Master;
-
-using mesos::slave::Slave;
+using mesos::internal::slave::Slave;
 
 using process::Clock;
 using process::Future;
@@ -67,6 +64,10 @@ using testing::DoAll;
 using testing::DoDefault;
 using testing::Eq;
 using testing::SaveArg;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 template <typename T>
@@ -1126,7 +1127,7 @@ TYPED_TEST(MasterAllocatorTest, Whitelist)
 
   ASSERT_SOME(os::write(path, strings::join("\n", hosts)));
 
-  Clock::advance(mesos::master::WHITELIST_WATCH_INTERVAL);
+  Clock::advance(mesos::internal::master::WHITELIST_WATCH_INTERVAL);
 
   // Make sure the allocator has been given the updated whitelist.
   AWAIT_READY(updateWhitelist2);
@@ -1437,3 +1438,7 @@ TYPED_TEST(MasterAllocatorTest, SlaveReregistersFirst)
 
   this->Shutdown();
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {

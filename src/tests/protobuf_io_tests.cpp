@@ -32,12 +32,13 @@
 
 #include "tests/utils.hpp"
 
-using namespace mesos;
-using namespace mesos::tests;
-
 using std::string;
 
 using google::protobuf::RepeatedPtrField;
+
+namespace mesos {
+namespace internal {
+namespace tests {
 
 
 class ProtobufIOTest : public TemporaryDirectoryTest {};
@@ -161,3 +162,7 @@ TEST_F(ProtobufIOTest, RepeatedPtrField)
     EXPECT_EQ(expected.Get(i), actual.Get(i));
   }
 }
+
+} // namespace tests {
+} // namespace internal {
+} // namespace mesos {
