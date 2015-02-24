@@ -17,8 +17,8 @@
 #include <stout/error.hpp>
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
+#include <stout/ip.hpp>
 #include <stout/json.hpp>
-#include <stout/net.hpp>
 #include <stout/none.hpp>
 #include <stout/numify.hpp>
 #include <stout/option.hpp>
@@ -267,6 +267,20 @@ struct BadRequest : Response
     : Response(body)
   {
     status = "400 Bad Request";
+  }
+};
+
+
+struct Forbidden : Response
+{
+  Forbidden()
+  {
+    status = "403 Forbidden";
+  }
+
+  explicit Forbidden(const std::string& body) : Response(body)
+  {
+    status = "403 Forbidden";
   }
 };
 

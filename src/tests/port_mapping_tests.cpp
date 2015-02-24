@@ -29,7 +29,9 @@
 
 #include <stout/bytes.hpp>
 #include <stout/gtest.hpp>
+#include <stout/ip.hpp>
 #include <stout/json.hpp>
+#include <stout/mac.hpp>
 #include <stout/net.hpp>
 
 #include "linux/fs.hpp"
@@ -60,6 +62,8 @@
 #include "tests/mesos.hpp"
 #include "tests/utils.hpp"
 
+using namespace mesos::internal::slave;
+
 using namespace process;
 
 using namespace routing;
@@ -67,12 +71,6 @@ using namespace routing::filter;
 using namespace routing::queueing;
 
 using mesos::internal::master::Master;
-
-using mesos::internal::slave::Launcher;
-using mesos::internal::slave::LinuxLauncher;
-using mesos::internal::slave::MesosContainerizer;
-using mesos::internal::slave::MesosContainerizerLaunch;
-using mesos::internal::slave::PortMappingIsolatorProcess;
 
 using mesos::slave::Isolator;
 
@@ -195,7 +193,7 @@ protected:
     cleanup(eth0, lo);
 
     // Get host IP address.
-    Result<net::IP> _hostIP = net::ip(eth0);
+    Result<net::IP> _hostIP = net::fromLinkDevice(eth0);
 
     CHECK_SOME(_hostIP)
       << "Failed to retrieve the host public IP from " << eth0 << ": "
