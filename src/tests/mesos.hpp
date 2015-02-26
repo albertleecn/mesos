@@ -180,10 +180,6 @@ protected:
   // Stop all slaves.
   virtual void ShutdownSlaves();
 
-  // Get the metrics snapshot.
-  // TODO(vinod): Move this into "tests/utils.hpp".
-  JSON::Object Metrics() const;
-
   Cluster cluster;
 
   // Containerizer(s) created during test that we need to cleanup.
@@ -662,6 +658,12 @@ public:
 
   void unmocked_removeFramework(
       slave::Framework* framework);
+
+  MOCK_METHOD1(__recover, void(
+      const process::Future<Nothing>& future));
+
+  void unmocked___recover(
+      const process::Future<Nothing>& future);
 
 private:
   Files files;

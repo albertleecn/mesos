@@ -16,40 +16,30 @@
  * limitations under the License.
  */
 
-#ifndef __TESTS_UTILS_HPP__
-#define __TESTS_UTILS_HPP__
+#ifndef __RESOURCES_UTILS_HPP__
+#define __RESOURCES_UTILS_HPP__
 
-#include <gtest/gtest.h>
+#include <mesos/mesos.hpp>
+#include <mesos/resources.hpp>
 
-#include <string>
-
-#include <stout/json.hpp>
-#include <stout/option.hpp>
+#include <stout/try.hpp>
 
 namespace mesos {
-namespace internal {
-namespace tests {
 
-// Test fixture for creating a temporary directory for each test.
-// TODO(vinod): Fold this into stout/tests/utils.hpp.
-class TemporaryDirectoryTest : public ::testing::Test
-{
-protected:
-  virtual void SetUp();
-  virtual void TearDown();
+// Tests if the given Resource needs to be checkpointed on the slave.
+// NOTE: We assume the given resource is validated.
+bool needCheckpointing(const Resource& resource);
 
-private:
-  std::string cwd;
-  Option<std::string> sandbox;
-};
+// Returns the total resources by applying the given checkpointed
+// resources to the given resources. This function is useful when we
+// want to calculate the total resources of a slave from the resources
+// specified from the command line and the checkpointed resources.
+// Returns error if the given resources are not compatible with the
+// given checkpointed resources.
+Try<Resources> applyCheckpointedResources(
+    const Resources& resources,
+    const Resources& checkpointedResources);
 
-
-// Get the metrics snapshot.
-// TODO(vinod): Move this into a libprocess utility header.
-JSON::Object Metrics();
-
-} // namespace tests {
-} // namespace internal {
 } // namespace mesos {
 
-#endif // __TESTS_UTILS_HPP__
+#endif // __RESOURCES_UTILS_HPP__

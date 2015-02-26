@@ -296,6 +296,7 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	common/lock.cpp							\
 	common/protobuf_utils.cpp					\
 	common/resources.cpp						\
+	common/resources_utils.cpp					\
 	common/thread.cpp						\
 	common/type_utils.cpp						\
 	common/values.cpp						\
@@ -483,6 +484,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 	common/lock.hpp							\
 	common/parse.hpp						\
 	common/protobuf_utils.hpp					\
+	common/resources_utils.hpp					\
 	common/status_utils.hpp						\
 	common/thread.hpp						\
 	credentials/credentials.hpp					\
@@ -1254,7 +1256,9 @@ load_generator_framework_LDADD = libmesos.la
 
 if OS_LINUX
   check_PROGRAMS += setns-test-helper
-  setns_test_helper_SOURCES = tests/setns_test_helper.cpp
+  setns_test_helper_SOURCES =					\
+    tests/setns_test_helper_main.cpp				\
+    tests/setns_test_helper.cpp
   setns_test_helper_CPPFLAGS = $(MESOS_CPPFLAGS)
   setns_test_helper_LDADD = libmesos.la
 endif
@@ -1386,6 +1390,7 @@ if OS_LINUX
   mesos_tests_SOURCES += tests/fs_tests.cpp
   mesos_tests_SOURCES += tests/ns_tests.cpp
   mesos_tests_SOURCES += tests/perf_tests.cpp
+  mesos_tests_SOURCES += tests/setns_test_helper.cpp
 endif
 
 if WITH_NETWORK_ISOLATOR
