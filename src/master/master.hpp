@@ -34,6 +34,7 @@
 
 #include <mesos/module/authenticator.hpp>
 
+#include <process/limiter.hpp>
 #include <process/http.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
@@ -104,6 +105,8 @@ public:
          MasterContender* contender,
          MasterDetector* detector,
          const Option<Authorizer*>& authorizer,
+         const Option<memory::shared_ptr<process::RateLimiter>>&
+           slaveRemovalLimiter,
          const Flags& flags = Flags());
 
   virtual ~Master();
@@ -358,6 +361,10 @@ protected:
       Slave* slave,
       const std::vector<Archive::Framework>& completedFrameworks =
         std::vector<Archive::Framework>());
+
+  // Remove the slave from the registrar. Called when the slave
+  // does not re-register in time after a master failover.
+  Nothing removeSlave(const Registry::Slave& slave);
 
   // Remove the slave from the registrar and from the master's state.
   void removeSlave(Slave* slave);

@@ -220,9 +220,8 @@ protected:
       acquire = limiter.get()->acquire();
     }
 
-    ++metrics->slave_shutdowns_scheduled;
-
     shuttingDown = acquire.onAny(defer(self(), &Self::_shutdown));
+    ++metrics->slave_shutdowns_scheduled;
   }
 
   void _shutdown()
@@ -273,6 +272,7 @@ Master::Master(
     MasterContender* _contender,
     MasterDetector* _detector,
     const Option<Authorizer*>& _authorizer,
+    const Option<shared_ptr<RateLimiter>>& _slaveRemovalLimiter,
     const Flags& _flags)
   : ProcessBase("master"),
     http(this),
@@ -287,6 +287,8 @@ Master::Master(
     metrics(new Metrics(*this)),
     electedTime(None())
 {
+  slaves.limiter = _slaveRemovalLimiter;
+
   // NOTE: We populate 'info_' here instead of inside 'initialize()'
   // because 'StandaloneMasterDetector' needs access to the info.
 
@@ -489,39 +491,11 @@ void Master::initialize()
     LOG(INFO) << "Framework rate limiting enabled";
   }
 
-  if (flags.slave_removal_rate_limit.isSome()) {
+  // If the rate limiter is injected for testing,
+  // the flag may not be set.
+  if (slaves.limiter.isSome() && flags.slave_removal_rate_limit.isSome()) {
     LOG(INFO) << "Slave removal is rate limited to "
               << flags.slave_removal_rate_limit.get();
-
-    // Parse the flag value.
-    // TODO(vinod): Move this parsing logic to flags once we have a
-    // 'Rate' abstraction in stout.
-    vector<string> tokens =
-      strings::tokenize(flags.slave_removal_rate_limit.get(), "/");
-
-    if (tokens.size() != 2) {
-      EXIT(1) << "Invalid slave_removal_rate_limit: "
-              << flags.slave_removal_rate_limit.get()
-              << ". Format is <Number of slaves>/<Duration>";
-    }
-
-    Try<int> permits = numify<int>(tokens[0]);
-    if (permits.isError()) {
-      EXIT(1) << "Invalid slave_removal_rate_limit: "
-              << flags.slave_removal_rate_limit.get()
-              << ". Format is <Number of slaves>/<Duration>"
-              << ": " << permits.error();
-    }
-
-    Try<Duration> duration = Duration::parse(tokens[1]);
-    if (duration.isError()) {
-      EXIT(1) << "Invalid slave_removal_rate_limit: "
-              << flags.slave_removal_rate_limit.get()
-              << ". Format is <Number of slaves>/<Duration>"
-              << ": " << duration.error();
-    }
-
-    slaves.limiter = new RateLimiter(permits.get(), duration.get());
   }
 
   hashmap<string, RoleInfo> roleInfos;
@@ -1252,40 +1226,80 @@ void Master::recoveredSlavesTimeout(const Registry& registry)
             << " investigate or increase this limit to proceed further";
   }
 
+  // Remove the slaves in a rate limited manner, similar to how the
+  // SlaveObserver removes slaves.
   foreach (const Registry::Slave& slave, registry.slaves().slaves()) {
-    if (!slaves.recovered.contains(slave.info().id())) {
-      continue; // Slave re-registered.
+    Future<Nothing> acquire = Nothing();
+
+    if (slaves.limiter.isSome()) {
+      LOG(INFO) << "Scheduling removal of slave "
+                << slave.info().id() << " (" << slave.info().hostname() << ")"
+                << "; did not re-register within "
+                << flags.slave_reregister_timeout << " after master failover";
+
+      acquire = slaves.limiter.get()->acquire();
     }
 
-    LOG(WARNING) << "Slave " << slave.info().id()
-                 << " (" << slave.info().hostname() << ") did not re-register "
-                 << "within the timeout; removing it from the registrar";
+    // Need to disambiguate for the compiler.
+    // TODO(bmahler): With C++11, just call removeSlave from within
+    // a lambda function to avoid the need to disambiguate.
+    Nothing (Master::*removeSlave)(const Registry::Slave&) = &Self::removeSlave;
+    const string failure = "Slave removal rate limit acquisition failed";
 
-    ++metrics->recovery_slave_removals;
+    acquire
+      .then(defer(self(), removeSlave, slave))
+      .onFailed(lambda::bind(fail, failure, lambda::_1))
+      .onDiscarded(lambda::bind(fail, failure, "discarded"));
 
-    slaves.recovered.erase(slave.info().id());
-
-    if (flags.registry_strict) {
-      slaves.removing.insert(slave.info().id());
-
-      registrar->apply(Owned<Operation>(new RemoveSlave(slave.info())))
-        .onAny(defer(self(),
-                     &Self::_removeSlave,
-                     slave.info(),
-                     vector<StatusUpdate>(), // No TASK_LOST updates to send.
-                     lambda::_1));
-    } else {
-      // When a non-strict registry is in use, we want to ensure the
-      // registry is used in a write-only manner. Therefore we remove
-      // the slave from the registry but we do not inform the
-      // framework.
-      const string& message =
-        "Failed to remove slave " + stringify(slave.info().id());
-
-      registrar->apply(Owned<Operation>(new RemoveSlave(slave.info())))
-        .onFailed(lambda::bind(fail, message, lambda::_1));
-    }
+    ++metrics->slave_shutdowns_scheduled;
   }
+}
+
+
+Nothing Master::removeSlave(const Registry::Slave& slave)
+{
+  // The slave is removed from 'recovered' when it re-registers.
+  if (!slaves.recovered.contains(slave.info().id())) {
+    LOG(INFO) << "Canceling removal of slave "
+              << slave.info().id() << " (" << slave.info().hostname() << ")"
+              << " since it re-registered!";
+
+    ++metrics->slave_shutdowns_canceled;
+
+    return Nothing();
+  }
+
+  LOG(WARNING) << "Slave " << slave.info().id()
+               << " (" << slave.info().hostname() << ") did not re-register"
+               << " within " << flags.slave_reregister_timeout
+               << " after master failover; removing it from the registrar";
+
+  ++metrics->recovery_slave_removals;
+
+  slaves.recovered.erase(slave.info().id());
+
+  if (flags.registry_strict) {
+    slaves.removing.insert(slave.info().id());
+
+    registrar->apply(Owned<Operation>(new RemoveSlave(slave.info())))
+      .onAny(defer(self(),
+                   &Self::_removeSlave,
+                   slave.info(),
+                   vector<StatusUpdate>(), // No TASK_LOST updates to send.
+                   lambda::_1));
+  } else {
+    // When a non-strict registry is in use, we want to ensure the
+    // registry is used in a write-only manner. Therefore we remove
+    // the slave from the registry but we do not inform the
+    // framework.
+    const string& message =
+      "Failed to remove slave " + stringify(slave.info().id());
+
+    registrar->apply(Owned<Operation>(new RemoveSlave(slave.info())))
+      .onFailed(lambda::bind(fail, message, lambda::_1));
+  }
+
+  return Nothing();
 }
 
 
