@@ -186,7 +186,6 @@ TEST_F(MasterTest, ShutdownFrameworkWhileTaskRunning)
   TestContainerizer containerizer(&exec);
 
   slave::Flags flags = CreateSlaveFlags();
-  flags.executor_shutdown_grace_period = Seconds(0);
 
   Try<PID<Slave>> slave = StartSlave(&containerizer, flags);
   ASSERT_SOME(slave);
@@ -974,7 +973,7 @@ TEST_F(MasterTest, MasterInfo)
 
   AWAIT_READY(masterInfo);
   EXPECT_EQ(master.get().address.port, masterInfo.get().port());
-  EXPECT_EQ(master.get().address.ip, masterInfo.get().ip());
+  EXPECT_EQ(master.get().address.ip, net::IP(ntohl(masterInfo.get().ip())));
 
   driver.stop();
   driver.join();
@@ -1032,7 +1031,7 @@ TEST_F(MasterTest, MasterInfoOnReElection)
 
   AWAIT_READY(masterInfo);
   EXPECT_EQ(master.get().address.port, masterInfo.get().port());
-  EXPECT_EQ(master.get().address.ip, masterInfo.get().ip());
+  EXPECT_EQ(master.get().address.ip, net::IP(ntohl(masterInfo.get().ip())));
 
   // The re-registered framework should get offers.
   AWAIT_READY(resourceOffers2);
@@ -2407,7 +2406,7 @@ TEST_F(MasterTest, MaxExecutorsPerSlave)
 
   AWAIT_READY(masterInfo);
   EXPECT_EQ(master.get().address.port, masterInfo.get().port());
-  EXPECT_EQ(master.get().address.ip, masterInfo.get().ip());
+  EXPECT_EQ(master.get().address.ip, net::IP(ntohl(masterInfo.get().ip())));
 
   driver.stop();
   driver.join();
