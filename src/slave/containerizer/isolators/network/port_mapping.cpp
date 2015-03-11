@@ -1056,7 +1056,7 @@ Try<Isolator*> PortMappingIsolatorProcess::create(const Flags& flags)
 
   // Get the host IP network, MAC and default gateway.
   Result<net::IPNetwork> hostIPNetwork =
-    net::fromLinkDevice(eth0.get(), AF_INET);
+    net::IPNetwork::fromLinkDevice(eth0.get(), AF_INET);
 
   if (!hostIPNetwork.isSome()) {
     return Error(
@@ -1620,7 +1620,7 @@ Future<Nothing> PortMappingIsolatorProcess::isolate(
     return Failure("Failed to create the bind mount point: " + touch.error());
   }
 
-  Try<Nothing> mount = fs::mount(source, target, "none", MS_BIND, NULL);
+  Try<Nothing> mount = fs::mount(source, target, None(), MS_BIND, NULL);
   if (mount.isError()) {
     return Failure(
         "Failed to mount the network namespace handle from " +
