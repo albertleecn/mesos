@@ -3,6 +3,8 @@
 
 #include <http_parser.h>
 
+#include <glog/logging.h>
+
 #include <deque>
 #include <string>
 #include <vector>
@@ -15,7 +17,9 @@
 #include <stout/try.hpp>
 
 
-// TODO(bmahler): Upgrade our http_parser to the latest version.
+// TODO(bmahler): Switch to joyent/http-parser now that it is no
+// longer being hosted under ry/http-parser.
+
 namespace process {
 
 // TODO(benh): Make DataDecoder abstract and make RequestDecoder a
@@ -27,18 +31,19 @@ public:
     : s(_s), failure(false), request(NULL)
   {
     settings.on_message_begin = &DataDecoder::on_message_begin;
-    settings.on_header_field = &DataDecoder::on_header_field;
-    settings.on_header_value = &DataDecoder::on_header_value;
-    settings.on_url = &DataDecoder::on_url;
-    settings.on_body = &DataDecoder::on_body;
-    settings.on_headers_complete = &DataDecoder::on_headers_complete;
-    settings.on_message_complete = &DataDecoder::on_message_complete;
 
 #if !(HTTP_PARSER_VERSION_MAJOR >= 2)
     settings.on_path = &DataDecoder::on_path;
     settings.on_fragment = &DataDecoder::on_fragment;
     settings.on_query_string = &DataDecoder::on_query_string;
 #endif
+
+    settings.on_url = &DataDecoder::on_url;
+    settings.on_header_field = &DataDecoder::on_header_field;
+    settings.on_header_value = &DataDecoder::on_header_value;
+    settings.on_headers_complete = &DataDecoder::on_headers_complete;
+    settings.on_body = &DataDecoder::on_body;
+    settings.on_message_complete = &DataDecoder::on_message_complete;
 
     http_parser_init(&parser, HTTP_REQUEST);
 
@@ -50,6 +55,7 @@ public:
     size_t parsed = http_parser_execute(&parser, &settings, data, length);
 
     if (parsed != length) {
+      // TODO(bmahler): joyent/http-parser exposes error reasons.
       failure = true;
     }
 
@@ -77,14 +83,15 @@ private:
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
 
-    assert(!decoder->failure);
+    CHECK(!decoder->failure);
 
     decoder->header = HEADER_FIELD;
     decoder->field.clear();
     decoder->value.clear();
     decoder->query.clear();
 
-    assert(decoder->request == NULL);
+    CHECK(decoder->request == NULL);
+
     decoder->request = new http::Request();
     decoder->request->headers.clear();
     decoder->request->method.clear();
@@ -97,87 +104,36 @@ private:
     return 0;
   }
 
-  static int on_headers_complete(http_parser* p)
+#if !(HTTP_PARSER_VERSION_MAJOR >= 2)
+  static int on_path(http_parser* p, const char* data, size_t length)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-
-    // Add final header.
-    decoder->request->headers[decoder->field] = decoder->value;
-    decoder->field.clear();
-    decoder->value.clear();
-
-    decoder->request->method =
-      http_method_str((http_method) decoder->parser.method);
-
-    decoder->request->keepAlive = http_should_keep_alive(&decoder->parser);
-
+    CHECK_NOTNULL(decoder->request);
+    decoder->request->path.append(data, length);
     return 0;
   }
 
-  static int on_message_complete(http_parser* p)
+  static int on_query_string(http_parser* p, const char* data, size_t length)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-//     std::cout << "http::Request:" << std::endl;
-//     std::cout << "  method: " << decoder->request->method << std::endl;
-//     std::cout << "  path: " << decoder->request->path << std::endl;
-
-    // Parse the query key/values.
-    Try<hashmap<std::string, std::string>> decoded =
-      http::query::decode(decoder->query);
-
-    if (decoded.isError()) {
-      return 1;
-    }
-
-    decoder->request->query =  decoded.get();
-
-    Option<std::string> encoding =
-      decoder->request->headers.get("Content-Encoding");
-    if (encoding.isSome() && encoding.get() == "gzip") {
-      Try<std::string> decompressed = gzip::decompress(decoder->request->body);
-      if (decompressed.isError()) {
-        return 1;
-      }
-      decoder->request->body = decompressed.get();
-      decoder->request->headers["Content-Length"] =
-        decoder->request->body.length();
-    }
-
-    decoder->requests.push_back(decoder->request);
-    decoder->request = NULL;
+    CHECK_NOTNULL(decoder->request);
+    decoder->query.append(data, length);
     return 0;
   }
 
-  static int on_header_field(http_parser* p, const char* data, size_t length)
+  static int on_fragment(http_parser* p, const char* data, size_t length)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-    assert(decoder->request != NULL);
-
-    if (decoder->header != HEADER_FIELD) {
-      decoder->request->headers[decoder->field] = decoder->value;
-      decoder->field.clear();
-      decoder->value.clear();
-    }
-
-    decoder->field.append(data, length);
-    decoder->header = HEADER_FIELD;
-
+    CHECK_NOTNULL(decoder->request);
+    decoder->request->fragment.append(data, length);
     return 0;
   }
-
-  static int on_header_value(http_parser* p, const char* data, size_t length)
-  {
-    DataDecoder* decoder = (DataDecoder*) p->data;
-    assert(decoder->request != NULL);
-    decoder->value.append(data, length);
-    decoder->header = HEADER_VALUE;
-    return 0;
-  }
+#endif // !(HTTP_PARSER_VERSION_MAJOR >= 2)
 
   static int on_url(http_parser* p, const char* data, size_t length)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-    assert(decoder->request != NULL);
+    CHECK_NOTNULL(decoder->request);
     decoder->request->url.append(data, length);
     int result = 0;
 
@@ -210,37 +166,90 @@ private:
     return result;
   }
 
-#if !(HTTP_PARSER_VERSION_MAJOR >= 2)
-  static int on_path(http_parser* p, const char* data, size_t length)
+  static int on_header_field(http_parser* p, const char* data, size_t length)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-    assert(decoder->request != NULL);
-    decoder->request->path.append(data, length);
+    CHECK_NOTNULL(decoder->request);
+
+    if (decoder->header != HEADER_FIELD) {
+      decoder->request->headers[decoder->field] = decoder->value;
+      decoder->field.clear();
+      decoder->value.clear();
+    }
+
+    decoder->field.append(data, length);
+    decoder->header = HEADER_FIELD;
+
     return 0;
   }
 
-  static int on_query_string(http_parser* p, const char* data, size_t length)
+  static int on_header_value(http_parser* p, const char* data, size_t length)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-    assert(decoder->request != NULL);
-    decoder->query.append(data, length);
+    CHECK_NOTNULL(decoder->request);
+    decoder->value.append(data, length);
+    decoder->header = HEADER_VALUE;
     return 0;
   }
 
-  static int on_fragment(http_parser* p, const char* data, size_t length)
+  static int on_headers_complete(http_parser* p)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-    assert(decoder->request != NULL);
-    decoder->request->fragment.append(data, length);
+
+    CHECK_NOTNULL(decoder->request);
+
+    // Add final header.
+    decoder->request->headers[decoder->field] = decoder->value;
+    decoder->field.clear();
+    decoder->value.clear();
+
+    decoder->request->method =
+      http_method_str((http_method) decoder->parser.method);
+
+    decoder->request->keepAlive = http_should_keep_alive(&decoder->parser);
+
     return 0;
   }
-#endif // !(HTTP_PARSER_VERSION_MAJOR >= 2)
 
   static int on_body(http_parser* p, const char* data, size_t length)
   {
     DataDecoder* decoder = (DataDecoder*) p->data;
-    assert(decoder->request != NULL);
+    CHECK_NOTNULL(decoder->request);
     decoder->request->body.append(data, length);
+    return 0;
+  }
+
+  static int on_message_complete(http_parser* p)
+  {
+    DataDecoder* decoder = (DataDecoder*) p->data;
+
+    // Parse the query key/values.
+    Try<hashmap<std::string, std::string>> decoded =
+      http::query::decode(decoder->query);
+
+    if (decoded.isError()) {
+      return 1;
+    }
+
+    CHECK_NOTNULL(decoder->request);
+
+    decoder->request->query =  decoded.get();
+
+    Option<std::string> encoding =
+      decoder->request->headers.get("Content-Encoding");
+
+    if (encoding.isSome() && encoding.get() == "gzip") {
+      Try<std::string> decompressed = gzip::decompress(decoder->request->body);
+      if (decompressed.isError()) {
+        return 1;
+      }
+      decoder->request->body = decompressed.get();
+      decoder->request->headers["Content-Length"] =
+        decoder->request->body.length();
+    }
+
+    decoder->requests.push_back(decoder->request);
+    decoder->request = NULL;
     return 0;
   }
 
@@ -273,18 +282,19 @@ public:
     : failure(false), header(HEADER_FIELD), response(NULL)
   {
     settings.on_message_begin = &ResponseDecoder::on_message_begin;
-    settings.on_header_field = &ResponseDecoder::on_header_field;
-    settings.on_header_value = &ResponseDecoder::on_header_value;
-    settings.on_url = &ResponseDecoder::on_url;
-    settings.on_body = &ResponseDecoder::on_body;
-    settings.on_headers_complete = &ResponseDecoder::on_headers_complete;
-    settings.on_message_complete = &ResponseDecoder::on_message_complete;
 
 #if !(HTTP_PARSER_VERSION_MAJOR >=2)
     settings.on_path = &ResponseDecoder::on_path;
     settings.on_fragment = &ResponseDecoder::on_fragment;
     settings.on_query_string = &ResponseDecoder::on_query_string;
 #endif
+
+    settings.on_url = &ResponseDecoder::on_url;
+    settings.on_header_field = &ResponseDecoder::on_header_field;
+    settings.on_header_value = &ResponseDecoder::on_header_value;
+    settings.on_headers_complete = &ResponseDecoder::on_headers_complete;
+    settings.on_body = &ResponseDecoder::on_body;
+    settings.on_message_complete = &ResponseDecoder::on_message_complete;
 
     http_parser_init(&parser, HTTP_RESPONSE);
 
@@ -296,6 +306,7 @@ public:
     size_t parsed = http_parser_execute(&parser, &settings, data, length);
 
     if (parsed != length) {
+      // TODO(bmahler): joyent/http-parser exposes error reasons.
       failure = true;
     }
 
@@ -318,13 +329,14 @@ private:
   {
     ResponseDecoder* decoder = (ResponseDecoder*) p->data;
 
-    assert(!decoder->failure);
+    CHECK(!decoder->failure);
 
     decoder->header = HEADER_FIELD;
     decoder->field.clear();
     decoder->value.clear();
 
-    assert(decoder->response == NULL);
+    CHECK(decoder->response == NULL);
+
     decoder->response = new http::Response();
     decoder->response->status.clear();
     decoder->response->headers.clear();
@@ -335,9 +347,59 @@ private:
     return 0;
   }
 
+#if !(HTTP_PARSER_VERSION_MAJOR >= 2)
+  static int on_path(http_parser* p, const char* data, size_t length)
+  {
+    return 0;
+  }
+
+  static int on_query_string(http_parser* p, const char* data, size_t length)
+  {
+    return 0;
+  }
+
+  static int on_fragment(http_parser* p, const char* data, size_t length)
+  {
+    return 0;
+  }
+#endif // !(HTTP_PARSER_VERSION_MAJOR >= 2)
+
+  static int on_url(http_parser* p, const char* data, size_t length)
+  {
+    return 0;
+  }
+
+  static int on_header_field(http_parser* p, const char* data, size_t length)
+  {
+    ResponseDecoder* decoder = (ResponseDecoder*) p->data;
+    CHECK_NOTNULL(decoder->response);
+
+    if (decoder->header != HEADER_FIELD) {
+      decoder->response->headers[decoder->field] = decoder->value;
+      decoder->field.clear();
+      decoder->value.clear();
+    }
+
+    decoder->field.append(data, length);
+    decoder->header = HEADER_FIELD;
+
+    return 0;
+  }
+
+  static int on_header_value(http_parser* p, const char* data, size_t length)
+  {
+    ResponseDecoder* decoder = (ResponseDecoder*) p->data;
+    CHECK_NOTNULL(decoder->response);
+    decoder->value.append(data, length);
+    decoder->header = HEADER_VALUE;
+    return 0;
+  }
+
   static int on_headers_complete(http_parser* p)
   {
     ResponseDecoder* decoder = (ResponseDecoder*) p->data;
+
+    CHECK_NOTNULL(decoder->response);
 
     // Add final header.
     decoder->response->headers[decoder->field] = decoder->value;
@@ -347,9 +409,19 @@ private:
     return 0;
   }
 
+  static int on_body(http_parser* p, const char* data, size_t length)
+  {
+    ResponseDecoder* decoder = (ResponseDecoder*) p->data;
+    CHECK_NOTNULL(decoder->response);
+    decoder->response->body.append(data, length);
+    return 0;
+  }
+
   static int on_message_complete(http_parser* p)
   {
     ResponseDecoder* decoder = (ResponseDecoder*) p->data;
+
+    CHECK_NOTNULL(decoder->response);
 
     // Get the response status string.
     if (http::statuses.contains(decoder->parser.status_code)) {
@@ -375,62 +447,6 @@ private:
 
     decoder->responses.push_back(decoder->response);
     decoder->response = NULL;
-    return 0;
-  }
-
-  static int on_header_field(http_parser* p, const char* data, size_t length)
-  {
-    ResponseDecoder* decoder = (ResponseDecoder*) p->data;
-    assert(decoder->response != NULL);
-
-    if (decoder->header != HEADER_FIELD) {
-      decoder->response->headers[decoder->field] = decoder->value;
-      decoder->field.clear();
-      decoder->value.clear();
-    }
-
-    decoder->field.append(data, length);
-    decoder->header = HEADER_FIELD;
-
-    return 0;
-  }
-
-  static int on_header_value(http_parser* p, const char* data, size_t length)
-  {
-    ResponseDecoder* decoder = (ResponseDecoder*) p->data;
-    assert(decoder->response != NULL);
-    decoder->value.append(data, length);
-    decoder->header = HEADER_VALUE;
-    return 0;
-  }
-
-  static int on_url(http_parser* p, const char* data, size_t length)
-  {
-    return 0;
-  }
-
-#if !(HTTP_PARSER_VERSION_MAJOR >= 2)
-  static int on_path(http_parser* p, const char* data, size_t length)
-  {
-    return 0;
-  }
-
-  static int on_query_string(http_parser* p, const char* data, size_t length)
-  {
-    return 0;
-  }
-
-  static int on_fragment(http_parser* p, const char* data, size_t length)
-  {
-    return 0;
-  }
-#endif // !(HTTP_PARSER_VERSION_MAJOR >= 2)
-
-  static int on_body(http_parser* p, const char* data, size_t length)
-  {
-    ResponseDecoder* decoder = (ResponseDecoder*) p->data;
-    assert(decoder->response != NULL);
-    decoder->response->body.append(data, length);
     return 0;
   }
 
