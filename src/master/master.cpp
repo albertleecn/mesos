@@ -357,6 +357,7 @@ void Master::initialize()
 {
   LOG(INFO) << "Master " << info_.id() << " (" << info_.hostname() << ")"
             << " started on " << string(self()).substr(7);
+  LOG(INFO) << "Flags at startup: " << flags;
 
   if (process::address().ip.isLoopback()) {
     LOG(WARNING) << "\n**************************************************\n"
@@ -1233,6 +1234,11 @@ void Master::recoveredSlavesTimeout(const Registry& registry)
   // Remove the slaves in a rate limited manner, similar to how the
   // SlaveObserver removes slaves.
   foreach (const Registry::Slave& slave, registry.slaves().slaves()) {
+    // The slave is removed from 'recovered' when it re-registers.
+    if (!slaves.recovered.contains(slave.info().id())) {
+      continue;
+    }
+
     Future<Nothing> acquire = Nothing();
 
     if (slaves.limiter.isSome()) {
