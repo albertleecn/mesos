@@ -230,6 +230,38 @@ TEST(HTTP, PipeEOF)
 }
 
 
+TEST(HTTP, PipeFailure)
+{
+  http::Pipe pipe;
+  http::Pipe::Reader reader = pipe.reader();
+  http::Pipe::Writer writer = pipe.writer();
+
+  // Fail the writer after writing some data.
+  EXPECT_TRUE(writer.write("hello"));
+  EXPECT_TRUE(writer.write("world"));
+
+  EXPECT_TRUE(writer.fail("disconnected!"));
+
+  // The reader should read the data, followed by the failure.
+  AWAIT_EQ("hello", reader.read());
+  AWAIT_EQ("world", reader.read());
+
+  Future<string> read = reader.read();
+  EXPECT_TRUE(read.isFailed());
+  EXPECT_EQ("disconnected!", read.failure());
+
+  // The writer cannot close or fail an already failed pipe.
+  EXPECT_FALSE(writer.close());
+  EXPECT_FALSE(writer.fail("not again"));
+
+  // The writer shouldn't be notified of the reader closing,
+  // since the writer had already failed.
+  EXPECT_TRUE(reader.close());
+  EXPECT_TRUE(writer.readerClosed().isPending());
+}
+
+
+
 TEST(HTTP, PipeReaderCloses)
 {
   http::Pipe pipe;
@@ -379,6 +411,90 @@ TEST(HTTP, Get)
 
   AWAIT_READY(queryFuture);
   ASSERT_EQ(http::statuses[200], queryFuture.get().status);
+}
+
+
+TEST(HTTP, StreamingGetComplete)
+{
+  Http http;
+
+  http::Pipe pipe;
+  http::OK ok;
+  ok.type = http::Response::PIPE;
+  ok.reader = pipe.reader();
+
+  EXPECT_CALL(*http.process, pipe(_))
+    .WillOnce(Return(ok));
+
+  Future<http::Response> response =
+    http::streaming::get(http.process->self(), "pipe");
+
+  // The response should be ready since the headers were sent.
+  AWAIT_READY(response);
+
+  EXPECT_SOME_EQ("chunked", response.get().headers.get("Transfer-Encoding"));
+  ASSERT_EQ(http::Response::PIPE, response.get().type);
+  ASSERT_SOME(response.get().reader);
+
+  http::Pipe::Reader reader = response.get().reader.get();
+
+  // There is no data to read yet.
+  Future<string> read = reader.read();
+  EXPECT_TRUE(read.isPending());
+
+  // Stream data into the body and read it from the response.
+  http::Pipe::Writer writer = pipe.writer();
+  EXPECT_TRUE(writer.write("hello"));
+  AWAIT_EQ("hello", read);
+
+  EXPECT_TRUE(writer.write("goodbye"));
+  AWAIT_EQ("goodbye", reader.read());
+
+  // Complete the response.
+  EXPECT_TRUE(writer.close());
+  AWAIT_EQ("", reader.read()); // EOF.
+}
+
+
+TEST(HTTP, StreamingGetFailure)
+{
+  Http http;
+
+  http::Pipe pipe;
+  http::OK ok;
+  ok.type = http::Response::PIPE;
+  ok.reader = pipe.reader();
+
+  EXPECT_CALL(*http.process, pipe(_))
+    .WillOnce(Return(ok));
+
+  Future<http::Response> response =
+    http::streaming::get(http.process->self(), "pipe");
+
+  // The response should be ready since the headers were sent.
+  AWAIT_READY(response);
+
+  EXPECT_SOME_EQ("chunked", response.get().headers.get("Transfer-Encoding"));
+  ASSERT_EQ(http::Response::PIPE, response.get().type);
+  ASSERT_SOME(response.get().reader);
+
+  http::Pipe::Reader reader = response.get().reader.get();
+
+  // There is no data to read yet.
+  Future<string> read = reader.read();
+  EXPECT_TRUE(read.isPending());
+
+  // Stream data into the body and read it from the response.
+  http::Pipe::Writer writer = pipe.writer();
+  EXPECT_TRUE(writer.write("hello"));
+  AWAIT_EQ("hello", read);
+
+  EXPECT_TRUE(writer.write("goodbye"));
+  AWAIT_EQ("goodbye", reader.read());
+
+  // Fail the response.
+  EXPECT_TRUE(writer.fail("oops"));
+  AWAIT_FAILED(reader.read());
 }
 
 
