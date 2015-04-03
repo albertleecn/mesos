@@ -50,29 +50,45 @@ const string PIDS_KEY = "";
 
 namespace internal {
 
-string command(
+vector<string> argv(
     const set<string>& events,
     const set<string>& cgroups,
     const Duration& duration)
 {
-  ostringstream command;
+  vector<string> argv = {
+    "perf", "stat",
 
-  command << "perf stat -x" << PERF_DELIMITER << " -a";
-  command << " --log-fd 1";  // Ensure all output goes to stdout.
+    // System-wide collection from all CPUs.
+    "--all-cpus",
+
+    // Print counts using a CSV-style output to make it easy to import
+    // directly into spreadsheets. Columns are separated by the string
+    // specified in PERF_DELIMITER.
+    "--field-separator", PERF_DELIMITER,
+
+    // Ensure all output goes to stdout.
+    "--log-fd", "1"
+  };
+
   // Nested loop to produce all pairings of event and cgroup.
   foreach (const string& event, events) {
     foreach (const string& cgroup, cgroups) {
-      command << " --event " << event
-              << " --cgroup " << cgroup;
+      argv.push_back("--event");
+      argv.push_back(event);
+      argv.push_back("--cgroup");
+      argv.push_back(cgroup);
     }
   }
-  command << " -- sleep " << stringify(duration.secs());
 
-  return command.str();
+  argv.push_back("--");
+  argv.push_back("sleep");
+  argv.push_back(stringify(duration.secs()));
+
+  return argv;
 }
 
 
-string command(
+vector<string> argv(
     const set<string>& events,
     const string& cgroup,
     const Duration& duration)
@@ -80,24 +96,36 @@ string command(
   set<string> cgroups;
   cgroups.insert(cgroup);
 
-  return command(events, cgroups, duration);
+  return argv(events, cgroups, duration);
 }
 
 
-string command(
+vector<string> argv(
     const set<string>& events,
     const set<pid_t>& pids,
     const Duration& duration)
 {
-  ostringstream command;
+  vector<string> argv = {
+    "perf", "stat",
 
-  command << "perf stat -x" << PERF_DELIMITER << " -a";
-  command << " --log-fd 1";  // Ensure all output goes to stdout.
-  command << " --event " << strings::join(",", events);
-  command << " --pid " << strings::join(",", pids);
-  command << " -- sleep " << stringify(duration.secs());
+    // System-wide collection from all CPUs.
+    "--all-cpus",
 
-  return command.str();
+    // Print counts using a CSV-style output to make it easy to import
+    // directly into spreadsheets. Columns are separated by the string
+    // specified in PERF_DELIMITER.
+    "--field-separator", PERF_DELIMITER,
+
+    // Ensure all output goes to stdout.
+    "--log-fd", "1",
+
+    "--event", strings::join(",", events),
+    "--pid", strings::join(",", pids),
+    "--",
+    "sleep", stringify(duration.secs())
+  };
+
+  return argv;
 }
 
 
@@ -113,12 +141,12 @@ inline string normalize(const string& s)
 class PerfSampler : public Process<PerfSampler>
 {
 public:
-  PerfSampler(const string& _command, const Duration& _duration)
-    : command(_command), duration(_duration) {}
+  PerfSampler(const vector<string>& _argv, const Duration& _duration)
+    : argv(_argv), duration(_duration) {}
 
   virtual ~PerfSampler() {}
 
-  Future<hashmap<string, mesos::PerfStatistics> > future()
+  Future<hashmap<string, mesos::PerfStatistics>> future()
   {
     return promise.future();
   }
@@ -158,7 +186,8 @@ private:
   void sample()
   {
     Try<Subprocess> _perf = subprocess(
-        command,
+        "perf",
+        argv,
         Subprocess::PIPE(),
         Subprocess::PIPE(),
         Subprocess::PIPE());
@@ -181,7 +210,7 @@ private:
       .onAny(defer(self(), &Self::_sample, lambda::_1));
   }
 
-  void _sample(const Future<Option<int> >& status)
+  void _sample(const Future<Option<int>>& status)
   {
     if (!status.isReady()) {
       promise.fail("Failed to get exit status of perf process: " +
@@ -202,7 +231,7 @@ private:
     collect(output).onAny(defer(self(), &Self::__sample, lambda::_1));
   }
 
-  void  __sample(const Future<list<string> >& future)
+  void  __sample(const Future<list<string>>& future)
   {
     if (!future.isReady()) {
       promise.fail("Failed to collect output of perf process: " +
@@ -212,7 +241,7 @@ private:
     }
 
     // Parse output from stdout.
-    Try<hashmap<string, mesos::PerfStatistics> > parse =
+    Try<hashmap<string, mesos::PerfStatistics>> parse =
       perf::parse(output.front().get());
     if (parse.isError()) {
       promise.fail("Failed to parse perf output: " + parse.error());
@@ -233,12 +262,12 @@ private:
     return;
   }
 
-  const string command;
+  const vector<string> argv;
   const Duration duration;
   Time start;
   Option<Subprocess> perf;
-  Promise<hashmap<string, mesos::PerfStatistics> > promise;
-  list<Future<string> > output;
+  Promise<hashmap<string, mesos::PerfStatistics>> promise;
+  list<Future<string>> output;
 };
 
 
@@ -273,9 +302,9 @@ Future<mesos::PerfStatistics> sample(
     return Failure("Perf is not supported");
   }
 
-  const string command = internal::command(events, pids, duration);
-  internal::PerfSampler* sampler = new internal::PerfSampler(command, duration);
-  Future<hashmap<string, mesos::PerfStatistics> > future = sampler->future();
+  const vector<string> argv = internal::argv(events, pids, duration);
+  internal::PerfSampler* sampler = new internal::PerfSampler(argv, duration);
+  Future<hashmap<string, mesos::PerfStatistics>> future = sampler->future();
   spawn(sampler, true);
   return future
     .then(lambda::bind(&internal::select, PIDS_KEY, lambda::_1));
@@ -294,7 +323,7 @@ Future<mesos::PerfStatistics> sample(
 }
 
 
-Future<hashmap<string, mesos::PerfStatistics> > sample(
+Future<hashmap<string, mesos::PerfStatistics>> sample(
     const set<string>& events,
     const set<string>& cgroups,
     const Duration& duration)
@@ -303,9 +332,9 @@ Future<hashmap<string, mesos::PerfStatistics> > sample(
     return Failure("Perf is not supported");
   }
 
-  const string command = internal::command(events, cgroups, duration);
-  internal::PerfSampler* sampler = new internal::PerfSampler(command, duration);
-  Future<hashmap<string, mesos::PerfStatistics> > future = sampler->future();
+  const vector<string> argv = internal::argv(events, cgroups, duration);
+  internal::PerfSampler* sampler = new internal::PerfSampler(argv, duration);
+  Future<hashmap<string, mesos::PerfStatistics>> future = sampler->future();
   spawn(sampler, true);
   return future;
 }
@@ -339,7 +368,7 @@ bool supported()
 }
 
 
-Try<hashmap<string, mesos::PerfStatistics> > parse(const string& output)
+Try<hashmap<string, mesos::PerfStatistics>> parse(const string& output)
 {
   hashmap<string, mesos::PerfStatistics> statistics;
 
