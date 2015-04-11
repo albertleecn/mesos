@@ -114,7 +114,6 @@ public:
   virtual void _runTask(
       const process::Future<bool>& future,
       const FrameworkInfo& frameworkInfo,
-      const FrameworkID& frameworkId,
       const std::string& pid,
       const TaskInfo& task);
 
@@ -577,7 +576,6 @@ struct Framework
 {
   Framework(
       Slave* slave,
-      const FrameworkID& id,
       const FrameworkInfo& info,
       const process::UPID& pid);
 
@@ -591,6 +589,8 @@ struct Framework
   Executor* getExecutor(const TaskID& taskId);
   void recoverExecutor(const state::ExecutorState& state);
 
+  const FrameworkID id() const { return info.id(); }
+
   enum State {
     RUNNING,      // First state of a newly created framework.
     TERMINATING,  // Framework is shutting down in the cluster.
@@ -601,7 +601,6 @@ struct Framework
   // of the 'Slave' class.
   Slave* slave;
 
-  const FrameworkID id;
   const FrameworkInfo info;
 
   UPID pid;

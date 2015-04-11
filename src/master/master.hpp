@@ -977,11 +977,9 @@ inline std::ostream& operator << (std::ostream& stream, const Slave& slave)
 struct Framework
 {
   Framework(const FrameworkInfo& _info,
-            const FrameworkID& _id,
             const process::UPID& _pid,
             const process::Time& time = process::Clock::now())
-    : id(_id),
-      info(_info),
+    : info(_info),
       pid(_pid),
       connected(true),
       active(true),
@@ -1087,7 +1085,7 @@ struct Framework
   {
     CHECK(hasExecutor(slaveId, executorId))
       << "Unknown executor " << executorId
-      << " of framework " << id
+      << " of framework " << id()
       << " of slave " << slaveId;
 
     usedResources -= executors[slaveId][executorId].resources();
@@ -1097,7 +1095,7 @@ struct Framework
     }
   }
 
-  const FrameworkID id; // TODO(benh): Store this in 'info'.
+  const FrameworkID id() const { return info.id(); }
 
   const FrameworkInfo info;
 
@@ -1147,7 +1145,7 @@ inline std::ostream& operator << (
 {
   // TODO(vinod): Also log the hostname once FrameworkInfo is properly
   // updated on framework failover (MESOS-1784).
-  return stream << framework.id << " (" << framework.info.name()
+  return stream << framework.id() << " (" << framework.info.name()
                 << ") at " << framework.pid;
 }
 
@@ -1160,12 +1158,12 @@ struct Role
 
   void addFramework(Framework* framework)
   {
-    frameworks[framework->id] = framework;
+    frameworks[framework->id()] = framework;
   }
 
   void removeFramework(Framework* framework)
   {
-    frameworks.erase(framework->id);
+    frameworks.erase(framework->id());
   }
 
   Resources resources() const
