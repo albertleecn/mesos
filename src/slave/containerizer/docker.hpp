@@ -289,10 +289,20 @@ private:
         symlinked(symlinked),
         flags(flags)
     {
+      // NOTE: The task's resources are included in the executor's
+      // resources in order to make sure when launching the executor
+      // that it has non-zero resources in the event the executor was
+      // not actually given any resources by the framework
+      // originally. See Framework::launchExecutor in slave.cpp. We
+      // check that this is indeed the case here to protect ourselves
+      // from when/if this changes in the future (but it's not a
+      // perfect check because an executor might always have a subset
+      // of it's resources that match a task, nevertheless, it's
+      // better than nothing).
+      resources = executor.resources();
+
       if (task.isSome()) {
-        resources = task.get().resources() + executor.resources();
-      } else {
-        resources = executor.resources();
+        CHECK(resources.contains(task.get().resources()));
       }
     }
 
