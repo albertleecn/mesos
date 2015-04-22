@@ -22,6 +22,8 @@
 #include <queue>
 #include <vector>
 
+#include <mesos/master/allocator.hpp>
+
 #include <process/clock.hpp>
 #include <process/future.hpp>
 #include <process/gtest.hpp>
@@ -36,13 +38,15 @@
 #include "master/constants.hpp"
 #include "master/flags.hpp"
 
-#include "master/allocator/allocator.hpp"
 #include "master/allocator/mesos/hierarchical.hpp"
+
+#include "tests/mesos.hpp"
 
 using mesos::internal::master::MIN_CPUS;
 using mesos::internal::master::MIN_MEM;
 
-using mesos::internal::master::allocator::Allocator;
+using mesos::master::allocator::Allocator;
+using mesos::master::RoleInfo;
 using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 
 using process::Clock;
@@ -69,7 +73,7 @@ class HierarchicalAllocatorTest : public ::testing::Test
 {
 protected:
   HierarchicalAllocatorTest()
-    : allocator(new HierarchicalDRFAllocator),
+    : allocator(createAllocator<HierarchicalDRFAllocator>()),
       nextSlaveId(1),
       nextFrameworkId(1) {}
 
@@ -95,7 +99,7 @@ protected:
     }
 
     allocator->initialize(
-        flags,
+        flags.allocation_interval,
         lambda::bind(&put, &queue, lambda::_1, lambda::_2),
         roles);
   }

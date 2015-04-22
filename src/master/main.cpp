@@ -24,6 +24,8 @@
 
 #include <mesos/mesos.hpp>
 
+#include <mesos/master/allocator.hpp>
+
 #include <mesos/module/anonymous.hpp>
 
 #include <process/limiter.hpp>
@@ -59,7 +61,6 @@
 #include "master/registrar.hpp"
 #include "master/repairer.hpp"
 
-#include "master/allocator/allocator.hpp"
 #include "master/allocator/mesos/hierarchical.hpp"
 
 #include "module/manager.hpp"
@@ -199,7 +200,14 @@ int main(int argc, char** argv)
     LOG(INFO) << "Git SHA: " << build::GIT_SHA.get();
   }
 
-  allocator::Allocator* allocator = new allocator::HierarchicalDRFAllocator();
+  // Create an instance of allocator.
+  Try<mesos::master::allocator::Allocator*> allocator_ =
+    allocator::HierarchicalDRFAllocator::create();
+  if (allocator_.isError()) {
+    EXIT(1) << "Failed to create an instance of HierarchicalDRFAllocator: "
+            << allocator_.error();
+  }
+  mesos::master::allocator::Allocator* allocator = allocator_.get();
 
   state::Storage* storage = NULL;
   Log* log = NULL;

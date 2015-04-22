@@ -19,10 +19,12 @@
 #ifndef __MASTER_ALLOCATOR_MESOS_ALLOCATOR_HPP__
 #define __MASTER_ALLOCATOR_MESOS_ALLOCATOR_HPP__
 
+#include <mesos/master/allocator.hpp>
+
 #include <process/dispatch.hpp>
 #include <process/process.hpp>
 
-#include "master/allocator/allocator.hpp"
+#include <stout/try.hpp>
 
 namespace mesos {
 namespace internal {
@@ -36,19 +38,20 @@ class MesosAllocatorProcess;
 // lifetime. We ensure the template parameter AllocatorProcess
 // implements MesosAllocatorProcess by storing a pointer to it.
 template <typename AllocatorProcess>
-class MesosAllocator : public Allocator
+class MesosAllocator : public mesos::master::allocator::Allocator
 {
 public:
-  MesosAllocator();
+  // Factory to allow for typed tests.
+  static Try<mesos::master::allocator::Allocator*> create();
 
   ~MesosAllocator();
 
   void initialize(
-      const Flags& flags,
+      const Duration& allocationInterval,
       const lambda::function<
           void(const FrameworkID&,
                const hashmap<SlaveID, Resources>&)>& offerCallback,
-      const hashmap<std::string, RoleInfo>& roles);
+      const hashmap<std::string, mesos::master::RoleInfo>& roles);
 
   void addFramework(
       const FrameworkID& frameworkId,
@@ -101,6 +104,7 @@ public:
       const FrameworkID& frameworkId);
 
 private:
+  MesosAllocator();
   MesosAllocator(const MesosAllocator&); // Not copyable.
   MesosAllocator& operator=(const MesosAllocator&); // Not assignable.
 
@@ -121,11 +125,11 @@ public:
   using process::ProcessBase::initialize;
 
   virtual void initialize(
-      const Flags& flags,
+      const Duration& allocationInterval,
       const lambda::function<
           void(const FrameworkID&,
                const hashmap<SlaveID, Resources>&)>& offerCallback,
-      const hashmap<std::string, RoleInfo>& roles) = 0;
+      const hashmap<std::string, mesos::master::RoleInfo>& roles) = 0;
 
   virtual void addFramework(
       const FrameworkID& frameworkId,
@@ -180,6 +184,13 @@ public:
 
 
 template <typename AllocatorProcess>
+Try<mesos::master::allocator::Allocator*>
+MesosAllocator<AllocatorProcess>::create()
+{
+  return new MesosAllocator<AllocatorProcess>();
+}
+
+template <typename AllocatorProcess>
 MesosAllocator<AllocatorProcess>::MesosAllocator()
 {
   process = new AllocatorProcess();
@@ -198,16 +209,16 @@ MesosAllocator<AllocatorProcess>::~MesosAllocator()
 
 template <typename AllocatorProcess>
 inline void MesosAllocator<AllocatorProcess>::initialize(
-    const Flags& flags,
+    const Duration& allocationInterval,
     const lambda::function<
         void(const FrameworkID&,
              const hashmap<SlaveID, Resources>&)>& offerCallback,
-    const hashmap<std::string, RoleInfo>& roles)
+    const hashmap<std::string, mesos::master::RoleInfo>& roles)
 {
   process::dispatch(
       process,
       &MesosAllocatorProcess::initialize,
-      flags,
+      allocationInterval,
       offerCallback,
       roles);
 }

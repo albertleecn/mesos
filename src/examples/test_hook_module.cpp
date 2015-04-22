@@ -32,6 +32,7 @@ using namespace mesos;
 // tests/hook_tests.cpp.
 const char* testLabelKey = "MESOS_Test_Label";
 const char* testLabelValue = "ApacheMesos";
+const char* testRemoveLabelKey = "MESOS_Test_Remove_Label";
 
 
 class TestHook : public Hook
@@ -45,13 +46,47 @@ public:
     LOG(INFO) << "Executing 'masterLaunchTaskLabelDecorator' hook";
 
     Labels labels;
-    Label *label = labels.add_labels();
-    label->set_key(testLabelKey);
-    label->set_value(testLabelValue);
+
+    // Set one known label.
+    Label* newLabel = labels.add_labels();
+    newLabel->set_key(testLabelKey);
+    newLabel->set_value(testLabelValue);
+
+    // Remove the 'testRemoveLabelKey' label which was set by the test.
+    foreach (const Label& oldLabel, taskInfo.labels().labels()) {
+      if (oldLabel.key() != testRemoveLabelKey) {
+        labels.add_labels()->CopyFrom(oldLabel);
+      }
+    }
 
     return labels;
   }
 
+  // TODO(nnielsen): Split hook tests into multiple modules to avoid
+  // interference.
+  virtual Result<Labels> slaveRunTaskLabelDecorator(
+      const TaskInfo& taskInfo,
+      const FrameworkInfo& frameworkInfo,
+      const SlaveInfo& slaveInfo)
+  {
+    LOG(INFO) << "Executing 'slaveRunTaskLabelDecorator' hook";
+
+    Labels labels;
+
+    // Set one known label.
+    Label* newLabel = labels.add_labels();
+    newLabel->set_key("baz");
+    newLabel->set_value("qux");
+
+    // Remove label which was set by test.
+    foreach (const Label& oldLabel, taskInfo.labels().labels()) {
+      if (oldLabel.key() != "foo") {
+        labels.add_labels()->CopyFrom(oldLabel);
+      }
+    }
+
+    return labels;
+  }
 
   // In this hook, we create a new environment variable "FOO" and set
   // it's value to "bar".
@@ -61,6 +96,11 @@ public:
     LOG(INFO) << "Executing 'slaveExecutorEnvironmentDecorator' hook";
 
     Environment environment;
+
+    if (executorInfo.command().has_environment()) {
+      environment.CopyFrom(executorInfo.command().environment());
+    }
+
     Environment::Variable* variable = environment.add_variables();
     variable->set_name("FOO");
     variable->set_value("bar");

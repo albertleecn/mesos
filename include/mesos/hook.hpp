@@ -34,10 +34,22 @@ public:
   virtual ~Hook() {};
 
   // This label decorator hook is called from within master during
-  // the launchTask routine.  A module implementing the hook creates
-  // and returns a set of labels.  These labels are then merged with
-  // the task labels and passed on to the slave/executor.
+  // the launchTask routine. A module implementing the hook creates
+  // and returns a set of labels. These labels overwrite the existing
+  // labels on the task info.
   virtual Result<Labels> masterLaunchTaskLabelDecorator(
+      const TaskInfo& taskInfo,
+      const FrameworkInfo& frameworkInfo,
+      const SlaveInfo& slaveInfo)
+  {
+    return None();
+  }
+
+  // This label decorator hook is called from within the slave when
+  // receiving a run task request from the master. A module
+  // implementing the hook creates and returns a set of labels. These
+  // labels overwrite the existing labels on the task info.
+  virtual Result<Labels> slaveRunTaskLabelDecorator(
       const TaskInfo& taskInfo,
       const FrameworkInfo& frameworkInfo,
       const SlaveInfo& slaveInfo)
@@ -59,8 +71,8 @@ public:
   }
 
   // This hook is called from within slave when an executor is being
-  // removed.  A typical module implementing the hook will perform
-  // some cleanup as required.
+  // removed. A typical module implementing the hook will perform some
+  // cleanup as required.
   virtual Try<Nothing> slaveRemoveExecutorHook(
       const FrameworkInfo& frameworkInfo,
       const ExecutorInfo& executorInfo)

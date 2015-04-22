@@ -29,6 +29,8 @@
 
 #include <mesos/authentication/authenticator.hpp>
 
+#include <mesos/master/allocator.hpp>
+
 #include <mesos/module/authenticator.hpp>
 
 #include <process/check.hpp>
@@ -77,8 +79,6 @@
 #include "master/flags.hpp"
 #include "master/master.hpp"
 
-#include "master/allocator/allocator.hpp"
-
 #include "module/manager.hpp"
 
 #include "watcher/whitelist_watcher.hpp"
@@ -112,7 +112,8 @@ namespace mesos {
 namespace internal {
 namespace master {
 
-using allocator::Allocator;
+using mesos::master::RoleInfo;
+using mesos::master::allocator::Allocator;
 
 
 class SlaveObserver : public Process<SlaveObserver>
@@ -600,7 +601,7 @@ void Master::initialize()
 
   // Initialize the allocator.
   allocator->initialize(
-      flags,
+      flags.allocation_interval,
       defer(self(), &Master::offer, lambda::_1, lambda::_2),
       roleInfos);
 
@@ -2619,8 +2620,8 @@ void Master::_accept(
             message.set_pid(framework->pid);
             message.mutable_task()->MergeFrom(task);
 
-            // Merge labels retrieved from label-decorator hooks.
-            message.mutable_task()->mutable_labels()->MergeFrom(
+            // Set labels retrieved from label-decorator hooks.
+            message.mutable_task()->mutable_labels()->CopyFrom(
                 HookManager::masterLaunchTaskLabelDecorator(
                     task,
                     framework->info,

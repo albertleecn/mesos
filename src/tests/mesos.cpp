@@ -189,7 +189,7 @@ Try<PID<master::Master> > MesosTest::StartMaster(
 
 
 Try<PID<master::Master> > MesosTest::StartMaster(
-    master::allocator::Allocator* allocator,
+    mesos::master::allocator::Allocator* allocator,
     const Option<master::Flags>& flags)
 {
   return cluster.masters.start(
@@ -394,7 +394,7 @@ void MockSlave::unmocked_runTask(
     const FrameworkInfo& frameworkInfo,
     const FrameworkID& frameworkId,
     const std::string& pid,
-    const TaskInfo& task)
+    TaskInfo task)
 {
   slave::Slave::runTask(from, frameworkInfo, frameworkId, pid, task);
 }

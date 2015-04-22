@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include <mesos/master/allocator.hpp>
+
 #include <mesos/module/anonymous.hpp>
 
 #include <process/limiter.hpp>
@@ -52,7 +54,6 @@
 #include "master/registrar.hpp"
 #include "master/repairer.hpp"
 
-#include "master/allocator/allocator.hpp"
 #include "master/allocator/mesos/hierarchical.hpp"
 #include "master/allocator/sorter/drf/sorter.hpp"
 
@@ -75,7 +76,8 @@ using memory::shared_ptr;
 using namespace mesos::internal;
 using namespace mesos::internal::log;
 
-using mesos::internal::master::allocator::Allocator;
+using mesos::master::allocator::Allocator;
+
 using mesos::internal::master::allocator::HierarchicalDRFAllocator;
 
 using mesos::internal::master::Master;
@@ -131,8 +133,18 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
   }
 
   if (_allocator == NULL) {
-    // Create default allocator, save it for deleting later.
-    _allocator = allocator = new HierarchicalDRFAllocator();
+    // Create a default allocator.
+    Try<Allocator*> defaultAllocator = HierarchicalDRFAllocator::create();
+    if (defaultAllocator.isError()) {
+      EXIT(1) << "Failed to create an instance of HierarchicalDRFAllocator: "
+              << defaultAllocator.error();
+    }
+
+    // Update caller's instance.
+    _allocator = defaultAllocator.get();
+
+    // Save the instance for deleting later.
+    allocator = defaultAllocator.get();
   } else {
     // TODO(benh): Figure out the behavior of allocator pointer and remove the
     // else block.

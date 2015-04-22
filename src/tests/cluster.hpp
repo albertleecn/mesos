@@ -25,6 +25,8 @@
 
 #include <mesos/mesos.hpp>
 
+#include <mesos/master/allocator.hpp>
+
 #include <process/clock.hpp>
 #include <process/future.hpp>
 #include <process/gmock.hpp>
@@ -64,7 +66,6 @@
 #include "master/registrar.hpp"
 #include "master/repairer.hpp"
 
-#include "master/allocator/allocator.hpp"
 #include "master/allocator/mesos/hierarchical.hpp"
 
 #include "slave/flags.hpp"
@@ -105,7 +106,7 @@ public:
     // Start a new master with the provided flags and injections.
     Try<process::PID<master::Master> > start(
         const master::Flags& flags = master::Flags(),
-        const Option<master::allocator::Allocator*>& allocator = None(),
+        const Option<mesos::master::allocator::Allocator*>& allocator = None(),
         const Option<Authorizer*>& authorizer = None(),
         const Option<memory::shared_ptr<process::RateLimiter> >&
           slaveRemovalLimiter = None());
@@ -129,7 +130,7 @@ public:
     {
       Master() : allocator(NULL), createdAllocator(false), master(NULL) {}
 
-      master::allocator::Allocator* allocator;
+      mesos::master::allocator::Allocator* allocator;
       bool createdAllocator; // Whether we own the allocator.
 
       process::Owned<log::Log> log;
@@ -254,7 +255,7 @@ inline void Cluster::Masters::shutdown()
 
 inline Try<process::PID<master::Master> > Cluster::Masters::start(
     const master::Flags& flags,
-    const Option<master::allocator::Allocator*>& allocator,
+    const Option<mesos::master::allocator::Allocator*>& allocator,
     const Option<Authorizer*>& authorizer,
     const Option<memory::shared_ptr<process::RateLimiter>>& slaveRemovalLimiter)
 {
@@ -270,7 +271,15 @@ inline Try<process::PID<master::Master> > Cluster::Masters::start(
   } else {
     // If allocator is not provided, fall back to the default one,
     // managed by Cluster::Masters.
-    master.allocator = new master::allocator::HierarchicalDRFAllocator();
+    Try<mesos::master::allocator::Allocator*> allocator_ =
+      master::allocator::HierarchicalDRFAllocator::create();
+    if (allocator_.isError()) {
+      return Error(
+          "Failed to create an instance of HierarchicalDRFAllocator: " +
+          allocator_.error());
+    }
+
+    master.allocator = allocator_.get();
     master.createdAllocator = true;
   }
 

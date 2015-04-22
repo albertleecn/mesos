@@ -27,6 +27,8 @@
 #include <mesos/executor.hpp>
 #include <mesos/scheduler.hpp>
 
+#include <mesos/master/allocator.hpp>
+
 #include <process/future.hpp>
 #include <process/gmock.hpp>
 #include <process/gtest.hpp>
@@ -51,7 +53,7 @@
 #include "master/detector.hpp"
 #include "master/master.hpp"
 
-#include "master/allocator/allocator.hpp"
+#include "master/allocator/mesos/hierarchical.hpp"
 
 #include "slave/slave.hpp"
 
@@ -99,7 +101,7 @@ protected:
 
   // Starts a master with the specified allocator process and flags.
   virtual Try<process::PID<master::Master> > StartMaster(
-      master::allocator::Allocator* allocator,
+      mesos::master::allocator::Allocator* allocator,
       const Option<master::Flags>& flags = None());
 
   // Starts a master with the specified authorizer and flags.
@@ -679,14 +681,14 @@ public:
       const FrameworkInfo& frameworkInfo,
       const FrameworkID& frameworkId,
       const std::string& pid,
-      const TaskInfo& task));
+      TaskInfo task));
 
   void unmocked_runTask(
       const process::UPID& from,
       const FrameworkInfo& frameworkInfo,
       const FrameworkID& frameworkId,
       const std::string& pid,
-      const TaskInfo& task);
+      TaskInfo task);
 
   MOCK_METHOD4(_runTask, void(
       const process::Future<bool>& future,
@@ -757,11 +759,122 @@ public:
 };
 
 
-template <typename T = master::allocator::Allocator>
-class TestAllocator : public master::allocator::Allocator
+// The following actions make up for the fact that DoDefault
+// cannot be used inside a DoAll, for example:
+// EXPECT_CALL(allocator, addFramework(_, _, _))
+//   .WillOnce(DoAll(InvokeAddFramework(&allocator),
+//                   FutureSatisfy(&addFramework)));
+
+ACTION_P(InvokeInitialize, allocator)
+{
+  allocator->real->initialize(arg0, arg1, arg2);
+}
+
+
+ACTION_P(InvokeAddFramework, allocator)
+{
+  allocator->real->addFramework(arg0, arg1, arg2);
+}
+
+
+ACTION_P(InvokeRemoveFramework, allocator)
+{
+  allocator->real->removeFramework(arg0);
+}
+
+
+ACTION_P(InvokeActivateFramework, allocator)
+{
+  allocator->real->activateFramework(arg0);
+}
+
+
+ACTION_P(InvokeDeactivateFramework, allocator)
+{
+  allocator->real->deactivateFramework(arg0);
+}
+
+
+ACTION_P(InvokeAddSlave, allocator)
+{
+  allocator->real->addSlave(arg0, arg1, arg2, arg3);
+}
+
+
+ACTION_P(InvokeRemoveSlave, allocator)
+{
+  allocator->real->removeSlave(arg0);
+}
+
+
+ACTION_P(InvokeActivateSlave, allocator)
+{
+  allocator->real->activateSlave(arg0);
+}
+
+
+ACTION_P(InvokeDeactivateSlave, allocator)
+{
+  allocator->real->deactivateSlave(arg0);
+}
+
+
+ACTION_P(InvokeUpdateWhitelist, allocator)
+{
+  allocator->real->updateWhitelist(arg0);
+}
+
+
+ACTION_P(InvokeRequestResources, allocator)
+{
+  allocator->real->requestResources(arg0, arg1);
+}
+
+
+ACTION_P(InvokeUpdateAllocation, allocator)
+{
+  allocator->real->updateAllocation(arg0, arg1, arg2);
+}
+
+
+ACTION_P(InvokeRecoverResources, allocator)
+{
+  allocator->real->recoverResources(arg0, arg1, arg2, arg3);
+}
+
+
+ACTION_P2(InvokeRecoverResourcesWithFilters, allocator, timeout)
+{
+  Filters filters;
+  filters.set_refuse_seconds(timeout);
+
+  allocator->real->recoverResources(arg0, arg1, arg2, filters);
+}
+
+
+ACTION_P(InvokeReviveOffers, allocator)
+{
+  allocator->real->reviveOffers(arg0);
+}
+
+
+template <typename T = master::allocator::HierarchicalDRFAllocator>
+mesos::master::allocator::Allocator* createAllocator()
+{
+  // T represents the allocator type. It can be a default built-in
+  // allocator, or one provided by an allocator module.
+  Try<mesos::master::allocator::Allocator*> instance = T::create();
+  CHECK_SOME(instance);
+  return CHECK_NOTNULL(instance.get());
+}
+
+template <typename T = master::allocator::HierarchicalDRFAllocator>
+class TestAllocator : public mesos::master::allocator::Allocator
 {
 public:
-  TestAllocator()
+  // Actual allocation is done by an instance of real allocator,
+  // which is specified by the template parameter.
+  TestAllocator() : real(createAllocator<T>())
   {
     // We use 'ON_CALL' and 'WillByDefault' here to specify the
     // default actions (call in to the real allocator). This allows
@@ -843,14 +956,14 @@ public:
       .WillRepeatedly(DoDefault());
   }
 
-  ~TestAllocator() {}
+  virtual ~TestAllocator() {}
 
   MOCK_METHOD3(initialize, void(
-      const master::Flags&,
+      const Duration&,
       const lambda::function<
           void(const FrameworkID&,
                const hashmap<SlaveID, Resources>&)>&,
-      const hashmap<std::string, RoleInfo>&));
+      const hashmap<std::string, mesos::master::RoleInfo>&));
 
   MOCK_METHOD3(addFramework, void(
       const FrameworkID&,
@@ -901,107 +1014,8 @@ public:
 
   MOCK_METHOD1(reviveOffers, void(const FrameworkID&));
 
-  T real;
+  process::Owned<mesos::master::allocator::Allocator> real;
 };
-
-
-// The following actions make up for the fact that DoDefault
-// cannot be used inside a DoAll, for example:
-// EXPECT_CALL(allocator, addFramework(_, _, _))
-//   .WillOnce(DoAll(InvokeAddFramework(&allocator),
-//                   FutureSatisfy(&addFramework)));
-
-ACTION_P(InvokeInitialize, allocator)
-{
-  allocator->real.initialize(arg0, arg1, arg2);
-}
-
-
-ACTION_P(InvokeAddFramework, allocator)
-{
-  allocator->real.addFramework(arg0, arg1, arg2);
-}
-
-
-ACTION_P(InvokeRemoveFramework, allocator)
-{
-  allocator->real.removeFramework(arg0);
-}
-
-
-ACTION_P(InvokeActivateFramework, allocator)
-{
-  allocator->real.activateFramework(arg0);
-}
-
-
-ACTION_P(InvokeDeactivateFramework, allocator)
-{
-  allocator->real.deactivateFramework(arg0);
-}
-
-
-ACTION_P(InvokeAddSlave, allocator)
-{
-  allocator->real.addSlave(arg0, arg1, arg2, arg3);
-}
-
-
-ACTION_P(InvokeRemoveSlave, allocator)
-{
-  allocator->real.removeSlave(arg0);
-}
-
-
-ACTION_P(InvokeActivateSlave, allocator)
-{
-  allocator->real.activateSlave(arg0);
-}
-
-
-ACTION_P(InvokeDeactivateSlave, allocator)
-{
-  allocator->real.deactivateSlave(arg0);
-}
-
-
-ACTION_P(InvokeUpdateWhitelist, allocator)
-{
-  allocator->real.updateWhitelist(arg0);
-}
-
-
-ACTION_P(InvokeRequestResources, allocator)
-{
-  allocator->real.requestResources(arg0, arg1);
-}
-
-
-ACTION_P(InvokeUpdateAllocation, allocator)
-{
-  allocator->real.updateAllocation(arg0, arg1, arg2);
-}
-
-
-ACTION_P(InvokeRecoverResources, allocator)
-{
-  allocator->real.recoverResources(arg0, arg1, arg2, arg3);
-}
-
-
-ACTION_P2(InvokeRecoverResourcesWithFilters, allocator, timeout)
-{
-  Filters filters;
-  filters.set_refuse_seconds(timeout);
-
-  allocator->real.recoverResources(arg0, arg1, arg2, filters);
-}
-
-
-ACTION_P(InvokeReviveOffers, allocator)
-{
-  allocator->real.reviveOffers(arg0);
-}
 
 
 class OfferEqMatcher
