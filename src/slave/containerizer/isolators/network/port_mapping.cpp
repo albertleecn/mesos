@@ -1430,7 +1430,8 @@ Try<Isolator*> PortMappingIsolatorProcess::create(const Flags& flags)
 
 
 Future<Nothing> PortMappingIsolatorProcess::recover(
-    const list<ExecutorRunState>& states)
+    const list<ExecutorRunState>& states,
+    const hashset<ContainerID>& orphans)
 {
   // Extract pids from virtual device names (veth). This tells us
   // about all the potential live containers on this slave.
@@ -1645,7 +1646,9 @@ Future<Nothing> PortMappingIsolatorProcess::recover(
     pids.erase(pid);
   }
 
-  // If there are orphaned containers left, clean them up.
+  // Cleanup unknown orphan containers. Known orphan cgroups will be
+  // destroyed by the containerizer using the normal cleanup path. See
+  // MESOS-2367 for details.
   foreach (pid_t pid, pids) {
     Try<Info*> recover = _recover(pid);
     if (recover.isError()) {
@@ -1660,13 +1663,19 @@ Future<Nothing> PortMappingIsolatorProcess::recover(
           stringify(pid) + ": " + recover.error());
     }
 
-    // TODO(jieyu): For those orphan containers that have a known
-    // container ID, consider relying on the MesosContainerizer to
-    // clean them up so that we don't block the recovery. See details
-    // in MESOS-2367.
+    // Clean up unknown orphan containers. Known orphan containers
+    // will be cleaned up by the containerizer using the normal
+    // cleanup path. See MESOS-2367 for details.
     Option<ContainerID> containerId;
+
     if (linkers.get(pid).size() == 1) {
       containerId = linkers.get(pid).front();
+      CHECK(!infos.contains(containerId.get()));
+
+      if (orphans.contains(containerId.get())) {
+        infos[containerId.get()] = recover.get();
+        continue;
+      }
     }
 
     // The recovery should fail if we cannot cleanup an orphan.
