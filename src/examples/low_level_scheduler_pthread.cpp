@@ -135,31 +135,16 @@ public:
       events.pop();
 
       switch (event.type()) {
-        case Event::REGISTERED: {
-          cout << endl << "Received a REGISTERED event" << endl;
+        case Event::SUBSCRIBED: {
+          cout << endl << "Received a SUBSCRIBED event" << endl;
 
           pthread_mutex_lock(&mutex);
-          state = REGISTERED;
+          state = SUBSCRIBED;
           pthread_mutex_unlock(&mutex);
 
-          framework.mutable_id()->CopyFrom(event.registered().framework_id());
+          framework.mutable_id()->CopyFrom(event.subscribed().framework_id());
 
-          cout << "Framework '" << event.registered().framework_id().value()
-               << "' registered with Master '"
-               << event.registered().master_info().id() << "'" << endl;
-          break;
-        }
-
-        case Event::REREGISTERED: {
-          cout << endl << "Received a REREGISTERED event" << endl;
-
-          pthread_mutex_lock(&mutex);
-          state = REGISTERED;
-          pthread_mutex_unlock(&mutex);
-
-          cout << "Framework '" << event.reregistered().framework_id().value()
-               << "' re-registered with Master '"
-               << event.reregistered().master_info().id() << "'" << endl;
+          cout << "Subscribed with ID '" << framework.id() << endl;
           break;
         }
 
@@ -178,7 +163,7 @@ public:
           cout << endl << "Received an UPDATE event" << endl;
 
           // TODO(zuyu): Do batch processing of UPDATE events.
-          statusUpdate(event.update().uuid(), event.update().status());
+          statusUpdate(event.update().status());
           break;
         }
 
@@ -298,20 +283,23 @@ private:
       }
 
       Call call;
-      call.set_type(Call::LAUNCH);
       call.mutable_framework_info()->CopyFrom(framework);
+      call.set_type(Call::ACCEPT);
 
-      Call::Launch* launch = call.mutable_launch();
+      Call::Accept* accept = call.mutable_accept();
+      accept->add_offer_ids()->CopyFrom(offer.id());
+
+      Offer::Operation* operation = accept->add_operations();
+      operation->set_type(Offer::Operation::LAUNCH);
       foreach (const TaskInfo& taskInfo, tasks) {
-        launch->add_task_infos()->CopyFrom(taskInfo);
+        operation->mutable_launch()->add_task_infos()->CopyFrom(taskInfo);
       }
-      launch->add_offer_ids()->CopyFrom(offer.id());
 
       mesos.send(call);
     }
   }
 
-  void statusUpdate(const string& uuid, const TaskStatus& status)
+  void statusUpdate(const TaskStatus& status)
   {
     cout << "Task " << status.task_id() << " is in state " << status.state();
 
@@ -320,16 +308,18 @@ private:
     }
     cout << endl;
 
-    Call call;
-    call.set_type(Call::ACKNOWLEDGE);
-    call.mutable_framework_info()->CopyFrom(framework);
+    if (status.has_uuid()) {
+      Call call;
+      call.set_type(Call::ACKNOWLEDGE);
+      call.mutable_framework_info()->CopyFrom(framework);
 
-    Call::Acknowledge* ack = call.mutable_acknowledge();
-    ack->mutable_slave_id()->CopyFrom(status.slave_id());
-    ack->mutable_task_id ()->CopyFrom(status.task_id ());
-    ack->set_uuid(uuid);
+      Call::Acknowledge* ack = call.mutable_acknowledge();
+      ack->mutable_slave_id()->CopyFrom(status.slave_id());
+      ack->mutable_task_id ()->CopyFrom(status.task_id ());
+      ack->set_uuid(status.uuid());
 
-    mesos.send(call);
+      mesos.send(call);
+    }
 
     if (status.state() == TASK_FINISHED) {
       ++tasksFinished;
@@ -361,8 +351,7 @@ private:
 
     Call call;
     call.mutable_framework_info()->CopyFrom(framework);
-    call.set_type(
-        state == CONNECTED ? Call::REGISTER : Call::REREGISTER);
+    call.set_type(Call::SUBSCRIBE);
     pthread_mutex_unlock(&mutex);
 
     mesos.send(call);
@@ -371,7 +360,7 @@ private:
   void finalize()
   {
     Call call;
-    call.set_type(Call::UNREGISTER);
+    call.set_type(Call::TEARDOWN);
     call.mutable_framework_info()->CopyFrom(framework);
 
     mesos.send(call);
@@ -389,7 +378,7 @@ private:
   enum State {
     INITIALIZING = 0,
     CONNECTED = 1,
-    REGISTERED = 2,
+    SUBSCRIBED = 2,
     DISCONNECTED = 3,
     DONE = 4
   } state;

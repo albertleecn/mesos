@@ -117,26 +117,13 @@ public:
       events.pop();
 
       switch (event.type()) {
-        case Event::REGISTERED: {
-          cout << endl << "Received a REGISTERED event" << endl;
+        case Event::SUBSCRIBED: {
+          cout << endl << "Received a SUBSCRIBED event" << endl;
 
-          framework.mutable_id()->CopyFrom(event.registered().framework_id());
-          state = REGISTERED;
+          framework.mutable_id()->CopyFrom(event.subscribed().framework_id());
+          state = SUBSCRIBED;
 
-          cout << "Framework '" << event.registered().framework_id().value()
-               << "' registered with Master '"
-               << event.registered().master_info().id() << "'" << endl;
-          break;
-        }
-
-        case Event::REREGISTERED: {
-          cout << endl << "Received a REREGISTERED event" << endl;
-
-          state = REGISTERED;
-
-          cout << "Framework '" << event.reregistered().framework_id().value()
-               << "' re-registered to Master '"
-               << event.reregistered().master_info().id() << "'" << endl;
+          cout << "Subscribed with ID '" << framework.id() << endl;
           break;
         }
 
@@ -155,7 +142,7 @@ public:
           cout << endl << "Received an UPDATE event" << endl;
 
           // TODO(zuyu): Do batch processing of UPDATE events.
-          statusUpdate(event.update().uuid(), event.update().status());
+          statusUpdate(event.update().status());
           break;
         }
 
@@ -249,19 +236,22 @@ private:
 
       Call call;
       call.mutable_framework_info()->CopyFrom(framework);
-      call.set_type(Call::LAUNCH);
+      call.set_type(Call::ACCEPT);
 
-      Call::Launch* launch = call.mutable_launch();
+      Call::Accept* accept = call.mutable_accept();
+      accept->add_offer_ids()->CopyFrom(offer.id());
+
+      Offer::Operation* operation = accept->add_operations();
+      operation->set_type(Offer::Operation::LAUNCH);
       foreach (const TaskInfo& taskInfo, tasks) {
-        launch->add_task_infos()->CopyFrom(taskInfo);
+        operation->mutable_launch()->add_task_infos()->CopyFrom(taskInfo);
       }
-      launch->add_offer_ids()->CopyFrom(offer.id());
 
       mesos.send(call);
     }
   }
 
-  void statusUpdate(const string& uuid, const TaskStatus& status)
+  void statusUpdate(const TaskStatus& status)
   {
     cout << "Task " << status.task_id() << " is in state " << status.state();
 
@@ -270,16 +260,18 @@ private:
     }
     cout << endl;
 
-    Call call;
-    call.mutable_framework_info()->CopyFrom(framework);
-    call.set_type(Call::ACKNOWLEDGE);
+    if (status.has_uuid()) {
+      Call call;
+      call.mutable_framework_info()->CopyFrom(framework);
+      call.set_type(Call::ACKNOWLEDGE);
 
-    Call::Acknowledge* ack = call.mutable_acknowledge();
-    ack->mutable_slave_id()->CopyFrom(status.slave_id());
-    ack->mutable_task_id ()->CopyFrom(status.task_id ());
-    ack->set_uuid(uuid);
+      Call::Acknowledge* ack = call.mutable_acknowledge();
+      ack->mutable_slave_id()->CopyFrom(status.slave_id());
+      ack->mutable_task_id ()->CopyFrom(status.task_id ());
+      ack->set_uuid(status.uuid());
 
-    mesos.send(call);
+      mesos.send(call);
+    }
 
     if (status.state() == TASK_FINISHED) {
       ++tasksFinished;
@@ -302,14 +294,13 @@ private:
 
   void doReliableRegistration()
   {
-    if (state == REGISTERED) {
+    if (state == SUBSCRIBED) {
       return;
     }
 
     Call call;
     call.mutable_framework_info()->CopyFrom(framework);
-    call.set_type(
-        state == INITIALIZING ? Call::REGISTER : Call::REREGISTER);
+    call.set_type(Call::SUBSCRIBE);
 
     mesos.send(call);
 
@@ -322,7 +313,7 @@ private:
   {
     Call call;
     call.mutable_framework_info()->CopyFrom(framework);
-    call.set_type(Call::UNREGISTER);
+    call.set_type(Call::TEARDOWN);
 
     mesos.send(call);
   }
@@ -333,7 +324,7 @@ private:
 
   enum State {
     INITIALIZING = 0,
-    REGISTERED = 1,
+    SUBSCRIBED = 1,
     DISCONNECTED = 2
   } state;
 

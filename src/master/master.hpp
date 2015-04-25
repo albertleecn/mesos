@@ -129,6 +129,7 @@ public:
       const process::UPID& from,
       const FrameworkID& frameworkId);
 
+  // TODO(vinod): Remove this once the old driver is removed.
   void resourceRequest(
       const process::UPID& from,
       const FrameworkID& frameworkId,
@@ -451,6 +452,18 @@ private:
     const Resources& offeredResources,
     const scheduler::Call::Accept& accept,
     const process::Future<std::list<process::Future<bool>>>& authorizations);
+
+  void reconcile(
+      Framework* framework,
+      const scheduler::Call::Reconcile& reconcile);
+
+  void kill(
+      Framework* framework,
+      const scheduler::Call::Kill& kill);
+
+  void shutdown(
+      Framework* framework,
+      const scheduler::Call::Shutdown& shutdown);
 
   bool elected() const
   {

@@ -44,6 +44,7 @@
 #include <process/future.hpp>
 #include <process/id.hpp>
 #include <process/mutex.hpp>
+#include <process/pid.hpp>
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
 
@@ -200,9 +201,10 @@ public:
       call.mutable_framework_info()->set_user(user.get());
     }
 
-    // Only a REGISTER should not have set the framework ID.
-    if (call.type() != Call::REGISTER && !call.framework_info().has_id()) {
-      drop(call, "Call is mising FrameworkInfo.id");
+    // Only a SUBSCRIBE call may not have set the framework ID.
+    if (call.type() != Call::SUBSCRIBE &&
+        (!call.framework_info().has_id() || call.framework_info().id() == "")) {
+      drop(call, "Call is missing FrameworkInfo.id");
       return;
     }
 
@@ -213,37 +215,23 @@ public:
     }
 
     switch (call.type()) {
-      case Call::REGISTER: {
-        RegisterFrameworkMessage message;
-        message.mutable_framework()->CopyFrom(call.framework_info());
-        send(master.get(), message);
-        break;
-      }
-
-      case Call::REREGISTER: {
-        ReregisterFrameworkMessage message;
-        message.mutable_framework()->CopyFrom(call.framework_info());
-        message.set_failover(failover);
-        send(master.get(), message);
-        break;
-      }
-
-      case Call::UNREGISTER: {
-        UnregisterFrameworkMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        send(master.get(), message);
-        break;
-      }
-
-      case Call::REQUEST: {
-        if (!call.has_request()) {
-          drop(call, "Expecting 'request' to be present");
-          return;
+      case Call::SUBSCRIBE: {
+        if (!call.framework_info().has_id() ||
+            call.framework_info().id() == "") {
+          RegisterFrameworkMessage message;
+          message.mutable_framework()->CopyFrom(call.framework_info());
+          send(master.get(), message);
+        } else {
+          ReregisterFrameworkMessage message;
+          message.mutable_framework()->CopyFrom(call.framework_info());
+          message.set_failover(failover);
+          send(master.get(), message);
         }
-        ResourceRequestMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        message.mutable_requests()->CopyFrom(call.request().requests());
-        send(master.get(), message);
+        break;
+      }
+
+      case Call::TEARDOWN: {
+        send(master.get(), call);
         break;
       }
 
@@ -295,42 +283,21 @@ public:
         break;
       }
 
-      case Call::LAUNCH: {
-        if (!call.has_launch()) {
-          drop(call, "Expecting 'launch' to be present");
-          return;
-        }
-        // We do some local validation here, but really this should
-        // all happen in the master so it's only implemented once.
-        foreach (TaskInfo& task,
-                 *call.mutable_launch()->mutable_task_infos()) {
-          // Set ExecutorInfo::framework_id if missing since this
-          // field was added to the API later and thus was made
-          // optional.
-          if (task.has_executor() && !task.executor().has_framework_id()) {
-            task.mutable_executor()->mutable_framework_id()->CopyFrom(
-                call.framework_info().id());
-          }
-        }
-
-        LaunchTasksMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        message.mutable_filters()->CopyFrom(call.launch().filters());
-        message.mutable_offer_ids()->CopyFrom(call.launch().offer_ids());
-        message.mutable_tasks()->CopyFrom(call.launch().task_infos());
-        send(master.get(), message);
-        break;
-      }
-
       case Call::KILL: {
         if (!call.has_kill()) {
           drop(call, "Expecting 'kill' to be present");
           return;
         }
-        KillTaskMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        message.mutable_task_id()->CopyFrom(call.kill().task_id());
-        send(master.get(), message);
+        send(master.get(), call);
+        break;
+      }
+
+      case Call::SHUTDOWN: {
+        if (!call.has_shutdown()) {
+          drop(call, "Expecting 'shutdown' to be present");
+          return;
+        }
+        send(master.get(), call);
         break;
       }
 
@@ -353,10 +320,8 @@ public:
           drop(call, "Expecting 'reconcile' to be present");
           return;
         }
-        ReconcileTasksMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        message.mutable_statuses()->CopyFrom(call.reconcile().statuses());
-        send(master.get(), message);
+
+        send(master.get(), call);
         break;
       }
 
@@ -389,6 +354,7 @@ protected:
     install<RescindResourceOfferMessage>(&MesosProcess::receive);
     install<StatusUpdateMessage>(&MesosProcess::receive);
     install<LostSlaveMessage>(&MesosProcess::receive);
+    install<ExitedExecutorMessage>(&MesosProcess::receive);
     install<ExecutorToFrameworkMessage>(&MesosProcess::receive);
     install<FrameworkErrorMessage>(&MesosProcess::receive);
 
@@ -420,6 +386,7 @@ protected:
       VLOG(1) << "New master detected at " << master.get();
 
       if (credential.isSome()) {
+        // TODO(vinod): Do pure HTTP Authentication instead of SASL.
         // Authenticate with the master.
         authenticate();
       } else {
@@ -606,23 +573,15 @@ protected:
 
   void receive(const UPID& from, const FrameworkRegisteredMessage& message)
   {
-    // We've now registered at least once with the master so we're no
-    // longer failing over. See the comment where 'failover' is
-    // declared for further details.
-    failover = false;
-
-    Event event;
-    event.set_type(Event::REGISTERED);
-
-    Event::Registered* registered = event.mutable_registered();
-
-    registered->mutable_framework_id()->CopyFrom(message.framework_id());
-    registered->mutable_master_info()->CopyFrom(message.master_info());
-
-    receive(from, event);
+    subscribed(from, message.framework_id());
   }
 
   void receive(const UPID& from, const FrameworkReregisteredMessage& message)
+  {
+    subscribed(from, message.framework_id());
+  }
+
+  void subscribed(const UPID& from, const FrameworkID& frameworkId)
   {
     // We've now registered at least once with the master so we're no
     // longer failing over. See the comment where 'failover' is
@@ -630,12 +589,11 @@ protected:
     failover = false;
 
     Event event;
-    event.set_type(Event::REREGISTERED);
+    event.set_type(Event::SUBSCRIBED);
 
-    Event::Reregistered* reregistered = event.mutable_reregistered();
+    Event::Subscribed* subscribed = event.mutable_subscribed();
 
-    reregistered->mutable_framework_id()->CopyFrom(message.framework_id());
-    reregistered->mutable_master_info()->CopyFrom(message.master_info());
+    subscribed->mutable_framework_id()->CopyFrom(frameworkId);
 
     receive(from, event);
   }
@@ -685,8 +643,15 @@ protected:
 
     update->mutable_status()->set_timestamp(message.update().timestamp());
 
-    update->set_uuid(message.update().uuid());
-    update->mutable_status()->set_uuid(message.update().uuid());
+    // If the update is generated by the master it doesn't need to be
+    // acknowledged; so we unset the UUID inside TaskStatus.
+    // TODO(vinod): Update master and slave to ensure that 'uuid' is
+    // set accurately by the time it reaches the scheduler.
+    if (UPID(message.pid()) == UPID()) {
+      update->mutable_status()->clear_uuid();
+    } else {
+      update->mutable_status()->set_uuid(message.update().uuid());
+    }
 
     receive(from, event);
   }
@@ -699,6 +664,20 @@ protected:
     Event::Failure* failure = event.mutable_failure();
 
     failure->mutable_slave_id()->CopyFrom(message.slave_id());
+
+    receive(from, event);
+  }
+
+  void receive(const UPID& from, const ExitedExecutorMessage& message)
+  {
+    Event event;
+    event.set_type(Event::FAILURE);
+
+    Event::Failure* failure = event.mutable_failure();
+
+    failure->mutable_slave_id()->CopyFrom(message.slave_id());
+    failure->mutable_executor_id()->CopyFrom(message.executor_id());
+    failure->set_status(message.status());
 
     receive(from, event);
   }
@@ -758,36 +737,12 @@ protected:
     status->set_message(message);
     status->set_timestamp(Clock::now().secs());
 
-    update->set_uuid(UUID::random().toBytes());
-    status->set_uuid(update->uuid());
-
     receive(None(), event);
   }
 
   void drop(const Call& call, const string& message)
   {
-    VLOG(1) << "Dropping " << stringify(call.type()) << ": " << message;
-
-    switch (call.type()) {
-      case Call::LAUNCH: {
-        // We drop the tasks preemptively (enqueing update events that
-        // put the task in TASK_LOST). This is a hack for now, to keep
-        // the tasks from being forever in PENDING state, when
-        // actually the master never received the launch.
-        // Unfortuantely this is insufficient since it doesn't capture
-        // the case when the scheduler process sends it but the master
-        // never receives it (i.e., during a master failover). In the
-        // future, this should be solved by higher-level abstractions
-        // and this hack should be considered for removal.
-        foreach (const TaskInfo& task, call.launch().task_infos()) {
-          drop(task, message);
-        }
-        break;
-      }
-
-      default:
-        break;
-    }
+    LOG(WARNING) << "Dropping " << call.type() << ": " << message;
   }
 
 private:

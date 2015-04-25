@@ -1526,10 +1526,10 @@ void Master::drop(
 {
   // TODO(bmahler): Increment a metric.
 
-  LOG(ERROR) << "Dropping " << scheduler::Call::Type_Name(call.type())
-             << " call from framework " << call.framework_info().id()
-             << " (" << call.framework_info().name() << ") at " << from
-             << ": " << message;
+  LOG(ERROR) << "Dropping " << call.type() << " call"
+             << " from framework " << call.framework_info().id()
+             << " (" << call.framework_info().name()
+             << ") at " << from << ": " << message;
 }
 
 
@@ -1554,14 +1554,14 @@ void Master::receive(
     const UPID& from,
     const scheduler::Call& call)
 {
+  // TODO(vinod): Add metrics for calls.
+  // TODO(vinod): Implement the unimplemented calls.
   const FrameworkInfo& frameworkInfo = call.framework_info();
 
-  // For REGISTER and REREGISTER calls, no need to look up the
-  // framework. Therefore, we handle them first and separately from
-  // other types of calls.
+  // For SUBSCRIBE call, no need to look up the framework. Therefore,
+  // we handle them first and separately from other types of calls.
   switch (call.type()) {
-    case scheduler::Call::REGISTER:
-    case scheduler::Call::REREGISTER:
+    case scheduler::Call::SUBSCRIBE:
       drop(from, call, "Unimplemented");
       return;
 
@@ -1584,11 +1584,10 @@ void Master::receive(
   }
 
   // TODO(jieyu): Validate frameworkInfo to make sure it's the same as
-  // the one that the framework used during registration.
+  // the one that the framework used during registration and that the
+  // framework id is set and non-empty except for SUBSCRIBE call.
 
   switch (call.type()) {
-    case scheduler::Call::UNREGISTER:
-    case scheduler::Call::REQUEST:
     case scheduler::Call::REVIVE:
     case scheduler::Call::DECLINE:
       drop(from, call, "Unimplemented");
@@ -1602,12 +1601,35 @@ void Master::receive(
       accept(framework, call.accept());
       break;
 
-    case scheduler::Call::LAUNCH:
-    case scheduler::Call::KILL:
-    case scheduler::Call::ACKNOWLEDGE:
     case scheduler::Call::RECONCILE:
+      if (!call.has_reconcile()) {
+        drop(from, call, "Expecting 'reconcile' to be present");
+        return;
+      }
+      reconcile(framework, call.reconcile());
+      break;
+
+    case scheduler::Call::SHUTDOWN:
+      if (!call.has_shutdown()) {
+        drop(from, call, "Expecting 'shutdown' to be present");
+      }
+      shutdown(framework, call.shutdown());
+      break;
+
+    case scheduler::Call::KILL:
+      if (!call.has_kill()) {
+        drop(from, call, "Expecting 'kill' to be present");
+      }
+      kill(framework, call.kill());
+      break;
+
+    case scheduler::Call::ACKNOWLEDGE:
     case scheduler::Call::MESSAGE:
       drop(from, call, "Unimplemented");
+      break;
+
+    case scheduler::Call::TEARDOWN:
+      removeFramework(framework);
       break;
 
     default:
@@ -2680,10 +2702,10 @@ void Master::killTask(
     const FrameworkID& frameworkId,
     const TaskID& taskId)
 {
-  ++metrics->messages_kill_task;
-
   LOG(INFO) << "Asked to kill task " << taskId
             << " of framework " << frameworkId;
+
+  ++metrics->messages_kill_task;
 
   Framework* framework = getFramework(frameworkId);
 
@@ -2701,13 +2723,28 @@ void Master::killTask(
     return;
   }
 
+  scheduler::Call::Kill call;
+  call.mutable_task_id()->CopyFrom(taskId);
+
+  kill(framework, call);
+}
+
+
+void Master::kill(Framework* framework, const scheduler::Call::Kill& kill)
+{
+  CHECK_NOTNULL(framework);
+
+  const TaskID& taskId = kill.task_id();
+  const Option<SlaveID> slaveId =
+    kill.has_slave_id() ? Option<SlaveID>(kill.slave_id()) : None();
+
   if (framework->pendingTasks.contains(taskId)) {
     // Remove from pending tasks.
     framework->pendingTasks.erase(taskId);
 
     const StatusUpdate& update = protobuf::createStatusUpdate(
-        frameworkId,
-        None(),
+        framework->id(),
+        slaveId,
         taskId,
         TASK_KILLED,
         TaskStatus::SOURCE_MASTER,
@@ -2726,8 +2763,20 @@ void Master::killTask(
 
     TaskStatus status;
     status.mutable_task_id()->CopyFrom(taskId);
+    if (slaveId.isSome()) {
+      status.mutable_slave_id()->CopyFrom(slaveId.get());
+    }
 
     _reconcileTasks(framework, {status});
+    return;
+  }
+
+  if (slaveId.isSome() && !(slaveId.get() == task->slave_id())) {
+    LOG(WARNING) << "Cannot kill task " << taskId << " of slave "
+                 << slaveId.get() << " of framework " << *framework
+                 << " because it belongs to different slave "
+                 << task->slave_id();
+    // TODO(vinod): Return a "Bad Request" when using HTTP API.
     return;
   }
 
@@ -2737,7 +2786,7 @@ void Master::killTask(
   // We add the task to 'killedTasks' here because the slave
   // might be partitioned or disconnected but the master
   // doesn't know it yet.
-  slave->killedTasks.put(frameworkId, taskId);
+  slave->killedTasks.put(framework->id(), taskId);
 
   // NOTE: This task will be properly reconciled when the
   // disconnected slave re-registers with the master.
@@ -2747,7 +2796,7 @@ void Master::killTask(
               << " of framework " << *framework;
 
     KillTaskMessage message;
-    message.mutable_framework_id()->MergeFrom(frameworkId);
+    message.mutable_framework_id()->MergeFrom(framework->id());
     message.mutable_task_id()->MergeFrom(taskId);
     send(slave->pid, message);
   } else {
@@ -3444,13 +3493,52 @@ void Master::exitedExecutor(
 
   LOG(INFO) << "Executor " << executorId
             << " of framework " << frameworkId
-            << " on slave " << *slave << " "
+            << " on slave " << *slave << ": "
             << WSTRINGIFY(status);
 
   removeExecutor(slave, frameworkId, executorId);
 
-  // TODO(benh): Send the framework its executor's exit status?
-  // Or maybe at least have something like Scheduler::executorLost?
+  // TODO(vinod): Reliably forward this message to the scheduler.
+  Framework* framework = getFramework(frameworkId);
+  if (framework == NULL) {
+    LOG(WARNING)
+      << "Not forwarding exited executor message for executor '" << executorId
+      << "' of framework " << frameworkId << " on slave " << *slave
+      << " because the framework is unknown";
+
+    return;
+  }
+
+  ExitedExecutorMessage message;
+  message.mutable_executor_id()->CopyFrom(executorId);
+  message.mutable_framework_id()->CopyFrom(frameworkId);
+  message.mutable_slave_id()->CopyFrom(slaveId);
+  message.set_status(status);
+
+  send(framework->pid, message);
+}
+
+
+void Master::shutdown(
+    Framework* framework,
+    const scheduler::Call::Shutdown& shutdown)
+{
+  CHECK_NOTNULL(framework);
+
+  if (!slaves.registered.contains(shutdown.slave_id())) {
+    LOG(WARNING) << "Unable to shutdown executor '" << shutdown.executor_id()
+                 << "' of framework " << framework->id()
+                 << " of unknown slave " << shutdown.slave_id();
+    return;
+  }
+
+  Slave* slave = slaves.registered[shutdown.slave_id()];
+  CHECK_NOTNULL(slave);
+
+  ShutdownExecutorMessage message;
+  message.mutable_executor_id()->CopyFrom(shutdown.executor_id());
+  message.mutable_framework_id()->CopyFrom(framework->id());
+  send(slave->pid, message);
 }
 
 
@@ -3474,6 +3562,29 @@ void Master::shutdownSlave(const SlaveID& slaveId, const string& message)
   send(slave->pid, message_);
 
   removeSlave(slave);
+}
+
+
+void Master::reconcile(
+    Framework* framework,
+    const scheduler::Call::Reconcile& reconcile)
+{
+  CHECK_NOTNULL(framework);
+
+  // Construct 'TaskStatus'es from 'Reconcile::Task's.
+  vector<TaskStatus> statuses;
+  foreach (const scheduler::Call::Reconcile::Task& task, reconcile.tasks()) {
+    TaskStatus status;
+    status.mutable_task_id()->CopyFrom(task.task_id());
+    status.set_state(TASK_RUNNING); // Dummy status.
+    if (task.has_slave_id()) {
+      status.mutable_slave_id()->CopyFrom(task.slave_id());
+    }
+
+    statuses.push_back(status);
+  }
+
+  _reconcileTasks(framework, statuses);
 }
 
 
