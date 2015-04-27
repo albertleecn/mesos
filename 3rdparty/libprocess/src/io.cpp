@@ -1,3 +1,4 @@
+#include <memory>
 #include <string>
 
 #include <boost/shared_array.hpp>
@@ -7,7 +8,6 @@
 #include <process/process.hpp> // For process::initialize.
 
 #include <stout/lambda.hpp>
-#include <stout/memory.hpp>
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
 #include <stout/try.hpp>
@@ -22,7 +22,7 @@ void read(
     int fd,
     void* data,
     size_t size,
-    const memory::shared_ptr<Promise<size_t> >& promise,
+    const std::shared_ptr<Promise<size_t>>& promise,
     const Future<short>& future)
 {
   // Ignore this function if the read operation has been discarded.
@@ -74,7 +74,7 @@ void write(
     int fd,
     void* data,
     size_t size,
-    const memory::shared_ptr<Promise<size_t> >& promise,
+    const std::shared_ptr<Promise<size_t>>& promise,
     const Future<short>& future)
 {
   // Ignore this function if the write operation has been discarded.
@@ -168,7 +168,7 @@ Future<size_t> read(int fd, void* data, size_t size)
 {
   process::initialize();
 
-  memory::shared_ptr<Promise<size_t> > promise(new Promise<size_t>());
+  std::shared_ptr<Promise<size_t>> promise(new Promise<size_t>());
 
   // Check the file descriptor.
   Try<bool> nonblock = os::isNonblock(fd);
@@ -201,7 +201,7 @@ Future<size_t> write(int fd, void* data, size_t size)
 {
   process::initialize();
 
-  memory::shared_ptr<Promise<size_t> > promise(new Promise<size_t>());
+  std::shared_ptr<Promise<size_t>> promise(new Promise<size_t>());
 
   // Check the file descriptor.
   Try<bool> nonblock = os::isNonblock(fd);
@@ -232,10 +232,9 @@ Future<size_t> write(int fd, void* data, size_t size)
 
 namespace internal {
 
-#if __cplusplus >= 201103L
 Future<string> _read(
     int fd,
-    const memory::shared_ptr<string>& buffer,
+    const std::shared_ptr<string>& buffer,
     const boost::shared_array<char>& data,
     size_t length)
 {
@@ -248,45 +247,8 @@ Future<string> _read(
       return _read(fd, buffer, data, length);
     });
 }
-#else
-// Forward declataion.
-Future<string> _read(
-    int fd,
-    const memory::shared_ptr<string>& buffer,
-    const boost::shared_array<char>& data,
-    size_t length);
 
 
-Future<string> __read(
-    size_t size,
-    int fd,
-    const memory::shared_ptr<string>& buffer,
-    const boost::shared_array<char>& data,
-    size_t length)
-{
-  if (size == 0) { // EOF.
-    return string(*buffer);
-  }
-
-  buffer->append(data.get(), size);
-
-  return _read(fd, buffer, data, length);
-}
-
-
-Future<string> _read(
-    int fd,
-    const memory::shared_ptr<string>& buffer,
-    const boost::shared_array<char>& data,
-    size_t length)
-{
-  return io::read(fd, data.get(), length)
-    .then(lambda::bind(&__read, lambda::_1, fd, buffer, data, length));
-}
-#endif // __cplusplus >= 201103L
-
-
-#if __cplusplus >= 201103L
 Future<Nothing> _write(
     int fd,
     Owned<string> data,
@@ -300,45 +262,14 @@ Future<Nothing> _write(
       return _write(fd, data, index + length);
     });
 }
-#else
-// Forward declaration.
-Future<Nothing> _write(
-    int fd,
-    Owned<string> data,
-    size_t index);
 
 
-Future<Nothing> __write(
-    int fd,
-    Owned<string> data,
-    size_t index,
-    size_t length)
-{
-  if (index + length == data->size()) {
-    return Nothing();
-  }
-  return _write(fd, data, index + length);
-}
-
-
-Future<Nothing> _write(
-    int fd,
-    Owned<string> data,
-    size_t index)
-{
-  return io::write(fd, (void*) (data->data() + index), data->size() - index)
-    .then(lambda::bind(&__write, fd, data, index, lambda::_1));
-}
-#endif // __cplusplus >= 201103L
-
-
-#if __cplusplus >= 201103L
 void _splice(
     int from,
     int to,
     size_t chunk,
     boost::shared_array<char> data,
-    memory::shared_ptr<Promise<Nothing>> promise)
+    std::shared_ptr<Promise<Nothing>> promise)
 {
   // Stop splicing if a discard occured on our future.
   if (promise->future().hasDiscard()) {
@@ -378,93 +309,6 @@ void _splice(
     .onFailed([=] (const string& message) { promise->fail(message); })
     .onDiscarded([=] () { promise->discard(); });
 }
-#else
-// Forward declarations.
-void __splice(
-    int from,
-    int to,
-    size_t chunk,
-    boost::shared_array<char> data,
-    memory::shared_ptr<Promise<Nothing> > promise,
-    size_t size);
-
-void ___splice(
-    memory::shared_ptr<Promise<Nothing> > promise,
-    const string& message);
-
-void ____splice(
-    memory::shared_ptr<Promise<Nothing> > promise);
-
-
-void _splice(
-    int from,
-    int to,
-    size_t chunk,
-    boost::shared_array<char> data,
-    memory::shared_ptr<Promise<Nothing> > promise)
-{
-  // Stop splicing if a discard occured on our future.
-  if (promise->future().hasDiscard()) {
-    // TODO(benh): Consider returning the number of bytes already
-    // spliced on discarded, or a failure. Same for the 'onDiscarded'
-    // callbacks below.
-    promise->discard();
-    return;
-  }
-
-  Future<size_t> read = io::read(from, data.get(), chunk);
-
-  // Stop reading (or potentially indefinitely polling) if a discard
-  // occurs on our future.
-  promise->future().onDiscard(
-      lambda::bind(&process::internal::discard<size_t>,
-                   WeakFuture<size_t>(read)));
-
-  read
-    .onReady(
-        lambda::bind(&__splice, from, to, chunk, data, promise, lambda::_1))
-    .onFailed(lambda::bind(&___splice, promise, lambda::_1))
-    .onDiscarded(lambda::bind(&____splice, promise));
-}
-
-
-void __splice(
-    int from,
-    int to,
-    size_t chunk,
-    boost::shared_array<char> data,
-    memory::shared_ptr<Promise<Nothing> > promise,
-    size_t size)
-{
-  if (size == 0) { // EOF.
-    promise->set(Nothing());
-  } else {
-    // Note that we always try and complete the write, even if a
-    // discard has occured on our future, in order to provide
-    // semantics where everything read is written. The promise will
-    // eventually be discarded in the next read.
-    io::write(to, string(data.get(), size))
-      .onReady(lambda::bind(&_splice, from, to, chunk, data, promise))
-      .onFailed(lambda::bind(&___splice, promise, lambda::_1))
-      .onDiscarded(lambda::bind(&____splice, promise));
-  }
-}
-
-
-void ___splice(
-    memory::shared_ptr<Promise<Nothing> > promise,
-    const string& message)
-{
-  promise->fail(message);
-}
-
-
-void ____splice(
-    memory::shared_ptr<Promise<Nothing> > promise)
-{
-  promise->discard();
-}
-#endif // __cplusplus >= 201103L
 
 
 Future<Nothing> splice(int from, int to, size_t chunk)
@@ -475,7 +319,7 @@ Future<Nothing> splice(int from, int to, size_t chunk)
   // implementing internal::_splice as a chain of io::read and
   // io::write calls, we use an explicit promise that we pass around
   // so that we don't increase memory usage the longer that we splice.
-  memory::shared_ptr<Promise<Nothing> > promise(new Promise<Nothing>());
+  std::shared_ptr<Promise<Nothing>> promise(new Promise<Nothing>());
 
   Future<Nothing> future = promise->future();
 
@@ -525,7 +369,7 @@ Future<string> read(int fd)
 
   // TODO(benh): Wrap up this data as a struct, use 'Owner'.
   // TODO(bmahler): For efficiency, use a rope for the buffer.
-  memory::shared_ptr<string> buffer(new string());
+  std::shared_ptr<string> buffer(new string());
   boost::shared_array<char> data(new char[BUFFERED_READ_SIZE]);
 
   return internal::_read(fd, buffer, data, BUFFERED_READ_SIZE)
