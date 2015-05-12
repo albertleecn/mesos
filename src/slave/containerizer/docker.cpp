@@ -628,12 +628,11 @@ Future<bool> DockerContainerizerProcess::launch(
             << "' (and executor '" << executorInfo.executor_id()
             << "') of framework '" << executorInfo.framework_id() << "'";
 
-  return fetch(containerId)
+  return container.get()->launch = fetch(containerId)
     .then(defer(self(), &Self::_launch, containerId))
     .then(defer(self(), &Self::__launch, containerId))
     .then(defer(self(), &Self::___launch, containerId))
-    .then(defer(self(), &Self::______launch, containerId, lambda::_1))
-    .onFailed(defer(self(), &Self::destroy, containerId, true));
+    .then(defer(self(), &Self::______launch, containerId, lambda::_1));
 }
 
 
@@ -670,7 +669,7 @@ Future<Nothing> DockerContainerizerProcess::__launch(
   container->state = Container::RUNNING;
 
   // Try and start the Docker container.
-  return container->run = docker->run(
+  return docker->run(
       container->container(),
       container->command(),
       container->name(),
@@ -801,13 +800,12 @@ Future<bool> DockerContainerizerProcess::launch(
             << "' for executor '" << executorInfo.executor_id()
             << "' and framework '" << executorInfo.framework_id() << "'";
 
-  return fetch(containerId)
+  return container.get()->launch = fetch(containerId)
     .then(defer(self(), &Self::_launch, containerId))
     .then(defer(self(), &Self::__launch, containerId))
     .then(defer(self(), &Self::____launch, containerId))
     .then(defer(self(), &Self::_____launch, containerId, lambda::_1))
-    .then(defer(self(), &Self::______launch, containerId, lambda::_1))
-    .onFailed(defer(self(), &Self::destroy, containerId, true));
+    .then(defer(self(), &Self::______launch, containerId, lambda::_1));
 }
 
 
@@ -1184,18 +1182,16 @@ void DockerContainerizerProcess::destroy(
 
   Container* container = containers_[containerId];
 
-  if (container->run.isFailed()) {
-    VLOG(1) << "Container '" << containerId << "' run failed";
+  if (container->launch.isFailed()) {
+    VLOG(1) << "Container '" << containerId << "' launch failed";
 
-    // This means we failed to do Docker::run and we're trying to
-    // cleanup (or someone happens to have asked to destroy this
-    // container before the destroy that we enqueued has had a chance
-    // to get executed, which when it does, will just be skipped).
+    // This means we failed to launch the container and we're trying to
+    // cleanup.
     CHECK_PENDING(container->status.future());
     containerizer::Termination termination;
     termination.set_killed(killed);
     termination.set_message(
-        "Failed to run container: " + container->run.failure());
+        "Failed to launch container: " + container->launch.failure());
     container->termination.set(termination);
 
     containers_.erase(containerId);
