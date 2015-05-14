@@ -55,6 +55,9 @@ public:
   Duration gc_delay;
   double gc_disk_headroom;
   Duration disk_watch_interval;
+
+  // TODO(nnielsen): Deprecate resource_monitoring_interval flag after
+  // Mesos 0.23.0.
   Duration resource_monitoring_interval;
 
   std::string recover;
@@ -94,6 +97,7 @@ public:
   Option<Modules> modules;
   std::string authenticatee;
   Option<std::string> hooks;
+  Option<std::string> resource_estimator;
 };
 
 } // namespace slave {

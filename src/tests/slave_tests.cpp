@@ -97,6 +97,57 @@ namespace http = process::http;
 class SlaveTest : public MesosTest {};
 
 
+// This test ensures that when a slave shuts itself down, it
+// unregisters itself and the master notifies the framework
+// immediately and rescinds any offers.
+TEST_F(SlaveTest, Shutdown)
+{
+  Try<PID<Master> > master = StartMaster();
+  ASSERT_SOME(master);
+
+  Try<PID<Slave> > slave = StartSlave();
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer> > offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_EQ(1u, offers.get().size());
+
+  Future<Nothing> offerRescinded;
+  EXPECT_CALL(sched, offerRescinded(&driver, offers.get()[0].id()))
+    .WillOnce(FutureSatisfy(&offerRescinded));
+
+  Future<Nothing> slaveLost;
+  EXPECT_CALL(sched, slaveLost(&driver, offers.get()[0].slave_id()))
+    .WillOnce(FutureSatisfy(&slaveLost));
+
+  // Stop the checkpointing slave with explicit shutdown message
+  // so that the slave unregisters.
+  Stop(slave.get(), true);
+
+  AWAIT_READY(offerRescinded);
+  AWAIT_READY(slaveLost);
+
+  JSON::Object stats = Metrics();
+  EXPECT_EQ(1, stats.values["master/slave_removals"]);
+  EXPECT_EQ(1, stats.values["master/slave_removals/reason_unregistered"]);
+
+  driver.stop();
+  driver.join();
+}
+
+
 TEST_F(SlaveTest, ShutdownUnregisteredExecutor)
 {
   Try<PID<Master>> master = StartMaster();
@@ -492,17 +543,10 @@ TEST_F(SlaveTest, ComamndTaskWithArguments)
 // mesos-executor forking. For more details of this see MESOS-1873.
 TEST_F(SlaveTest, GetExecutorInfo)
 {
-  // Create a thin dummy Slave to access underlying getExecutorInfo().
-  // Testing this method should not necessarily require an integration
-  // test as with most other methods here.
-  slave::Flags flags = CreateSlaveFlags();
   TestContainerizer containerizer;
   StandaloneMasterDetector detector;
-  Files files;
-  slave::StatusUpdateManager updateManager(flags);
 
-  slave::GarbageCollector gc;
-  Slave slave(flags, &detector, &containerizer, &files, &gc, &updateManager);
+  MockSlave slave(CreateSlaveFlags(), &detector, &containerizer);
 
   FrameworkID frameworkId;
   frameworkId.set_value("20141010-221431-251662764-60288-32120-0000");
@@ -533,6 +577,7 @@ TEST_F(SlaveTest, GetExecutorInfo)
   EXPECT_EQ(0, executor.command().arguments_size());
   EXPECT_NE(string::npos, executor.command().value().find("mesos-executor"));
 }
+
 
 // This test runs a command without the command user field set. The
 // command will verify the assumption that the command is run as the
