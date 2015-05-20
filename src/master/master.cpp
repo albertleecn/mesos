@@ -973,7 +973,9 @@ void Master::exited(const UPID& pid)
     }
   }
 
-  // The semantics when a slave gets disconnected are as follows:
+  // The semantics when a registered slave gets disconnected are as
+  // follows:
+  //
   // 1) If the slave is not checkpointing, the slave is immediately
   //    removed and all tasks running on it are transitioned to LOST.
   //    No resources are recovered, because the slave is removed.
@@ -985,42 +987,42 @@ void Master::exited(const UPID& pid)
   //    2.2) Framework is not-checkpointing: The slave is not removed
   //         but the framework is removed from the slave's structs,
   //         its tasks transitioned to LOST and resources recovered.
-  foreachvalue (Slave* slave, slaves.registered) {
-    if (slave->pid == pid) {
-      LOG(INFO) << "Slave " << *slave << " disconnected";
+  if (slaves.registered.contains(pid)) {
+    Slave* slave = slaves.registered.get(pid);
+    CHECK_NOTNULL(slave);
 
-      if (!slave->info.checkpoint()) {
-        // Remove the slave, if it is not checkpointing.
-        LOG(INFO) << "Removing disconnected slave " << *slave
-                  << " because it is not checkpointing!";
-        removeSlave(slave,
-                    "slave is non-checkpointing and disconnected");
-        return;
-      } else if (slave->connected) {
-        // Checkpointing slaves can just be disconnected.
-        disconnect(slave);
+    LOG(INFO) << "Slave " << *slave << " disconnected";
 
-        // Remove all non-checkpointing frameworks.
-        hashset<FrameworkID> frameworkIds =
+    if (!slave->info.checkpoint()) {
+      // Remove the slave, if it is not checkpointing.
+      LOG(INFO) << "Removing disconnected slave " << *slave
+                << " because it is not checkpointing!";
+      removeSlave(slave, "slave is non-checkpointing and disconnected");
+      return;
+    } else if (slave->connected) {
+      // Checkpointing slaves can just be disconnected.
+      disconnect(slave);
+
+      // Remove all non-checkpointing frameworks.
+      hashset<FrameworkID> frameworkIds =
           slave->tasks.keys() | slave->executors.keys();
 
-        foreach (const FrameworkID& frameworkId, frameworkIds) {
-          Framework* framework = getFramework(frameworkId);
-          if (framework != NULL && !framework->info.checkpoint()) {
-            LOG(INFO) << "Removing framework " << *framework
-                      << " from disconnected slave " << *slave
-                      << " because the framework is not checkpointing";
+      foreach (const FrameworkID& frameworkId, frameworkIds) {
+        Framework* framework = getFramework(frameworkId);
+        if (framework != NULL && !framework->info.checkpoint()) {
+          LOG(INFO) << "Removing framework " << *framework
+                    << " from disconnected slave " << *slave
+                    << " because the framework is not checkpointing";
 
-            removeFramework(slave, framework);
-          }
+          removeFramework(slave, framework);
         }
-      } else {
-        // NOTE: A duplicate exited() event is possible for a slave
-        // because its PID doesn't change on restart. See MESOS-675
-        // for details.
-        LOG(WARNING) << "Ignoring duplicate exited() notification for "
-                     << "checkpointing slave " << *slave;
       }
+    } else {
+      // NOTE: A duplicate exited() event is possible for a slave
+      // because its PID doesn't change on restart. See MESOS-675
+      // for details.
+      LOG(WARNING) << "Ignoring duplicate exited() notification for "
+                   << "checkpointing slave " << *slave;
     }
   }
 }
@@ -2401,7 +2403,8 @@ void Master::accept(
   }
 
   CHECK_SOME(slaveId);
-  Slave* slave = CHECK_NOTNULL(getSlave(slaveId.get()));
+  Slave* slave = slaves.registered.get(slaveId.get());
+  CHECK_NOTNULL(slave);
 
   LOG(INFO) << "Processing ACCEPT call for offers: " << accept.offer_ids()
             << " on slave " << *slave << " for framework " << *framework;
@@ -2475,7 +2478,7 @@ void Master::_accept(
     return;
   }
 
-  Slave* slave = getSlave(slaveId);
+  Slave* slave = slaves.registered.get(slaveId);
 
   if (slave == NULL || !slave->connected) {
     foreach (const Offer::Operation& operation, accept.operations()) {
@@ -2868,7 +2871,7 @@ void Master::kill(Framework* framework, const scheduler::Call::Kill& kill)
     return;
   }
 
-  Slave* slave = getSlave(task->slave_id());
+  Slave* slave = slaves.registered.get(task->slave_id());
   CHECK(slave != NULL) << "Unknown slave " << task->slave_id();
 
   // We add the task to 'killedTasks' here because the slave
@@ -2932,7 +2935,7 @@ void Master::statusUpdateAcknowledgement(
     return;
   }
 
-  Slave* slave = getSlave(slaveId);
+  Slave* slave = slaves.registered.get(slaveId);
 
   if (slave == NULL) {
     LOG(WARNING)
@@ -3028,7 +3031,8 @@ void Master::schedulerMessage(
     return;
   }
 
-  Slave* slave = getSlave(slaveId);
+  Slave* slave = slaves.registered.get(slaveId);
+
   if (slave == NULL) {
     LOG(WARNING) << "Cannot send framework message for framework "
                  << *framework << " to slave " << slaveId
@@ -3094,31 +3098,30 @@ void Master::registerSlave(
   }
 
   // Check if this slave is already registered (because it retries).
-  foreachvalue (Slave* slave, slaves.registered) {
-    if (slave->pid == from) {
-      if (!slave->connected) {
-        // The slave was previously disconnected but it is now trying
-        // to register as a new slave. This could happen if the slave
-        // failed recovery and hence registering as a new slave before
-        // the master removed the old slave from its map.
-        LOG(INFO)
-          << "Removing old disconnected slave " << *slave
-          << " because a registration attempt is being made from " << from;
-        removeSlave(slave,
-                    "a new slave registered at the same address",
-                    metrics->slave_removals_reason_registered);
-        break;
-      } else {
-        CHECK(slave->active)
-            << "Unexpected connected but deactivated slave " << *slave;
+  if (slaves.registered.contains(from)) {
+    Slave* slave = slaves.registered.get(from);
+    CHECK_NOTNULL(slave);
 
-        LOG(INFO) << "Slave " << *slave << " already registered,"
-                  << " resending acknowledgement";
-        SlaveRegisteredMessage message;
-        message.mutable_slave_id()->MergeFrom(slave->id);
-        send(from, message);
-        return;
-      }
+    if (!slave->connected) {
+      // The slave was previously disconnected but it is now trying
+      // to register as a new slave. This could happen if the slave
+      // failed recovery and hence registering as a new slave before
+      // the master removed the old slave from its map.
+      LOG(INFO) << "Removing old disconnected slave " << *slave
+                << " because a registration attempt occurred";
+      removeSlave(slave,
+                  "a new slave registered at the same address",
+                  metrics->slave_removals_reason_registered);
+    } else {
+      CHECK(slave->active)
+        << "Unexpected connected but deactivated slave " << *slave;
+
+      LOG(INFO) << "Slave " << *slave << " already registered,"
+                << " resending acknowledgement";
+      SlaveRegisteredMessage message;
+      message.mutable_slave_id()->MergeFrom(slave->id);
+      send(from, message);
+      return;
     }
   }
 
@@ -3255,7 +3258,7 @@ void Master::reregisterSlave(
     return;
   }
 
-  Slave* slave = getSlave(slaveInfo.id());
+  Slave* slave = slaves.registered.get(slaveInfo.id());
 
   if (slave != NULL) {
     slave->reregisteredTime = Clock::now();
@@ -3434,7 +3437,7 @@ void Master::unregisterSlave(const UPID& from, const SlaveID& slaveId)
 
   LOG(INFO) << "Asked to unregister slave " << slaveId;
 
-  Slave* slave = getSlave(slaveId);
+  Slave* slave = slaves.registered.get(slaveId);
 
   if (slave != NULL) {
     if (slave->pid != from) {
@@ -3472,7 +3475,7 @@ void Master::statusUpdate(const StatusUpdate& update, const UPID& pid)
     return;
   }
 
-  Slave* slave = getSlave(update.slave_id());
+  Slave* slave = slaves.registered.get(update.slave_id());
 
   if (slave == NULL) {
     LOG(WARNING) << "Ignoring status update " << update
@@ -3574,7 +3577,8 @@ void Master::exitedExecutor(
     return;
   }
 
-  Slave* slave = CHECK_NOTNULL(slaves.registered[slaveId]);
+  Slave* slave = slaves.registered.get(slaveId);
+  CHECK_NOTNULL(slave);
 
   if (!slave->hasExecutor(frameworkId, executorId)) {
     LOG(WARNING) << "Ignoring unknown exited executor '" << executorId
@@ -3624,7 +3628,7 @@ void Master::shutdown(
     return;
   }
 
-  Slave* slave = slaves.registered[shutdown.slave_id()];
+  Slave* slave = slaves.registered.get(shutdown.slave_id());
   CHECK_NOTNULL(slave);
 
   ShutdownExecutorMessage message;
@@ -3643,7 +3647,7 @@ void Master::shutdownSlave(const SlaveID& slaveId, const string& message)
     return;
   }
 
-  Slave* slave = slaves.registered[slaveId];
+  Slave* slave = slaves.registered.get(slaveId);
   CHECK_NOTNULL(slave);
 
   LOG(WARNING) << "Shutting down slave " << *slave << " with message '"
@@ -3919,7 +3923,8 @@ void Master::offer(const FrameworkID& frameworkId,
       continue;
     }
 
-    Slave* slave = slaves.registered[slaveId];
+    Slave* slave = slaves.registered.get(slaveId);
+    CHECK_NOTNULL(slave);
 
     CHECK(slave->info.checkpoint() || !framework->info.checkpoint())
         << "Resources of non checkpointing slave " << *slave
@@ -4454,7 +4459,8 @@ void Master::removeFramework(Framework* framework)
 
   // Remove pointers to the framework's tasks in slaves.
   foreachvalue (Task* task, utils::copy(framework->tasks)) {
-    Slave* slave = getSlave(task->slave_id());
+    Slave* slave = slaves.registered.get(task->slave_id());
+
     // Since we only find out about tasks when the slave re-registers,
     // it must be the case that the slave exists!
     CHECK(slave != NULL)
@@ -4498,7 +4504,8 @@ void Master::removeFramework(Framework* framework)
 
   // Remove the framework's executors for correct resource accounting.
   foreachkey (const SlaveID& slaveId, utils::copy(framework->executors)) {
-    Slave* slave = getSlave(slaveId);
+    Slave* slave = slaves.registered.get(slaveId);
+
     if (slave != NULL) {
       foreachkey (const ExecutorID& executorId,
                   utils::copy(framework->executors[slaveId])) {
@@ -4599,7 +4606,7 @@ void Master::addSlave(
   CHECK_NOTNULL(slave);
 
   slaves.removed.erase(slave->id);
-  slaves.registered[slave->id] = slave;
+  slaves.registered.put(slave);
 
   link(slave->pid);
 
@@ -4734,7 +4741,7 @@ void Master::removeSlave(
 
   // Mark the slave as being removed.
   slaves.removing.insert(slave->id);
-  slaves.registered.erase(slave->id);
+  slaves.registered.remove(slave);
   slaves.removed.put(slave->id, Nothing());
   authenticated.erase(slave->pid);
 
@@ -4893,7 +4900,9 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
         None());
 
     // The slave owns the Task object and cannot be NULL.
-    Slave* slave = CHECK_NOTNULL(getSlave(task->slave_id()));
+    Slave* slave = slaves.registered.get(task->slave_id());
+    CHECK_NOTNULL(slave);
+
     slave->taskTerminated(task);
 
     Framework* framework = getFramework(task->framework_id());
@@ -4925,7 +4934,8 @@ void Master::removeTask(Task* task)
   CHECK_NOTNULL(task);
 
   // The slave owns the Task object and cannot be NULL.
-  Slave* slave = CHECK_NOTNULL(getSlave(task->slave_id()));
+  Slave* slave = slaves.registered.get(task->slave_id());
+  CHECK_NOTNULL(slave);
 
   if (!protobuf::isTerminalState(task->state())) {
     LOG(WARNING) << "Removing task " << task->task_id()
@@ -5037,7 +5047,8 @@ void Master::removeOffer(Offer* offer, bool rescind)
   framework->removeOffer(offer);
 
   // Remove from slave.
-  Slave* slave = getSlave(offer->slave_id());
+  Slave* slave = slaves.registered.get(offer->slave_id());
+
   CHECK(slave != NULL)
     << "Unknown slave " << offer->slave_id()
     << " in the offer " << offer->id();
@@ -5068,15 +5079,6 @@ Framework* Master::getFramework(const FrameworkID& frameworkId)
 {
   return frameworks.registered.contains(frameworkId)
     ? frameworks.registered[frameworkId]
-    : NULL;
-}
-
-
-// TODO(bmahler): Consider killing this.
-Slave* Master::getSlave(const SlaveID& slaveId)
-{
-  return slaves.registered.contains(slaveId)
-    ? slaves.registered[slaveId]
     : NULL;
 }
 
