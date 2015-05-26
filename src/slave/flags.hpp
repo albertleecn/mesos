@@ -80,10 +80,13 @@ public:
   std::string containerizers;
   Option<std::string> default_container_image;
   std::string docker;
+  Option<std::string> docker_mesos_image;
   std::string docker_sandbox_directory;
   Duration docker_remove_delay;
   Option<ContainerInfo> default_container_info;
   Duration docker_stop_timeout;
+  bool docker_kill_orphans;
+  std::string docker_socket;
 #ifdef WITH_NETWORK_ISOLATOR
   uint16_t ephemeral_ports_per_container;
   Option<std::string> eth0_name;

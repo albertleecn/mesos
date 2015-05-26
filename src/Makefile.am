@@ -323,6 +323,7 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	common/values.cpp						\
 	docker/docker.hpp						\
 	docker/docker.cpp						\
+        docker/executor.hpp                                             \
 	exec/exec.cpp							\
 	files/files.cpp							\
 	hook/manager.cpp						\
@@ -821,6 +822,11 @@ pkglibexec_PROGRAMS += mesos-usage
 mesos_usage_SOURCES = usage/main.cpp
 mesos_usage_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_usage_LDADD = libmesos.la $(LDADD)
+
+pkglibexec_PROGRAMS += mesos-docker-executor
+mesos_docker_executor_SOURCES = docker/executor.cpp
+mesos_docker_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
+mesos_docker_executor_LDADD = libmesos.la
 
 bin_PROGRAMS += mesos-log
 mesos_log_SOURCES = log/main.cpp

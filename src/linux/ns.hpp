@@ -46,6 +46,30 @@
 #include <process/future.hpp>
 #include <process/reap.hpp>
 
+#ifndef CLONE_NEWNS
+#define CLONE_NEWNS 0x00020000
+#endif
+
+#ifndef CLONE_NEWUTS
+#define CLONE_NEWUTS 0x04000000
+#endif
+
+#ifndef CLONE_NEWIPC
+#define CLONE_NEWIPC 0x08000000
+#endif
+
+#ifndef CLONE_NEWPID
+#define CLONE_NEWPID 0x20000000
+#endif
+
+#ifndef CLONE_NEWNET
+#define CLONE_NEWNET 0x40000000
+#endif
+
+#ifndef CLONE_NEWUSER
+#define CLONE_NEWUSER 0x10000000
+#endif
+
 namespace ns {
 
 // Returns all the supported namespaces by the kernel.
@@ -68,41 +92,12 @@ inline Try<int> nstype(const std::string& ns)
 {
   hashmap<std::string, int> nstypes;
 
-#ifdef CLONE_NEWNS
   nstypes["mnt"] = CLONE_NEWNS;
-#else
-  nstypes["mnt"] = 0x00020000;
-#endif
-
-#ifdef CLONE_NEWUTS
   nstypes["uts"] = CLONE_NEWUTS;
-#else
-  nstypes["uts"] = 0x04000000;
-#endif
-
-#ifdef CLONE_NEWIPC
   nstypes["ipc"] = CLONE_NEWIPC;
-#else
-  nstypes["ipc"] = 0x08000000;
-#endif
-
-#ifdef CLONE_NEWNET
   nstypes["net"] = CLONE_NEWNET;
-#else
-  nstypes["net"] = 0x40000000;
-#endif
-
-#ifdef CLONE_NEWUSER
   nstypes["user"] = CLONE_NEWUSER;
-#else
-  nstypes["user"] = 0x10000000;
-#endif
-
-#ifdef CLONE_NEWPID
   nstypes["pid"] = CLONE_NEWPID;
-#else
-  nstypes["pid"] = 0x20000000;
-#endif
 
   if (!nstypes.contains(ns)) {
     return Error("Unknown namespace '" + ns + "'");
@@ -308,11 +303,12 @@ inline process::Future<Nothing> destroy(ino_t inode)
 inline std::string stringify(int flags)
 {
   hashmap<unsigned int, std::string> names = {
-    {CLONE_NEWIPC, "CLONE_NEWIPC"},
-    {CLONE_NEWNET, "CLONE_NEWNET"},
-    {CLONE_NEWNS,  "CLONE_NEWNS"},
-    {CLONE_NEWPID, "CLONE_NEWPID"},
-    {CLONE_NEWUTS, "CLONE_NEWUTS"}
+    {CLONE_NEWNS,   "CLONE_NEWNS"},
+    {CLONE_NEWUTS,  "CLONE_NEWUTS"},
+    {CLONE_NEWIPC,  "CLONE_NEWIPC"},
+    {CLONE_NEWPID,  "CLONE_NEWPID"},
+    {CLONE_NEWNET,  "CLONE_NEWNET"},
+    {CLONE_NEWUSER, "CLONE_NEWUSER"}
   };
 
   std::vector<std::string> namespaces;

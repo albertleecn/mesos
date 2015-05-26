@@ -21,9 +21,11 @@
 
 #include <process/shared.hpp>
 
+#include <stout/flags.hpp>
 #include <stout/hashset.hpp>
 
 #include "docker/docker.hpp"
+#include "docker/executor.hpp"
 
 #include "slave/containerizer/containerizer.hpp"
 
@@ -34,6 +36,10 @@ namespace slave {
 // Prefix used to name Docker containers in order to distinguish those
 // created by Mesos from those created manually.
 extern const std::string DOCKER_NAME_PREFIX;
+
+// Seperator used to compose docker container name, which is made up
+// of slave ID and container ID.
+extern const std::string DOCKER_NAME_SEPERATOR;
 
 // Directory that stores all the symlinked sandboxes that is mapped
 // into Docker containers. This is a relative directory that will
@@ -124,16 +130,7 @@ public:
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
-      const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint);
-
-  virtual process::Future<bool> launch(
-      const ContainerID& containerId,
-      const TaskInfo& taskInfo,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
@@ -157,11 +154,7 @@ public:
 
   virtual process::Future<Nothing> fetch(const ContainerID& containerId);
 
-  virtual process::Future<Nothing> pull(
-      const ContainerID& containerId,
-      const std::string& directory,
-      const std::string& image,
-      bool forcePullImage);
+  virtual process::Future<Nothing> pull(const ContainerID& containerId);
 
   virtual process::Future<hashset<ContainerID>> containers();
 
@@ -171,44 +164,34 @@ private:
       const ContainerID& containerId,
       const Option<int>& status);
 
-  process::Future<Nothing> _pull(const std::string& image);
-
   Try<Nothing> checkpoint(
       const ContainerID& containerId,
       pid_t pid);
 
   process::Future<Nothing> _recover(
-      const Option<state::SlaveState>& state,
+      const state::SlaveState& state,
       const std::list<Docker::Container>& containers);
 
   process::Future<Nothing> __recover(
       const std::list<Docker::Container>& containers);
 
-  process::Future<Nothing> _launch(
-      const ContainerID& containerId);
-
-  process::Future<Nothing> __launch(
-      const ContainerID& containerId);
-
-  // NOTE: This continuation is only applicable when launching a
-  // container for a task.
-  process::Future<pid_t> ___launch(
-      const ContainerID& containerId);
-
-  // NOTE: This continuation is only applicable when launching a
-  // container for an executor.
-  process::Future<Docker::Container> ____launch(
-      const ContainerID& containerId);
-
-  // NOTE: This continuation is only applicable when launching a
-  // container for an executor.
-  process::Future<pid_t> _____launch(
+  // Starts the executor in a Docker container.
+  process::Future<Docker::Container> launchExecutorContainer(
       const ContainerID& containerId,
-      const Docker::Container& container);
+      const std::string& containerName);
 
-  process::Future<bool> ______launch(
-    const ContainerID& containerId,
-    pid_t pid);
+  // Starts the docker executor with a subprocess.
+  process::Future<pid_t> launchExecutorProcess(
+      const ContainerID& containerId);
+
+  process::Future<pid_t> checkpointExecutor(
+      const ContainerID& containerId,
+      const Docker::Container& dockerContainer);
+
+  // Reaps on the executor pid.
+  process::Future<bool> reapExecutor(
+      const ContainerID& containerId,
+      pid_t pid);
 
   void _destroy(
       const ContainerID& containerId,
@@ -247,7 +230,9 @@ private:
   void reaped(const ContainerID& containerId);
 
   // Removes the docker container.
-  void remove(const std::string& container);
+  void remove(
+      const std::string& containerName,
+      const Option<std::string>& executor);
 
   const Flags flags;
 
@@ -268,6 +253,12 @@ private:
         bool checkpoint,
         const Flags& flags);
 
+    static std::string name(const SlaveID& slaveId, const std::string& id)
+    {
+      return DOCKER_NAME_PREFIX + slaveId.value() + DOCKER_NAME_SEPERATOR +
+        stringify(id);
+    }
+
     Container(const ContainerID& id)
       : state(FETCHING), id(id) {}
 
@@ -280,7 +271,11 @@ private:
               const process::PID<Slave>& slavePid,
               bool checkpoint,
               bool symlinked,
-              const Flags& flags)
+              const Flags& flags,
+              const Option<CommandInfo>& _command,
+              const Option<ContainerInfo>& _container,
+              const Option<std::map<std::string, std::string>>& _environment,
+              bool launchesExecutorContainer)
       : state(FETCHING),
         id(id),
         task(taskInfo),
@@ -291,7 +286,8 @@ private:
         slavePid(slavePid),
         checkpoint(checkpoint),
         symlinked(symlinked),
-        flags(flags)
+        flags(flags),
+        launchesExecutorContainer(launchesExecutorContainer)
     {
       // NOTE: The task's resources are included in the executor's
       // resources in order to make sure when launching the executor
@@ -308,6 +304,34 @@ private:
       if (task.isSome()) {
         CHECK(resources.contains(task.get().resources()));
       }
+
+      if (_command.isSome()) {
+        command = _command.get();
+      } else if (task.isSome()) {
+        command = task.get().command();
+      } else {
+        command = executor.command();
+      }
+
+      if (_container.isSome()) {
+        container = _container.get();
+      } else if (task.isSome()) {
+        container = task.get().container();
+      } else {
+        container = executor.container();
+      }
+
+      if (_environment.isSome()) {
+        environment = _environment.get();
+      } else {
+        environment = executorEnvironment(
+            executor,
+            directory,
+            slaveId,
+            slavePid,
+            checkpoint,
+            flags.recovery_timeout);
+      }
     }
 
     ~Container()
@@ -321,7 +345,16 @@ private:
 
     std::string name()
     {
-      return DOCKER_NAME_PREFIX + stringify(id);
+      return name(slaveId, stringify(id));
+    }
+
+    Option<std::string> executorName()
+    {
+      if (launchesExecutorContainer) {
+        return name() + DOCKER_NAME_SEPERATOR + "executor";
+      } else {
+        return None();
+      }
     }
 
     std::string image() const
@@ -340,41 +373,6 @@ private:
       }
 
       return executor.container().docker().force_pull_image();
-    }
-
-    ContainerInfo container() const
-    {
-      if (task.isSome()) {
-        return task.get().container();
-      }
-
-      return executor.container();
-    }
-
-    CommandInfo command() const
-    {
-      if (task.isSome()) {
-        return task.get().command();
-      }
-
-      return executor.command();
-    }
-
-    // Returns any extra environment varaibles to set when launching
-    // the Docker container (beyond the those found in CommandInfo).
-    std::map<std::string, std::string> environment() const
-    {
-      if (task.isNone()) {
-        return executorEnvironment(
-            executor,
-            directory,
-            slaveId,
-            slavePid,
-            checkpoint,
-            flags.recovery_timeout);
-      }
-
-      return std::map<std::string, std::string>();
     }
 
     // The DockerContainerier needs to be able to properly clean up
@@ -406,20 +404,23 @@ private:
       DESTROYING = 4
     } state;
 
-    ContainerID id;
-    Option<TaskInfo> task;
-    ExecutorInfo executor;
+    const ContainerID id;
+    const Option<TaskInfo> task;
+    const ExecutorInfo executor;
+    ContainerInfo container;
+    CommandInfo command;
+    std::map<std::string, std::string> environment;
 
     // The sandbox directory for the container. This holds the
     // symlinked path if symlinked boolean is true.
-    std::string directory;
+    const std::string directory;
 
-    Option<std::string> user;
+    const Option<std::string> user;
     SlaveID slaveId;
-    process::PID<Slave> slavePid;
+    const process::PID<Slave> slavePid;
     bool checkpoint;
     bool symlinked;
-    Flags flags;
+    const Flags flags;
 
     // Promise for future returned from wait().
     Promise<containerizer::Termination> termination;
@@ -451,6 +452,10 @@ private:
     // container. This is stored so we can clean up the executor
     // on destroy.
     Option<pid_t> executorPid;
+
+    // Marks if this container launches a executor in a docker
+    // container.
+    bool launchesExecutorContainer;
   };
 
   hashmap<ContainerID, Container*> containers_;

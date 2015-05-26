@@ -41,6 +41,8 @@
 #include "slave/containerizer/isolators/cgroups/cpushare.hpp"
 #include "slave/containerizer/isolators/cgroups/mem.hpp"
 
+#include "slave/constants.hpp"
+
 using namespace mesos;
 
 using namespace mesos::internal::slave;
@@ -96,8 +98,9 @@ static Future<Nothing> checkError(const string& cmd, const Subprocess& s)
 
 Try<Docker*> Docker::create(const string& path, bool validate)
 {
+  Docker* docker = new Docker(path);
   if (!validate) {
-    return new Docker(path);
+    return docker;
   }
 
 #ifdef __linux__
@@ -106,13 +109,44 @@ Try<Docker*> Docker::create(const string& path, bool validate)
   Result<string> hierarchy = cgroups::hierarchy("cpu");
 
   if (hierarchy.isNone()) {
+    delete docker;
     return Error("Failed to find a mounted cgroups hierarchy "
                  "for the 'cpu' subsystem; you probably need "
-                 "to mount cgroups manually!");
+                 "to mount cgroups manually");
   }
 #endif // __linux__
 
   // Validate the version (and that we can use Docker at all).
+  Future<Version> version = docker->version();
+
+  if (!version.await(DOCKER_VERSION_WAIT_TIMEOUT)) {
+    delete docker;
+    return Error("Timed out getting docker version");
+  }
+
+  if (version.isFailed()) {
+    delete docker;
+    return Error("Failed to get docker version: " + version.failure());
+  }
+
+  if (version.get() < Version(1, 0, 0)) {
+    delete docker;
+    return Error("Insufficient version of Docker. Please upgrade to >= 1.0.0");
+  }
+
+  return docker;
+}
+
+
+void commandDiscarded(const Subprocess& s, const string& cmd)
+{
+  VLOG(1) << "'" << cmd << "' is being discarded";
+  os::killtree(s.pid(), SIGKILL);
+}
+
+
+Future<Version> Docker::version() const
+{
   string cmd = path + " version";
 
   Try<Subprocess> s = subprocess(
@@ -122,115 +156,106 @@ Try<Docker*> Docker::create(const string& path, bool validate)
       Subprocess::PIPE());
 
   if (s.isError()) {
-    return Error(s.error());
+    return Failure(s.error());
   }
 
-  Future<Option<int> > status = s.get().status();
+  return s.get().status()
+    .then(lambda::bind(&Docker::_version, cmd, s.get()));
+}
 
-  if (!status.await(Seconds(5))) {
-    return Error("Timed out waiting for '" + cmd + "'");
-  } else if (status.isFailed()) {
-    return Error("Failed to execute '" + cmd + "': " + status.failure());
-  } else if (!status.get().isSome() || status.get().get() != 0) {
+
+Future<Version> Docker::_version(const string& cmd, const Subprocess& s)
+{
+  const Option<int>& status = s.status().get();
+  if (status.isNone() || status.get() != 0) {
     string msg = "Failed to execute '" + cmd + "': ";
-    if (status.get().isSome()) {
-      msg += WSTRINGIFY(status.get().get());
+    if (status.isSome()) {
+      msg += WSTRINGIFY(status.get());
     } else {
       msg += "unknown exit status";
     }
-    return Error(msg);
+    return Failure(msg);
   }
 
-  CHECK_SOME(s.get().out());
+  CHECK_SOME(s.out());
 
-  Future<string> output = io::read(s.get().out().get());
+  return io::read(s.out().get())
+    .then(lambda::bind(&Docker::__version, lambda::_1));
+}
 
-  if (!output.await(Seconds(5))) {
-    return Error("Timed out reading output from '" + cmd + "'");
-  } else if (output.isFailed()) {
-    return Error("Failed to read output from '" + cmd + "': " +
-                 output.failure());
-  }
 
+Future<Version> Docker::__version(const Future<string>& output)
+{
   foreach (string line, strings::split(output.get(), "\n")) {
     line = strings::trim(line);
     if (strings::startsWith(line, "Client version: ")) {
       line = line.substr(strlen("Client version: "));
-      vector<string> version = strings::split(line, ".");
-      if (version.size() < 1) {
-        return Error("Failed to parse Docker version '" + line + "'");
+      Try<Version> version = Version::parse(line);
+
+      if (version.isError()) {
+        return Failure("Failed to parse docker version: " + version.error());
       }
-      Try<int> major = numify<int>(version[0]);
-      if (major.isError()) {
-        return Error("Failed to parse Docker major version '" +
-                     version[0] + "'");
-      } else if (major.get() < 1) {
-        break;
-      }
-      return new Docker(path);
+
+      return version;
     }
   }
 
-  return Error("Insufficient version of Docker! Please upgrade to >= 1.0.0");
+  return Failure("Unable to find docker version in output");
 }
 
 
 Try<Docker::Container> Docker::Container::create(const JSON::Object& json)
 {
-  map<string, JSON::Value>::const_iterator entry =
-    json.values.find("Id");
-  if (entry == json.values.end()) {
+  Result<JSON::String> idValue = json.find<JSON::String>("Id");
+  if (idValue.isNone()) {
     return Error("Unable to find Id in container");
+  } else if (idValue.isError()) {
+    return Error("Error finding Id in container: " + idValue.error());
   }
 
-  JSON::Value idValue = entry->second;
-  if (!idValue.is<JSON::String>()) {
-    return Error("Id in container is not a string type");
-  }
+  string id = idValue.get().value;
 
-  string id = idValue.as<JSON::String>().value;
-
-  entry = json.values.find("Name");
-  if (entry == json.values.end()) {
+  Result<JSON::String> nameValue = json.find<JSON::String>("Name");
+  if (nameValue.isNone()) {
     return Error("Unable to find Name in container");
+  } else if (nameValue.isError()) {
+    return Error("Error finding Name in container: " + nameValue.error());
   }
 
-  JSON::Value nameValue = entry->second;
-  if (!nameValue.is<JSON::String>()) {
-    return Error("Name in container is not string type");
-  }
+  string name = nameValue.get().value;
 
-  string name = nameValue.as<JSON::String>().value;
-
-  entry = json.values.find("State");
-  if (entry == json.values.end()) {
+  Result<JSON::Object> stateValue = json.find<JSON::Object>("State");
+  if (stateValue.isNone()) {
     return Error("Unable to find State in container");
+  } else if (stateValue.isError()) {
+    return Error("Error finding State in container: " + stateValue.error());
   }
 
-  JSON::Value stateValue = entry->second;
-  if (!stateValue.is<JSON::Object>()) {
-    return Error("State in container is not object type");
-  }
-
-  entry = stateValue.as<JSON::Object>().values.find("Pid");
-  if (entry == json.values.end()) {
+  Result<JSON::Number> pidValue = stateValue.get().find<JSON::Number>("Pid");
+  if (pidValue.isNone()) {
     return Error("Unable to find Pid in State");
+  } else if (pidValue.isError()) {
+    return Error("Error finding Pid in State: " + pidValue.error());
   }
 
-  // TODO(yifan): Reload operator '=' to reuse the value variable above.
-  JSON::Value pidValue = entry->second;
-  if (!pidValue.is<JSON::Number>()) {
-    return Error("Pid in State is not number type");
-  }
-
-  pid_t pid = pid_t(pidValue.as<JSON::Number>().value);
+  pid_t pid = pid_t(pidValue.get().value);
 
   Option<pid_t> optionalPid;
   if (pid != 0) {
     optionalPid = pid;
   }
 
-  return Docker::Container(id, name, optionalPid);
+  Result<JSON::String> startedAtValue =
+    stateValue.get().find<JSON::String>("StartedAt");
+  if (startedAtValue.isNone()) {
+    return Error("Unable to find StartedAt in State");
+  } else if (startedAtValue.isError()) {
+    return Error("Error finding StartedAt in State: " + startedAtValue.error());
+  }
+
+  bool started = startedAtValue.get().value != "0001-01-01T00:00:00Z";
+
+  return Docker::Container(id, name, optionalPid, started);
 }
 
 
@@ -280,7 +305,9 @@ Future<Nothing> Docker::run(
     const string& sandboxDirectory,
     const string& mappedDirectory,
     const Option<Resources>& resources,
-    const Option<map<string, string> >& env) const
+    const Option<map<string, string>>& env,
+    const Option<string>& stdoutPath,
+    const Option<string>& stderrPath) const
 {
   if (!containerInfo.has_docker()) {
     return Failure("No docker info found in container info");
@@ -291,7 +318,6 @@ Future<Nothing> Docker::run(
   vector<string> argv;
   argv.push_back(path);
   argv.push_back("run");
-  argv.push_back("-d");
 
   if (dockerInfo.privileged()) {
     argv.push_back("--privileged");
@@ -350,7 +376,7 @@ Future<Nothing> Docker::run(
     argv.push_back(volumeConfig);
   }
 
-  // Mapping sandbox directory into the contianer mapped directory.
+  // Mapping sandbox directory into the container mapped directory.
   argv.push_back("-v");
   argv.push_back(sandboxDirectory + ":" + mappedDirectory);
 
@@ -470,12 +496,22 @@ Future<Nothing> Docker::run(
   // URI downloads.
   environment["HOME"] = sandboxDirectory;
 
+  Subprocess::IO stdoutIo = Subprocess::PIPE();
+  Subprocess::IO stderrIo = Subprocess::PIPE();
+  if (stdoutPath.isSome()) {
+    stdoutIo = Subprocess::PATH(stdoutPath.get());
+  }
+
+  if (stderrPath.isSome()) {
+    stderrIo = Subprocess::PATH(stderrPath.get());
+  }
+
   Try<Subprocess> s = subprocess(
       path,
       argv,
       Subprocess::PATH("/dev/null"),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      stdoutIo,
+      stderrIo,
       None(),
       environment);
 
@@ -483,11 +519,31 @@ Future<Nothing> Docker::run(
     return Failure(s.error());
   }
 
-  return checkError(cmd, s.get());
+  // We don't call checkError here to avoid printing the stderr
+  // of the docker container task as docker run with attach forwards
+  // the container's stderr to the client's stderr.
+  return s.get().status()
+    .then(lambda::bind(
+        &Docker::_run,
+        lambda::_1))
+    .onDiscard(lambda::bind(&commandDiscarded, s.get(), cmd));
 }
 
+
+Future<Nothing> Docker::_run(const Option<int>& status)
+{
+  if (status.isNone()) {
+    return Failure("Failed to get exit status");
+  } else if (status.get() != 0) {
+    return Failure("Container exited on error: " + WSTRINGIFY(status.get()));
+  }
+
+  return Nothing();
+}
+
+
 Future<Nothing> Docker::stop(
-    const string& container,
+    const string& containerName,
     const Duration& timeout,
     bool remove) const
 {
@@ -497,7 +553,8 @@ Future<Nothing> Docker::stop(
                    stringify(timeoutSecs));
   }
 
-  string cmd = path + " stop -t " + stringify(timeoutSecs) + " " + container;
+  string cmd = path + " stop -t " + stringify(timeoutSecs) +
+               " " + containerName;
 
   VLOG(1) << "Running " << cmd;
 
@@ -515,7 +572,7 @@ Future<Nothing> Docker::stop(
     .then(lambda::bind(
         &Docker::_stop,
         *this,
-        container,
+        containerName,
         cmd,
         s.get(),
         remove));
@@ -523,7 +580,7 @@ Future<Nothing> Docker::stop(
 
 Future<Nothing> Docker::_stop(
     const Docker& docker,
-    const string& container,
+    const string& containerName,
     const string& cmd,
     const Subprocess& s,
     bool remove)
@@ -532,7 +589,7 @@ Future<Nothing> Docker::_stop(
 
   if (remove) {
     bool force = !status.isSome() || status.get() != 0;
-    return docker.rm(container, force);
+    return docker.rm(containerName, force);
   }
 
   return checkError(cmd, s);
@@ -540,10 +597,10 @@ Future<Nothing> Docker::_stop(
 
 
 Future<Nothing> Docker::rm(
-    const string& container,
+    const string& containerName,
     bool force) const
 {
-  const string cmd = path + (force ? " rm -f " : " rm ") + container;
+  const string cmd = path + (force ? " rm -f " : " rm ") + containerName;
 
   VLOG(1) << "Running " << cmd;
 
@@ -561,9 +618,28 @@ Future<Nothing> Docker::rm(
 }
 
 
-Future<Docker::Container> Docker::inspect(const string& container) const
+Future<Docker::Container> Docker::inspect(
+    const string& containerName,
+    const Option<Duration>& retryInterval) const
 {
-  const string cmd =  path + " inspect " + container;
+  Owned<Promise<Docker::Container>> promise(new Promise<Docker::Container>());
+
+  const string cmd =  path + " inspect " + containerName;
+  _inspect(cmd, promise, retryInterval);
+
+  return promise->future();
+}
+
+
+void Docker::_inspect(
+    const string& cmd,
+    const Owned<Promise<Docker::Container>>& promise,
+    const Option<Duration>& retryInterval)
+{
+  if (promise->future().hasDiscard()) {
+    promise->discard();
+    return;
+  }
 
   VLOG(1) << "Running " << cmd;
 
@@ -574,48 +650,86 @@ Future<Docker::Container> Docker::inspect(const string& container) const
       Subprocess::PIPE());
 
   if (s.isError()) {
-    return Failure(s.error());
+    promise->fail(s.error());
+    return;
   }
 
-  return s.get().status()
-    .then(lambda::bind(&Docker::_inspect, cmd, s.get()));
+  s.get().status()
+    .onAny([=]() { __inspect(cmd, promise, retryInterval, s.get()); });
 }
 
 
-Future<Docker::Container> Docker::_inspect(
+void Docker::__inspect(
     const string& cmd,
+    const Owned<Promise<Docker::Container>>& promise,
+    const Option<Duration>& retryInterval,
     const Subprocess& s)
 {
+  if (promise->future().hasDiscard()) {
+    promise->discard();
+    return;
+  }
+
   // Check the exit status of 'docker inspect'.
   CHECK_READY(s.status());
 
   Option<int> status = s.status().get();
 
   if (!status.isSome()) {
-    return Failure("No status found from '" + cmd + "'");
+    promise->fail("No status found from '" + cmd + "'");
   } else if (status.get() != 0) {
+    if (retryInterval.isSome()) {
+      VLOG(1) << "Retrying inspect with non-zero status code. cmd: '"
+              << cmd << "', interval: " << stringify(retryInterval.get());
+      Clock::timer(retryInterval.get(),
+                   [=]() { _inspect(cmd, promise, retryInterval); } );
+      return;
+    }
+
     CHECK_SOME(s.err());
-    return io::read(s.err().get())
+    io::read(s.err().get())
       .then(lambda::bind(
-                failure<Docker::Container>,
+                failure<Nothing>,
                 cmd,
                 status.get(),
-                lambda::_1));
+                lambda::_1))
+      .onAny([=](const Future<Nothing>& future) {
+          CHECK_FAILED(future);
+          promise->fail(future.failure());
+      });
+    return;
   }
 
   // Read to EOF.
   CHECK_SOME(s.out());
-  return io::read(s.out().get())
-    .then(lambda::bind(&Docker::__inspect, lambda::_1));
+  io::read(s.out().get())
+    .onAny([=](const Future<string>& output) {
+      ___inspect(cmd, promise, retryInterval, output);
+    });
 }
 
 
-Future<Docker::Container> Docker::__inspect(const string& output)
+void Docker::___inspect(
+    const string& cmd,
+    const Owned<Promise<Docker::Container>>& promise,
+    const Option<Duration>& retryInterval,
+    const Future<string>& output)
 {
-  Try<JSON::Array> parse = JSON::parse<JSON::Array>(output);
+  if (promise->future().hasDiscard()) {
+    promise->discard();
+    return;
+  }
+
+  if (!output.isReady()) {
+    promise->fail(output.isFailed() ? output.failure() : "future discarded");
+    return;
+  }
+
+  Try<JSON::Array> parse = JSON::parse<JSON::Array>(output.get());
 
   if (parse.isError()) {
-    return Failure("Failed to parse JSON: " + parse.error());
+    promise->fail("Failed to parse JSON: " + parse.error());
+    return;
   }
 
   JSON::Array array = parse.get();
@@ -626,69 +740,30 @@ Future<Docker::Container> Docker::__inspect(const string& output)
       Docker::Container::create(array.values.front().as<JSON::Object>());
 
     if (container.isError()) {
-      return Failure("Unable to create container: " + container.error());
+      promise->fail("Unable to create container: " + container.error());
+      return;
     }
 
-    return container.get();
+    if (retryInterval.isSome() && !container.get().started) {
+      VLOG(1) << "Retrying inspect since container not yet started. cmd: '"
+              << cmd << "', interval: " << stringify(retryInterval.get());
+      Clock::timer(retryInterval.get(),
+                   [=]() { _inspect(cmd, promise, retryInterval); } );
+      return;
+    }
+
+    promise->set(container.get());
+    return;
   }
 
   // TODO(benh): Handle the case where the short container ID was
   // not sufficiently unique and 'array.values.size() > 1'.
 
-  return Failure("Failed to find container");
+  promise->fail("Failed to find container");
 }
 
 
-Future<Nothing> Docker::logs(
-    const std::string& container,
-    const std::string& directory) const
-{
-  // Redirect the logs into stdout/stderr.
-  //
-  // TODO(benh): This is an intermediate solution for now until we can
-  // reliably stream the logs either from the CLI or from the REST
-  // interface directly. The problem is that it's possible that the
-  // 'docker logs --follow' command will be started AFTER the
-  // container has already terminated, and thus it will continue
-  // running forever because the container has stopped. Unfortunately,
-  // when we later remove the container that still doesn't cause the
-  // 'logs' process to exit. Thus, we wait some period of time until
-  // after the container has terminated in order to let any log data
-  // get flushed, then we kill the 'logs' process ourselves.  A better
-  // solution would be to first "create" the container, then start
-  // following the logs, then finally "start" the container so that
-  // when the container terminates Docker will properly close the log
-  // stream and 'docker logs' will exit. For more information, please
-  // see: https://github.com/docker/docker/issues/7020
-
-  string logs =
-    "logs() {\n"
-    "  " + path + " logs --follow $1 &\n"
-    "  pid=$!\n"
-    "  " + path + " wait $1 >/dev/null 2>&1\n"
-    "  sleep 10\n" // Sleep 10 seconds to make sure the logs are flushed.
-    "  kill -TERM $pid >/dev/null 2>&1 &\n"
-    "}\n"
-    "logs " + container;
-
-  VLOG(1) << "Running " << logs;
-
-  Try<Subprocess> s = subprocess(
-      logs,
-      Subprocess::PATH("/dev/null"),
-      Subprocess::PATH(path::join(directory, "stdout")),
-      Subprocess::PATH(path::join(directory, "stderr")));
-
-  if (s.isError()) {
-    return Failure("Unable to launch docker logs: " + s.error());
-  }
-
-  return s.get().status()
-    .then(lambda::bind(&_nothing));
-}
-
-
-Future<list<Docker::Container> > Docker::ps(
+Future<list<Docker::Container>> Docker::ps(
     bool all,
     const Option<string>& prefix) const
 {
@@ -716,7 +791,7 @@ Future<list<Docker::Container> > Docker::ps(
 }
 
 
-Future<list<Docker::Container> > Docker::_ps(
+Future<list<Docker::Container>> Docker::_ps(
     const Docker& docker,
     const string& cmd,
     const Subprocess& s,
@@ -733,7 +808,7 @@ Future<list<Docker::Container> > Docker::_ps(
     CHECK_SOME(s.err());
     return io::read(s.err().get())
       .then(lambda::bind(
-                failure<list<Docker::Container> >,
+                failure<list<Docker::Container>>,
                 cmd,
                 status.get(),
                 lambda::_1));
@@ -744,7 +819,7 @@ Future<list<Docker::Container> > Docker::_ps(
 }
 
 
-Future<list<Docker::Container> > Docker::__ps(
+Future<list<Docker::Container>> Docker::__ps(
     const Docker& docker,
     const Option<string>& prefix,
     const string& output)
@@ -755,7 +830,7 @@ Future<list<Docker::Container> > Docker::__ps(
   CHECK(!lines.empty());
   lines.erase(lines.begin());
 
-  list<Future<Docker::Container> > futures;
+  list<Future<Docker::Container>> futures;
 
   foreach (const string& line, lines) {
     // Inspect the containers that we are interested in depending on
@@ -893,14 +968,7 @@ Future<Docker::Image> Docker::__pull(
         cmd,
         directory,
         image))
-    .onDiscard(lambda::bind(&Docker::pullDiscarded, s_.get(), cmd));
-}
-
-
-void Docker::pullDiscarded(const Subprocess& s, const string& cmd)
-{
-  VLOG(1) << "'" << cmd << "' is being discarded";
-  os::killtree(s.pid(), SIGKILL);
+    .onDiscard(lambda::bind(&commandDiscarded, s_.get(), cmd));
 }
 
 

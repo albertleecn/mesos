@@ -292,6 +292,32 @@ mesos::internal::slave::Flags::Flags()
       "(e.g., 3days, 2weeks, etc).\n",
       DOCKER_REMOVE_DELAY);
 
+  add(&Flags::docker_kill_orphans,
+      "docker_kill_orphans",
+      "Enable docker containerizer to kill orphaned containers.\n"
+      "You should consider setting this to false when you launch multiple\n"
+      "slaves in the same OS, to avoid one of the DockerContainerizer \n"
+      "removing docker tasks launched by other slaves. However you should\n"
+      "also make sure to enable checkpoint for the slave so the same slave id\n"
+      "can be reused, otherwise docker tasks on slave restart will not be\n"
+      "cleaned up.\n",
+      true);
+
+  add(&Flags::docker_mesos_image,
+      "docker_mesos_image",
+      "The docker image used to launch this mesos slave instance.\n"
+      "If an image is specified, the docker containerizer assumes the slave\n"
+      "is running in a docker container, and launches executors with\n"
+      "docker containers in order to recover them when the slave restarts and\n"
+      "recovers.\n");
+
+  add(&Flags::docker_socket,
+      "docker_socket",
+      "The UNIX socket path to be mounted into the docker executor container\n"
+      "to provide docker CLI access to the docker daemon. This must be the\n"
+      "path used by the slave's docker image.\n",
+      "/var/run/docker.sock");
+
   add(&Flags::default_container_info,
       "default_container_info",
       "JSON formatted ContainerInfo that will be included into\n"
