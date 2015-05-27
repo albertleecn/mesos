@@ -7,6 +7,7 @@ layout: documentation
 ## Organizations using Mesos
 
 * [Airbnb](http://www.airbnb.com)
+* [Allegro](http://allegrotech.io)
 * [Altocloud](http://www.altocloud.com/)
 * [Apple](http://www.apple.com)
 * [Artirix](http://www.artirix.com)
@@ -56,6 +57,7 @@ layout: documentation
 * [Qubit](http://www.qubitproducts.com)
 * [RelateIQ](http://www.relateiq.com)
 * [Revisely](http://revise.ly)
+* [Sabre Labs](http://www.sabre.com)
 * [Sailthru](http://www.sailthru.com)
 * [Sharethrough](http://www.sharethrough.com)
 * [Sigmoid Analytics](http://www.sigmoidanalytics.com/)
