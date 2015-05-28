@@ -158,6 +158,9 @@ MODULE_PROTO =								\
 SCHEDULER_PROTO =							\
   $(top_srcdir)/include/mesos/scheduler/scheduler.proto
 
+OVERSUBSCRIPTION_PROTO =						\
+  $(top_srcdir)/include/mesos/slave/oversubscription.proto
+
 CXX_PROTOS =								\
   mesos.pb.cc								\
   ../include/mesos/mesos.pb.h						\
@@ -172,7 +175,9 @@ CXX_PROTOS =								\
   module/module.pb.cc							\
   ../include/mesos/module/module.pb.h					\
   scheduler/scheduler.pb.cc						\
-  ../include/mesos/scheduler/scheduler.pb.h
+  ../include/mesos/scheduler/scheduler.pb.h				\
+  slave/oversubscription.pb.cc						\
+  ../include/mesos/slave/oversubscription.pb.h
 
 JAVA_PROTOS =								\
   java/generated/org/apache/mesos/Protos.java				\
@@ -248,6 +253,12 @@ scheduler/%.pb.cc ../include/mesos/scheduler/%.pb.h: $(SCHEDULER_PROTO)
 	$(MKDIR_P) ../include/mesos/scheduler
 	$(PROTOC) $(PROTOCFLAGS) --cpp_out=../include $^
 	mv ../include/mesos/scheduler/*.pb.cc $(@D)
+
+slave/%.pb.cc ../include/mesos/slave/%.pb.h: $(OVERSUBSCRIPTION_PROTO)
+	$(MKDIR_P) $(@D)
+	$(MKDIR_P) ../include/mesos/slave
+	$(PROTOC) $(PROTOCFLAGS) --cpp_out=../include $^
+	mv ../include/mesos/slave/*.pb.cc $(@D)
 
 %.pb.cc %.pb.h: %.proto
 	$(MKDIR_P) $(@D)
@@ -455,7 +466,10 @@ slavedir = $(pkgincludedir)/slave
 
 slave_HEADERS =								\
   $(top_srcdir)/include/mesos/slave/isolator.hpp			\
-  $(top_srcdir)/include/mesos/slave/resource_estimator.hpp
+  $(top_srcdir)/include/mesos/slave/resource_estimator.hpp		\
+  $(top_srcdir)/include/mesos/slave/oversubscription.proto
+
+nodist_slave_HEADERS = ../include/mesos/slave/oversubscription.pb.h
 
 if OS_LINUX
   libmesos_no_3rdparty_la_SOURCES += linux/cgroups.cpp
@@ -482,10 +496,10 @@ if WITH_NETWORK_ISOLATOR
 	linux/routing/filter/ip.cpp					\
 	linux/routing/link/link.cpp					\
 	linux/routing/queueing/fq_codel.cpp				\
-	linux/routing/queueing/handle.cpp				\
 	linux/routing/queueing/ingress.cpp
 
   libmesos_no_3rdparty_la_SOURCES +=					\
+	linux/routing/handle.hpp					\
 	linux/routing/internal.hpp					\
 	linux/routing/route.hpp						\
 	linux/routing/utils.hpp						\
@@ -501,7 +515,6 @@ if WITH_NETWORK_ISOLATOR
 	linux/routing/link/internal.hpp					\
 	linux/routing/link/link.hpp					\
 	linux/routing/queueing/fq_codel.hpp				\
-	linux/routing/queueing/handle.hpp				\
 	linux/routing/queueing/ingress.hpp				\
 	linux/routing/queueing/internal.hpp
 
@@ -722,7 +735,8 @@ libmesos_la_SOURCES =							\
   $(FETCHER_PROTO)							\
   $(MESOS_PROTO)							\
   $(MODULE_PROTO)							\
-  $(SCHEDULER_PROTO)
+  $(SCHEDULER_PROTO)							\
+  $(OVERSUBSCRIPTION_PROTO)
 
 libmesos_la_LDFLAGS = -release $(PACKAGE_VERSION)
 
