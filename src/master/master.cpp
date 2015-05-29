@@ -718,6 +718,11 @@ void Master::initialize()
       &ExitedExecutorMessage::executor_id,
       &ExitedExecutorMessage::status);
 
+  install<UpdateSlaveMessage>(
+      &Master::updateSlave,
+      &UpdateSlaveMessage::slave_id,
+      &UpdateSlaveMessage::oversubscribed_resources);
+
   install<AuthenticateMessage>(
       &Master::authenticate,
       &AuthenticateMessage::pid);
@@ -3452,6 +3457,61 @@ void Master::unregisterSlave(const UPID& from, const SlaveID& slaveId)
 }
 
 
+void Master::updateSlave(
+    const SlaveID& slaveId,
+    const vector<Resource>& oversubscribedResources)
+{
+  ++metrics->messages_update_slave;
+
+  if (slaves.removed.get(slaveId).isSome()) {
+    // If the slave is removed, we have already informed
+    // frameworks that its tasks were LOST, so the slave should
+    // shut down.
+    LOG(WARNING)
+      << "Ignoring update of slave with total oversubscribed resources "
+      << oversubscribedResources << " on removed slave " << slaveId
+      << " ; asking slave to shutdown";
+
+    ShutdownMessage message;
+    message.set_message("Update slave message from unknown slave");
+    reply(message);
+    return;
+  }
+
+  if (!slaves.registered.contains(slaveId)) {
+    LOG(WARNING)
+      << "Ignoring update of slave with total oversubscribed resources "
+      << oversubscribedResources << " on unknown slave " << slaveId;
+    return;
+  }
+
+  Slave* slave = CHECK_NOTNULL(slaves.registered.get(slaveId));
+
+  LOG(INFO) << "Received update of slave " << *slave << " with total"
+            << " oversubscribed resources " <<  oversubscribedResources;
+
+  // First, rescind any oustanding offers with revocable resources.
+  // NOTE: Need a copy of offers because the offers are removed inside
+  // the loop.
+  foreach (Offer* offer, utils::copy(slave->offers)) {
+    const Resources offered = offer->resources();
+    if (!offered.revocable().empty()) {
+      LOG(INFO) << "Removing offer " << offer->id()
+                << " with revocable resources " << offered
+                << " on slave " << *slave;
+
+      allocator->recoverResources(
+          offer->framework_id(), offer->slave_id(), offer->resources(), None());
+
+      removeOffer(offer, true); // Rescind.
+    }
+  }
+
+  // Now, update the allocator with the new estimate.
+  allocator->updateSlave(slaveId, oversubscribedResources);
+}
+
+
 // TODO(vinod): Since 0.22.0, we can use 'from' instead of 'pid'
 // because the status updates will be sent by the slave.
 void Master::statusUpdate(const StatusUpdate& update, const UPID& pid)
@@ -3964,6 +4024,10 @@ void Master::offer(const FrameworkID& frameworkId,
       }
     }
 #endif // WITH_NETWORK_ISOLATOR
+
+    // TODO(vinod): Split regular and revocable resources into
+    // separate offers, so that rescinding offers with revocable
+    // resources does not affect offers with regular resources.
 
     Offer* offer = new Offer();
     offer->mutable_id()->MergeFrom(newOfferId());
