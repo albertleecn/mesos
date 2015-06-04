@@ -22,6 +22,8 @@
 
 #include <mesos/module/anonymous.hpp>
 
+#include <mesos/slave/resource_estimator.hpp>
+
 #include <stout/check.hpp>
 #include <stout/flags.hpp>
 #include <stout/nothing.hpp>
@@ -42,7 +44,6 @@
 #include "module/manager.hpp"
 
 #include "slave/gc.hpp"
-#include "slave/resource_estimator.hpp"
 #include "slave/slave.hpp"
 #include "slave/status_update_manager.hpp"
 
@@ -60,15 +61,6 @@ using std::cerr;
 using std::cout;
 using std::endl;
 using std::string;
-
-
-void usage(const char* argv0, const flags::FlagsBase& flags)
-{
-  cerr << "Usage: " << os::basename(argv0).get() << " [...]" << endl
-       << endl
-       << "Supported options:" << endl
-       << flags.usage();
-}
 
 
 void version()
@@ -100,32 +92,28 @@ int main(int argc, char** argv)
             "  zk://username:password@host1:port1,host2:port2,.../path\n"
             "  file:///path/to/file (where file contains one of the above)");
 
-  bool help;
-  flags.add(&help,
-            "help",
-            "Prints this help message",
-            false);
-
   Try<Nothing> load = flags.load("MESOS_", argc, argv);
 
+  // TODO(marco): this pattern too should be abstracted away
+  // in FlagsBase; I have seen it at least 15 times.
   if (load.isError()) {
-    cerr << load.error() << endl;
-    usage(argv[0], flags);
-    EXIT(1);
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
   }
 
-  if (help) {
-    usage(argv[0], flags);
-    EXIT(1);
+  if (flags.help) {
+    cout << flags.usage() << endl;
+    return EXIT_SUCCESS;
   }
 
   if (flags.version) {
     version();
-    exit(0);
+    return EXIT_SUCCESS;
   }
 
   if (master.isNone()) {
-    EXIT(1) << "Missing required option --master";
+    cerr << flags.usage("Missing required option --master") << endl;
+    return EXIT_FAILURE;
   }
 
   // Initialize modules. Note that since other subsystems may depend
@@ -133,7 +121,7 @@ int main(int argc, char** argv)
   if (flags.modules.isSome()) {
     Try<Nothing> result = ModuleManager::load(flags.modules.get());
     if (result.isError()) {
-      EXIT(1) << "Error loading modules: " << result.error();
+      EXIT(EXIT_FAILURE) << "Error loading modules: " << result.error();
     }
   }
 
@@ -141,7 +129,7 @@ int main(int argc, char** argv)
   if (flags.hooks.isSome()) {
     Try<Nothing> result = HookManager::initialize(flags.hooks.get());
     if (result.isError()) {
-      EXIT(1) << "Error installing hooks: " << result.error();
+      EXIT(EXIT_FAILURE) << "Error installing hooks: " << result.error();
     }
   }
 
@@ -174,21 +162,23 @@ int main(int argc, char** argv)
     Containerizer::create(flags, false, &fetcher);
 
   if (containerizer.isError()) {
-    EXIT(1) << "Failed to create a containerizer: "
-            << containerizer.error();
+    EXIT(EXIT_FAILURE)
+      << "Failed to create a containerizer: " << containerizer.error();
   }
 
   Try<MasterDetector*> detector = MasterDetector::create(master.get());
 
   if (detector.isError()) {
-    EXIT(1) << "Failed to create a master detector: " << detector.error();
+    EXIT(EXIT_FAILURE)
+      << "Failed to create a master detector: " << detector.error();
   }
 
   // Create anonymous modules.
   foreach (const string& name, ModuleManager::find<Anonymous>()) {
     Try<Anonymous*> create = ModuleManager::create<Anonymous>(name);
     if (create.isError()) {
-      EXIT(1) << "Failed to create anonymous module named '" << name << "'";
+      EXIT(EXIT_FAILURE)
+        << "Failed to create anonymous module named '" << name << "'";
     }
 
     // We don't bother keeping around the pointer to this anonymous
@@ -200,8 +190,6 @@ int main(int argc, char** argv)
     // terminating.
   }
 
-  LOG(INFO) << "Starting Mesos slave";
-
   Files files;
   GarbageCollector gc;
   StatusUpdateManager statusUpdateManager(flags);
@@ -210,9 +198,12 @@ int main(int argc, char** argv)
     ResourceEstimator::create(flags.resource_estimator);
 
   if (resourceEstimator.isError()) {
-    EXIT(1) << "Failed to create resource estimator: "
-            << resourceEstimator.error();
+    cerr << "Failed to create resource estimator: "
+         << resourceEstimator.error() << endl;
+    return EXIT_FAILURE;
   }
+
+  LOG(INFO) << "Starting Mesos slave";
 
   Slave* slave = new Slave(
       flags,
@@ -234,5 +225,5 @@ int main(int argc, char** argv)
 
   delete containerizer.get();
 
-  return 0;
+  return EXIT_SUCCESS;
 }

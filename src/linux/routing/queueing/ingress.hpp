@@ -29,27 +29,11 @@ namespace routing {
 namespace queueing {
 namespace ingress {
 
-// Packets flowing from the device driver to the network stack are
-// called ingress traffic, and packets flowing from the network stack
-// to the device driver are called egress traffic (shown below).
-//
-//        +---------+
-//        | Network |
-//        |  Stack  |
-//        |---------|
-//        |  eth0   |
-//        +---------+
-//           ^   |
-//   Ingress |   | Egress
-//           |   |
-//    -------+   +------>
-//
-// For the ingress traffic, there are two immutable handles defined
-// for the interface which specify the root handle under which a
-// queueing discipline can be created, and the handle of any created
-// ingress filter.
-constexpr Handle ROOT(Handle(TC_H_INGRESS));
-constexpr Handle HANDLE(Handle(0xffff, 0));
+constexpr char KIND[] = "ingress";
+
+
+// The handle of the ingress queueing discipline is immutable.
+constexpr Handle HANDLE = Handle(0xffff, 0);
 
 
 // Returns true if there exists an ingress qdisc on the link.

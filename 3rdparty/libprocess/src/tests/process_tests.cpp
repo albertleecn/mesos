@@ -1462,7 +1462,7 @@ TEST(Process, remote)
   message.from = UPID();
   message.to = process.self();
 
-  const string& data = MessageEncoder::encode(&message);
+  const string data = MessageEncoder::encode(&message);
 
   AWAIT_READY(socket.send(data));
 
@@ -1641,7 +1641,7 @@ public:
 
 TEST(Process, provide)
 {
-  const Try<string>& mkdtemp = os::mkdtemp();
+  const Try<string> mkdtemp = os::mkdtemp();
   ASSERT_SOME(mkdtemp);
 
   const string LOREM_IPSUM =

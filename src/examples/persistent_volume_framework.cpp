@@ -37,12 +37,15 @@
 #include <stout/stringify.hpp>
 #include <stout/uuid.hpp>
 
+#include "common/status_utils.hpp"
+
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
 
 using namespace mesos;
 using namespace mesos::internal;
 
+using std::cerr;
 using std::cout;
 using std::endl;
 using std::ostringstream;
@@ -312,7 +315,7 @@ public:
       int status)
   {
     LOG(INFO) << "Lost executor '" << executorId << "' on slave "
-              << slaveId << ", status " << status;
+              << slaveId << ", " << WSTRINGIFY(status);
   }
 
   virtual void error(
@@ -403,11 +406,6 @@ public:
         "tasks_per_shard",
         "The number of tasks should be launched per shard.",
         3);
-
-    add(&help,
-        "help",
-        "Print this help message",
-        false);
   }
 
   Option<string> master;
@@ -415,21 +413,7 @@ public:
   string principal;
   size_t num_shards;
   size_t tasks_per_shard;
-  bool help;
 };
-
-
-static string usage(const char* argv0, const flags::FlagsBase& flags)
-{
-  ostringstream stream;
-
-  stream << "Usage: " << os::basename(argv0).get() << " [...]" << endl
-         << endl
-         << "Supported options:" << endl
-         << flags.usage();
-
-  return stream.str();
-}
 
 
 int main(int argc, char** argv)
@@ -439,15 +423,18 @@ int main(int argc, char** argv)
   Try<Nothing> load = flags.load("MESOS_", argc, argv);
 
   if (load.isError()) {
-    EXIT(1) << load.error() << endl << usage(argv[0], flags);
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
   }
 
   if (flags.help) {
-    EXIT(1) << usage(argv[0], flags);
+    cout << flags.usage() << endl;
+    return EXIT_SUCCESS;
   }
 
   if (flags.master.isNone()) {
-    EXIT(1) << "Missing required option --master. See --help";
+    cerr << flags.usage("Missing required option --master") << endl;
+    return EXIT_FAILURE;
   }
 
   logging::initialize(argv[0], flags, true); // Catch signals.
@@ -489,7 +476,7 @@ int main(int argc, char** argv)
       framework,
       flags.master.get());
 
-  int status = driver->run() == DRIVER_STOPPED ? 0 : 1;
+  int status = driver->run() == DRIVER_STOPPED ? EXIT_SUCCESS : EXIT_FAILURE;
 
   driver->stop();
   delete driver;

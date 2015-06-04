@@ -158,6 +158,9 @@ MODULE_PROTO =								\
 SCHEDULER_PROTO =							\
   $(top_srcdir)/include/mesos/scheduler/scheduler.proto
 
+EXECUTOR_PROTO =							\
+  $(top_srcdir)/include/mesos/executor/executor.proto
+
 OVERSUBSCRIPTION_PROTO =						\
   $(top_srcdir)/include/mesos/slave/oversubscription.proto
 
@@ -176,6 +179,8 @@ CXX_PROTOS =								\
   ../include/mesos/module/module.pb.h					\
   scheduler/scheduler.pb.cc						\
   ../include/mesos/scheduler/scheduler.pb.h				\
+  executor/executor.pb.cc						\
+  ../include/mesos/executor/executor.pb.h				\
   slave/oversubscription.pb.cc						\
   ../include/mesos/slave/oversubscription.pb.h
 
@@ -254,6 +259,12 @@ scheduler/%.pb.cc ../include/mesos/scheduler/%.pb.h: $(SCHEDULER_PROTO)
 	$(PROTOC) $(PROTOCFLAGS) --cpp_out=../include $^
 	mv ../include/mesos/scheduler/*.pb.cc $(@D)
 
+executor/%.pb.cc ../include/mesos/executor/%.pb.h: $(EXECUTOR_PROTO)
+	$(MKDIR_P) $(@D)
+	$(MKDIR_P) ../include/mesos/executor
+	$(PROTOC) $(PROTOCFLAGS) --cpp_out=../include $^
+	mv ../include/mesos/executor/*.pb.cc $(@D)
+
 slave/%.pb.cc ../include/mesos/slave/%.pb.h: $(OVERSUBSCRIPTION_PROTO)
 	$(MKDIR_P) $(@D)
 	$(MKDIR_P) ../include/mesos/slave
@@ -281,6 +292,10 @@ java/generated/org/apache/mesos/scheduler/Protos.java: $(SCHEDULER_PROTO)
 	$(MKDIR_P)  $(@D)
 	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
 
+java/generated/org/apache/mesos/executor/Protos.java: $(EXECUTOR_PROTO)
+	$(MKDIR_P)  $(@D)
+	$(PROTOC) $(PROTOCFLAGS) --java_out=java/generated $^
+
 python/interface/src/mesos/interface/mesos_pb2.py: $(MESOS_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) -I$(top_srcdir)/include/mesos				\
@@ -301,6 +316,13 @@ python/interface/src/mesos/interface/containerizer_pb2.py:		\
 python/interface/src/mesos/interface/scheduler_pb2.py: $(SCHEDULER_PROTO)
 	$(MKDIR_P) $(@D)
 	$(PROTOC) -I$(top_srcdir)/include/mesos/scheduler		\
+		$(PROTOCFLAGS)						\
+		--python_out=python/interface/src/mesos/interface $^
+	sed -e 's/mesos\.mesos_pb2/mesos_pb2/' <$@ >$@
+
+python/interface/src/mesos/interface/executor_pb2.py: $(EXECUTOR_PROTO)
+	$(MKDIR_P) $(@D)
+	$(PROTOC) -I$(top_srcdir)/include/mesos/executor		\
 		$(PROTOCFLAGS)						\
 		--python_out=python/interface/src/mesos/interface $^
 	sed -e 's/mesos\.mesos_pb2/mesos_pb2/' <$@ >$@
@@ -367,8 +389,9 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	slave/monitor.cpp						\
 	slave/paths.cpp							\
 	slave/resource_estimator.cpp					\
-	slave/state.cpp							\
 	slave/slave.cpp							\
+	slave/state.cpp							\
+	slave/status_update_manager.cpp					\
 	slave/containerizer/containerizer.cpp				\
 	slave/containerizer/composing.cpp				\
 	slave/containerizer/composing.hpp				\
@@ -381,7 +404,7 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	slave/containerizer/launcher.cpp				\
 	slave/containerizer/mesos/containerizer.cpp			\
 	slave/containerizer/mesos/launch.cpp				\
-	slave/status_update_manager.cpp					\
+	slave/resource_estimators/noop.cpp				\
 	usage/usage.cpp							\
 	watcher/whitelist_watcher.cpp					\
 	zookeeper/contender.cpp						\
@@ -450,7 +473,8 @@ module_HEADERS =							\
   $(top_srcdir)/include/mesos/module/hook.hpp				\
   $(top_srcdir)/include/mesos/module/isolator.hpp			\
   $(top_srcdir)/include/mesos/module/module.hpp				\
-  $(top_srcdir)/include/mesos/module/module.proto
+  $(top_srcdir)/include/mesos/module/module.proto			\
+  $(top_srcdir)/include/mesos/module/resource_estimator.hpp
 
 nodist_module_HEADERS = ../include/mesos/module/module.pb.h
 
@@ -461,6 +485,14 @@ scheduler_HEADERS =							\
   $(top_srcdir)/include/mesos/scheduler/scheduler.proto
 
 nodist_scheduler_HEADERS = ../include/mesos/scheduler/scheduler.pb.h
+
+executordir = $(pkgincludedir)/executor
+
+executor_HEADERS =							\
+  $(top_srcdir)/include/mesos/executor/executor.hpp			\
+  $(top_srcdir)/include/mesos/executor/executor.proto
+
+nodist_executor_HEADERS = ../include/mesos/executor/executor.pb.h
 
 slavedir = $(pkgincludedir)/slave
 
@@ -514,6 +546,7 @@ if WITH_NETWORK_ISOLATOR
 	linux/routing/filter/priority.hpp				\
 	linux/routing/link/internal.hpp					\
 	linux/routing/link/link.hpp					\
+	linux/routing/queueing/discipline.hpp				\
 	linux/routing/queueing/fq_codel.hpp				\
 	linux/routing/queueing/ingress.hpp				\
 	linux/routing/queueing/internal.hpp
@@ -578,7 +611,6 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 	slave/metrics.hpp						\
 	slave/monitor.hpp						\
 	slave/paths.hpp							\
-	slave/resource_estimator.hpp					\
 	slave/slave.hpp							\
 	slave/state.hpp							\
 	slave/status_update_manager.hpp					\
@@ -597,6 +629,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 	slave/containerizer/isolators/cgroups/perf_event.hpp		\
 	slave/containerizer/isolators/namespaces/pid.hpp		\
 	slave/containerizer/isolators/filesystem/shared.hpp		\
+	slave/resource_estimators/noop.hpp				\
 	tests/cluster.hpp						\
 	tests/containerizer.hpp						\
 	tests/environment.hpp						\
@@ -737,6 +770,7 @@ libmesos_la_SOURCES =							\
   $(MESOS_PROTO)							\
   $(MODULE_PROTO)							\
   $(SCHEDULER_PROTO)							\
+  $(EXECUTOR_PROTO)							\
   $(OVERSUBSCRIPTION_PROTO)
 
 libmesos_la_LDFLAGS = -release $(PACKAGE_VERSION)
@@ -1398,6 +1432,13 @@ libtestisolator_la_SOURCES = examples/test_isolator_module.cpp
 libtestisolator_la_CPPFLAGS = $(MESOS_CPPFLAGS)
 libtestisolator_la_LDFLAGS = $(MESOS_MODULE_LDFLAGS)
 
+# Library containing example test noop resource estimator module.
+noinst_LTLIBRARIES += libtestresource_estimator.la
+libtestresource_estimator_la_SOURCES =		\
+  examples/test_resource_estimator_module.cpp
+libtestresource_estimator_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libtestresource_estimator_la_LDFLAGS = $(MESOS_MODULE_LDFLAGS)
+
 mesos_tests_SOURCES =				\
   tests/anonymous_tests.cpp			\
   tests/attributes_tests.cpp			\
@@ -1418,6 +1459,7 @@ mesos_tests_SOURCES =				\
   tests/external_containerizer_test.cpp		\
   tests/health_check_tests.cpp                  \
   tests/fault_tolerance_tests.cpp		\
+  tests/fetcher_cache_tests.cpp            \
   tests/fetcher_tests.cpp                       \
   tests/files_tests.cpp				\
   tests/flags.cpp				\
