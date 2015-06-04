@@ -34,6 +34,7 @@
 #include <list>
 #include <map>
 #include <memory> // TODO(benh): Replace shared_ptr with unique_ptr.
+#include <mutex>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -73,6 +74,7 @@
 #include <stout/option.hpp>
 #include <stout/os.hpp>
 #include <stout/strings.hpp>
+#include <stout/synchronized.hpp>
 #include <stout/thread.hpp>
 #include <stout/unreachable.hpp>
 
@@ -82,7 +84,6 @@
 #include "event_loop.hpp"
 #include "gate.hpp"
 #include "process_reference.hpp"
-#include "synchronized.hpp"
 
 using namespace process::metrics::internal;
 
@@ -120,10 +121,10 @@ namespace ID {
 string generate(const string& prefix)
 {
   static map<string, int>* prefixes = new map<string, int>();
-  static synchronizable(prefixes) = SYNCHRONIZED_INITIALIZER;
+  static std::mutex* prefixes_mutex = new std::mutex();
 
   int id;
-  synchronized (prefixes) {
+  synchronized (prefixes_mutex) {
     int& _id = (*prefixes)[prefix];
     _id += 1;
     id = _id;
@@ -323,7 +324,7 @@ private:
   map<int, HttpProxy*> proxies;
 
   // Protects instance variables.
-  synchronizable(this);
+  std::recursive_mutex mutex;
 };
 
 
@@ -370,14 +371,14 @@ private:
 
   // Map of all local spawned and running processes.
   map<string, ProcessBase*> processes;
-  synchronizable(processes);
+  std::recursive_mutex processes_mutex;
 
-  // Gates for waiting threads (protected by synchronizable(processes)).
+  // Gates for waiting threads (protected by processes_mutex).
   map<ProcessBase*, Gate*> gates;
 
   // Queue of runnable processes (implemented using list).
   list<ProcessBase*> runq;
-  synchronizable(runq);
+  std::recursive_mutex runq_mutex;
 
   // Number of running processes, to support Clock::settle operation.
   int running;
@@ -409,7 +410,7 @@ static Gate* gate = new Gate();
 // recursive in case a filterer wants to do anything fancy (which is
 // possible and likely given that filters will get used for testing).
 static Filter* filterer = NULL;
-static synchronizable(filterer) = SYNCHRONIZED_INITIALIZER_RECURSIVE;
+static std::recursive_mutex* filterer_mutex = new std::recursive_mutex();
 
 // Global garbage collector.
 PID<GarbageCollector> gc;
@@ -773,25 +774,23 @@ void initialize(const string& delegate)
 
   __address__ = Address::LOCALHOST_ANY();
 
-  char* value;
-
   // Check environment for ip.
-  value = getenv("LIBPROCESS_IP");
-  if (value != NULL) {
-    Try<net::IP> ip = net::IP::parse(value, AF_INET);
+  Option<string> value = os::getenv("LIBPROCESS_IP");
+  if (value.isSome()) {
+    Try<net::IP> ip = net::IP::parse(value.get(), AF_INET);
     if (ip.isError()) {
-      LOG(FATAL) << "Parsing LIBPROCESS_IP=" << value
+      LOG(FATAL) << "Parsing LIBPROCESS_IP=" << value.get()
                  << " failed: " << ip.error();
     }
     __address__.ip = ip.get();
   }
 
   // Check environment for port.
-  value = getenv("LIBPROCESS_PORT");
-  if (value != NULL) {
-    int result = atoi(value);
+  value = os::getenv("LIBPROCESS_PORT");
+  if (value.isSome()) {
+    const int result = atoi(value.get().c_str());
     if (result < 0 || result > USHRT_MAX) {
-      LOG(FATAL) << "LIBPROCESS_PORT=" << value << " is not a valid port";
+      LOG(FATAL) << "LIBPROCESS_PORT=" << value.get() << " is not a valid port";
     }
     __address__.port = result;
   }
@@ -871,11 +870,11 @@ void initialize(const string& delegate)
 
   // Create the global statistics.
   // TODO(dhamon): Plumb this through to metrics.
-  // value = getenv("LIBPROCESS_STATISTICS_WINDOW");
-  // if (value != NULL) {
-  //   Try<Duration> window = Duration::parse(string(value));
+  // value = os::getenv("LIBPROCESS_STATISTICS_WINDOW");
+  // if (value.isSome()) {
+  //   Try<Duration> window = Duration::parse(value.get());
   //   if (window.isError()) {
-  //     LOG(FATAL) << "LIBPROCESS_STATISTICS_WINDOW=" << value
+  //     LOG(FATAL) << "LIBPROCESS_STATISTICS_WINDOW=" << value.get()
   //                << " is not a valid duration: " << window.error();
   //   }
   //   statistics = new Statistics(window.get());
@@ -1157,10 +1156,7 @@ void HttpProxy::stream(
 }
 
 
-SocketManager::SocketManager()
-{
-  synchronizer(this) = SYNCHRONIZED_INITIALIZER_RECURSIVE;
-}
+SocketManager::SocketManager() {}
 
 
 SocketManager::~SocketManager() {}
@@ -1168,7 +1164,7 @@ SocketManager::~SocketManager() {}
 
 void SocketManager::accepted(const Socket& socket)
 {
-  synchronized (this) {
+  synchronized (mutex) {
     sockets[socket] = new Socket(socket);
   }
 }
@@ -1264,7 +1260,7 @@ void SocketManager::link(ProcessBase* process, const UPID& to)
   Option<Socket> socket = None();
   bool connect = false;
 
-  synchronized (this) {
+  synchronized (mutex) {
     // Check if the socket address is remote and there isn't a persistant link.
     if (to.address != __address__  && persists.count(to.address) == 0) {
       // Okay, no link, let's create a socket.
@@ -1313,7 +1309,7 @@ PID<HttpProxy> SocketManager::proxy(const Socket& socket)
 {
   HttpProxy* proxy = NULL;
 
-  synchronized (this) {
+  synchronized (mutex) {
     // This socket might have been asked to get closed (e.g., remote
     // side hang up) while a process is attempting to handle an HTTP
     // request. Thus, if there is no more socket, return an empty PID.
@@ -1420,7 +1416,7 @@ void SocketManager::send(Encoder* encoder, bool persist)
 {
   CHECK(encoder != NULL);
 
-  synchronized (this) {
+  synchronized (mutex) {
     Socket socket = encoder->socket();
     if (sockets.count(socket) > 0) {
       // Update whether or not this socket should get disposed after
@@ -1517,7 +1513,7 @@ void SocketManager::send(Message* message)
   Option<Socket> socket = None();
   bool connect = false;
 
-  synchronized (this) {
+  synchronized (mutex) {
     // Check if there is already a socket.
     bool persist = persists.count(address) > 0;
     bool temp = temps.count(address) > 0;
@@ -1587,7 +1583,7 @@ Encoder* SocketManager::next(int s)
 {
   HttpProxy* proxy = NULL; // Non-null if needs to be terminated.
 
-  synchronized (this) {
+  synchronized (mutex) {
     // We cannot assume 'sockets.count(s) > 0' here because it's
     // possible that 's' has been removed with a a call to
     // SocketManager::close. For example, it could be the case that a
@@ -1659,7 +1655,7 @@ void SocketManager::close(int s)
 {
   HttpProxy* proxy = NULL; // Non-null if needs to be terminated.
 
-  synchronized (this) {
+  synchronized (mutex) {
     // This socket might not be active if it was already asked to get
     // closed (e.g., a write on the socket failed so we try and close
     // it and then later the recv side of the socket gets closed so we
@@ -1747,7 +1743,7 @@ void SocketManager::exited(const Address& address)
   // into ProcessManager ... then we wouldn't have to convince
   // ourselves that the accesses to each Process object will always be
   // valid.
-  synchronized (this) {
+  synchronized (mutex) {
     if (!links.remotes.contains(address)) {
       return; // No linkees for this socket address!
     }
@@ -1788,7 +1784,7 @@ void SocketManager::exited(ProcessBase* process)
   // can update the clocks of linked processes as appropriate.
   const Time time = Clock::now(process);
 
-  synchronized (this) {
+  synchronized (mutex) {
     // If this process had linked to anything, we need to clean
     // up any pointers to it. Also, if this process was the last
     // linker to a remote linkee, we must remove linkee from the
@@ -1843,8 +1839,6 @@ void SocketManager::exited(ProcessBase* process)
 ProcessManager::ProcessManager(const string& _delegate)
   : delegate(_delegate)
 {
-  synchronizer(processes) = SYNCHRONIZED_INITIALIZER_RECURSIVE;
-  synchronizer(runq) = SYNCHRONIZED_INITIALIZER_RECURSIVE;
   running = 0;
   __sync_synchronize(); // Ensure write to 'running' visible in other threads.
 }
@@ -1857,7 +1851,7 @@ ProcessManager::~ProcessManager()
   // or process the whole map as terminating one process might
   // trigger other terminations. Deal with them one at a time.
   do {
-    synchronized (processes) {
+    synchronized (processes_mutex) {
       process = !processes.empty() ? processes.begin()->second : NULL;
     }
     if (process != NULL) {
@@ -1871,7 +1865,7 @@ ProcessManager::~ProcessManager()
 ProcessReference ProcessManager::use(const UPID& pid)
 {
   if (pid.address == __address__) {
-    synchronized (processes) {
+    synchronized (processes_mutex) {
       if (processes.count(pid.id) > 0) {
         // Note that the ProcessReference constructor _must_ get
         // called while holding the lock on processes so that waiting
@@ -2059,7 +2053,7 @@ UPID ProcessManager::spawn(ProcessBase* process, bool manage)
 {
   CHECK(process != NULL);
 
-  synchronized (processes) {
+  synchronized (processes_mutex) {
     if (processes.count(process->pid.id) > 0) {
       return UPID();
     } else {
@@ -2125,7 +2119,7 @@ void ProcessManager::resume(ProcessBase* process)
       CHECK(event != NULL);
 
       // Determine if we should filter this event.
-      synchronized (filterer) {
+      synchronized (filterer_mutex) {
         if (filterer != NULL) {
           bool filter = false;
           struct FilterVisitor : EventVisitor
@@ -2231,7 +2225,7 @@ void ProcessManager::cleanup(ProcessBase* process)
   Gate* gate = NULL;
 
   // Remove process.
-  synchronized (processes) {
+  synchronized (processes_mutex) {
     // Wait for all process references to get cleaned up.
     while (process->refs > 0) {
 #if defined(__i386__) || defined(__x86_64__)
@@ -2354,7 +2348,7 @@ bool ProcessManager::wait(const UPID& pid)
   ProcessBase* process = NULL; // Set to non-null if we donate thread.
 
   // Try and approach the gate if necessary.
-  synchronized (processes) {
+  synchronized (processes_mutex) {
     if (processes.count(pid.id) > 0) {
       process = processes[pid.id];
       CHECK(process->state != ProcessBase::TERMINATED);
@@ -2370,7 +2364,7 @@ bool ProcessManager::wait(const UPID& pid)
       // Check if it is runnable in order to donate this thread.
       if (process->state == ProcessBase::BOTTOM ||
           process->state == ProcessBase::READY) {
-        synchronized (runq) {
+        synchronized (runq_mutex) {
           list<ProcessBase*>::iterator it =
             find(runq.begin(), runq.end(), process);
           if (it != runq.end()) {
@@ -2429,7 +2423,7 @@ void ProcessManager::enqueue(ProcessBase* process)
   // it's not running. Otherwise, check and see which thread this
   // process was last running on, and put it on that threads runq.
 
-  synchronized (runq) {
+  synchronized (runq_mutex) {
     CHECK(find(runq.begin(), runq.end(), process) == runq.end());
     runq.push_back(process);
   }
@@ -2447,7 +2441,7 @@ ProcessBase* ProcessManager::dequeue()
 
   ProcessBase* process = NULL;
 
-  synchronized (runq) {
+  synchronized (runq_mutex) {
     if (!runq.empty()) {
       process = runq.front();
       runq.pop_front();
@@ -2482,7 +2476,7 @@ void ProcessManager::settle()
 
     done = true; // Assume to start that we are settled.
 
-    synchronized (runq) {
+    synchronized (runq_mutex) {
       if (!runq.empty()) {
         done = false;
         continue;
@@ -2509,7 +2503,7 @@ Future<Response> ProcessManager::__processes__(const Request&)
 {
   JSON::Array array;
 
-  synchronized (processes) {
+  synchronized (processes_mutex) {
     foreachvalue (ProcessBase* process, process_manager->processes) {
       JSON::Object object;
       object.values["id"] = process->pid.id;
@@ -2906,7 +2900,7 @@ void filter(Filter *filter)
 {
   process::initialize();
 
-  synchronized (filterer) {
+  synchronized (filterer_mutex) {
     filterer = filter;
   }
 }

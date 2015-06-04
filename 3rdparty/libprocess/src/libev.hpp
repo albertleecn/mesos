@@ -3,15 +3,15 @@
 
 #include <ev.h>
 
+#include <mutex>
 #include <queue>
 
 #include <process/future.hpp>
 #include <process/owned.hpp>
 
 #include <stout/lambda.hpp>
+#include <stout/synchronized.hpp>
 #include <stout/thread.hpp>
-
-#include "synchronized.hpp"
 
 namespace process {
 
@@ -27,7 +27,7 @@ extern ev_async async_watcher;
 // TODO(benh): Replace this queue with functions that we put in
 // 'functions' below that perform the ev_io_start themselves.
 extern std::queue<ev_io*>* watchers;
-extern synchronizable(watchers);
+extern std::mutex* watchers_mutex;
 
 // Queue of functions to be invoked asynchronously within the vent
 // loop (protected by 'watchers' above).
@@ -72,7 +72,7 @@ Future<T> run_in_event_loop(const lambda::function<Future<T>(void)>& f)
   Future<T> future = promise->future();
 
   // Enqueue the function.
-  synchronized (watchers) {
+  synchronized (watchers_mutex) {
     functions->push(lambda::bind(&_run_in_event_loop<T>, f, promise));
   }
 
