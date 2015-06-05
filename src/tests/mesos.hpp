@@ -32,6 +32,7 @@
 
 #include <mesos/fetcher/fetcher.hpp>
 
+#include <mesos/slave/qos_controller.hpp>
 #include <mesos/slave/resource_estimator.hpp>
 
 #include <process/future.hpp>
@@ -740,6 +741,32 @@ public:
 };
 
 
+// The MockQoSController is a stub which lets tests fill the
+// correction queue for a slave.
+class MockQoSController : public mesos::slave::QoSController
+{
+public:
+  MockQoSController()
+  {
+    ON_CALL(*this, initialize())
+      .WillByDefault(Return(Nothing()));
+    EXPECT_CALL(*this, initialize())
+      .WillRepeatedly(DoDefault());
+
+    ON_CALL(*this, corrections())
+      .WillByDefault(
+          Return(process::Future<std::list<mesos::slave::QoSCorrection>>()));
+    EXPECT_CALL(*this, corrections())
+      .WillRepeatedly(DoDefault());
+  }
+
+  MOCK_METHOD0(initialize, Try<Nothing>());
+
+  MOCK_METHOD0(
+      corrections, process::Future<std::list<mesos::slave::QoSCorrection>>());
+};
+
+
 // Definition of a mock Slave to be used in tests with gmock, covering
 // potential races between runTask and killTask.
 class MockSlave : public slave::Slave
@@ -748,7 +775,8 @@ public:
   MockSlave(
       const slave::Flags& flags,
       MasterDetector* detector,
-      slave::Containerizer* containerizer);
+      slave::Containerizer* containerizer,
+      const Option<mesos::slave::QoSController*>& qosController = None());
 
   virtual ~MockSlave();
 
@@ -800,10 +828,15 @@ public:
   void unmocked___recover(
       const process::Future<Nothing>& future);
 
+  MOCK_METHOD1(qosCorrections, void(
+      const process::Future<std::list<
+          mesos::slave::QoSCorrection>>& correction));
+
 private:
   Files files;
   MockGarbageCollector gc;
   MockResourceEstimator resourceEstimator;
+  MockQoSController qosController;
   slave::StatusUpdateManager* statusUpdateManager;
 };
 
@@ -915,6 +948,12 @@ ACTION_P(InvokeActivateFramework, allocator)
 ACTION_P(InvokeDeactivateFramework, allocator)
 {
   allocator->real->deactivateFramework(arg0);
+}
+
+
+ACTION_P(InvokeUpdateFramework, allocator)
+{
+  allocator->real->updateFramework(arg0, arg1);
 }
 
 
@@ -1039,6 +1078,11 @@ public:
     EXPECT_CALL(*this, deactivateFramework(_))
       .WillRepeatedly(DoDefault());
 
+    ON_CALL(*this, updateFramework(_, _))
+      .WillByDefault(InvokeUpdateFramework(this));
+    EXPECT_CALL(*this, updateFramework(_, _))
+      .WillRepeatedly(DoDefault());
+
     ON_CALL(*this, addSlave(_, _, _, _))
       .WillByDefault(InvokeAddSlave(this));
     EXPECT_CALL(*this, addSlave(_, _, _, _))
@@ -1112,6 +1156,10 @@ public:
 
   MOCK_METHOD1(deactivateFramework, void(
       const FrameworkID&));
+
+  MOCK_METHOD2(updateFramework, void(
+      const FrameworkID&,
+      const FrameworkInfo&));
 
   MOCK_METHOD4(addSlave, void(
       const SlaveID&,

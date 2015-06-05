@@ -388,6 +388,7 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	slave/metrics.cpp						\
 	slave/monitor.cpp						\
 	slave/paths.cpp							\
+	slave/qos_controller.cpp					\
 	slave/resource_estimator.cpp					\
 	slave/slave.cpp							\
 	slave/state.cpp							\
@@ -498,8 +499,10 @@ slavedir = $(pkgincludedir)/slave
 
 slave_HEADERS =								\
   $(top_srcdir)/include/mesos/slave/isolator.hpp			\
-  $(top_srcdir)/include/mesos/slave/resource_estimator.hpp		\
-  $(top_srcdir)/include/mesos/slave/oversubscription.proto
+  $(top_srcdir)/include/mesos/slave/oversubscription.hpp		\
+  $(top_srcdir)/include/mesos/slave/oversubscription.proto		\
+  $(top_srcdir)/include/mesos/slave/qos_controller.hpp			\
+  $(top_srcdir)/include/mesos/slave/resource_estimator.hpp
 
 nodist_slave_HEADERS = ../include/mesos/slave/oversubscription.pb.h
 
@@ -612,6 +615,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 	slave/metrics.hpp						\
 	slave/monitor.hpp						\
 	slave/paths.hpp							\
+	slave/qos_controller.hpp					\
 	slave/slave.hpp							\
 	slave/state.hpp							\
 	slave/status_update_manager.hpp					\
