@@ -310,8 +310,9 @@ struct Slave
   Resources checkpointedResources;
 
   // The current total resources of the slave. Note that this is
-  // different from 'info.resources()' because this also consider
-  // operations (e.g., CREATE, RESERVE) that have been applied.
+  // different from 'info.resources()' because this also considers
+  // operations (e.g., CREATE, RESERVE) that have been applied and
+  // includes revocable resources as well.
   Resources totalResources;
 
   SlaveObserver* observer;
@@ -752,7 +753,7 @@ public:
 
   void updateSlave(
       const SlaveID& slaveId,
-      const std::vector<Resource>& oversubscribedResources);
+      const Resources& oversubscribedResources);
 
   void shutdownSlave(
       const SlaveID& slaveId,
@@ -1364,6 +1365,10 @@ private:
   double _resources_total(const std::string& name);
   double _resources_used(const std::string& name);
   double _resources_percent(const std::string& name);
+
+  double _resources_revocable_total(const std::string& name);
+  double _resources_revocable_used(const std::string& name);
+  double _resources_revocable_percent(const std::string& name);
 
   process::Time startTime; // Start time used to calculate uptime.
 
