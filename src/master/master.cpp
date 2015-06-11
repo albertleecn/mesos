@@ -2703,8 +2703,19 @@ void Master::_accept(
           }
 
           // Validate the task.
+
+          // Make a copy of the original task so that we can
+          // fill the missing `framework_id` in ExecutorInfo
+          // if needed. This field was added to the API later
+          // and thus was made optional.
+          TaskInfo task_(task);
+          if (task.has_executor() && !task.executor().has_framework_id()) {
+            task_.mutable_executor()
+                ->mutable_framework_id()->CopyFrom(framework->id());
+          }
+
           const Option<Error>& validationError = validation::task::validate(
-              task,
+              task_,
               framework,
               slave,
               _offeredResources);
@@ -2712,8 +2723,8 @@ void Master::_accept(
           if (validationError.isSome()) {
             const StatusUpdate& update = protobuf::createStatusUpdate(
                 framework->id(),
-                task.slave_id(),
-                task.task_id(),
+                task_.slave_id(),
+                task_.task_id(),
                 TASK_ERROR,
                 TaskStatus::SOURCE_MASTER,
                 validationError.get().message,
@@ -2733,25 +2744,25 @@ void Master::_accept(
 
           // Add task.
           if (pending) {
-            _offeredResources -= addTask(task, framework, slave);
+            _offeredResources -= addTask(task_, framework, slave);
 
             // TODO(bmahler): Consider updating this log message to
             // indicate when the executor is also being launched.
-            LOG(INFO) << "Launching task " << task.task_id()
+            LOG(INFO) << "Launching task " << task_.task_id()
                       << " of framework " << *framework
-                      << " with resources " << task.resources()
+                      << " with resources " << task_.resources()
                       << " on slave " << *slave;
 
             RunTaskMessage message;
             message.mutable_framework()->MergeFrom(framework->info);
             message.mutable_framework_id()->MergeFrom(framework->id());
             message.set_pid(framework->pid);
-            message.mutable_task()->MergeFrom(task);
+            message.mutable_task()->MergeFrom(task_);
 
             // Set labels retrieved from label-decorator hooks.
             message.mutable_task()->mutable_labels()->CopyFrom(
                 HookManager::masterLaunchTaskLabelDecorator(
-                    task,
+                    task_,
                     framework->info,
                     slave->info));
 
@@ -5361,7 +5372,7 @@ double Master::_tasks_running()
 }
 
 
-double Master::_resources_total(const std::string& name)
+double Master::_resources_total(const string& name)
 {
   double total = 0.0;
 
@@ -5377,7 +5388,7 @@ double Master::_resources_total(const std::string& name)
 }
 
 
-double Master::_resources_used(const std::string& name)
+double Master::_resources_used(const string& name)
 {
   double used = 0.0;
 
@@ -5395,19 +5406,19 @@ double Master::_resources_used(const std::string& name)
 }
 
 
-double Master::_resources_percent(const std::string& name)
+double Master::_resources_percent(const string& name)
 {
   double total = _resources_total(name);
 
   if (total == 0.0) {
-    return total;
-  } else {
-    return _resources_used(name) / total;
+    return 0.0;
   }
+
+  return _resources_used(name) / total;
 }
 
 
-double Master::_resources_revocable_total(const std::string& name)
+double Master::_resources_revocable_total(const string& name)
 {
   double total = 0.0;
 
@@ -5423,7 +5434,7 @@ double Master::_resources_revocable_total(const std::string& name)
 }
 
 
-double Master::_resources_revocable_used(const std::string& name)
+double Master::_resources_revocable_used(const string& name)
 {
   double used = 0.0;
 
@@ -5441,15 +5452,15 @@ double Master::_resources_revocable_used(const std::string& name)
 }
 
 
-double Master::_resources_revocable_percent(const std::string& name)
+double Master::_resources_revocable_percent(const string& name)
 {
   double total = _resources_revocable_total(name);
 
   if (total == 0.0) {
-    return total;
-  } else {
-    return _resources_revocable_used(name) / total;
+    return 0.0;
   }
+
+  return _resources_revocable_used(name) / total;
 }
 
 } // namespace master {

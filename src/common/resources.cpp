@@ -18,6 +18,8 @@
 
 #include <stdint.h>
 
+#include <set>
+#include <string>
 #include <vector>
 
 #include <glog/logging.h>
@@ -27,10 +29,12 @@
 #include <mesos/type_utils.hpp>
 
 #include <stout/foreach.hpp>
+#include <stout/hashmap.hpp>
 #include <stout/lambda.hpp>
 #include <stout/strings.hpp>
 
 using std::ostream;
+using std::set;
 using std::string;
 using std::vector;
 
@@ -184,7 +188,7 @@ static bool addable(const Resource& left, const Resource& right)
 // Tests if we can subtract "right" from "left" resulting in one valid
 // Resource object. For example, two Resource objects with different
 // name, type or role are not subtractable.
-// NOTE: Set substraction is always well defined, it does not require
+// NOTE: Set subtraction is always well defined, it does not require
 // 'right' to be contained within 'left'. For example, assuming that
 // "left = {1, 2}" and "right = {2, 3}", "left" and "right" are
 // subtractable because "left - right = {1}". However, "left" does not
@@ -346,6 +350,7 @@ Try<Resources> Resources::parse(
     const string& defaultRole)
 {
   Resources resources;
+  hashmap<string, Value_Type> nameTypes;
 
   foreach (const string& token, strings::tokenize(text, ";")) {
     vector<string> pair = strings::tokenize(token, ":");
@@ -376,6 +381,14 @@ Try<Resources> Resources::parse(
     Try<Resource> resource = Resources::parse(name, pair[1], role);
     if (resource.isError()) {
       return Error(resource.error());
+    }
+
+    if (nameTypes.contains(name) && nameTypes[name] != resource.get().type()) {
+      return Error(
+          "Resources with the same name ('" + name + "') but different types "
+          "are not allowed");
+    } else if (!nameTypes.contains(name)) {
+      nameTypes[name] = resource.get().type();
     }
 
     resources += resource.get();
@@ -924,6 +937,25 @@ Option<Value::Ranges> Resources::get(const string& name) const
   }
 
   return None();
+}
+
+
+Resources Resources::get(const string& name) const
+{
+  return filter([=](const Resource& resource) {
+    return resource.name() == name;
+  });
+}
+
+
+set<string> Resources::names() const
+{
+  set<string> result;
+  foreach(const Resource& resource, resources) {
+    result.insert(resource.name());
+  }
+
+  return result;
 }
 
 

@@ -563,7 +563,7 @@ void Slave::finalize()
   // can potentially remove a framework from 'frameworks'.
   foreach (const FrameworkID& frameworkId, frameworks.keys()) {
     // TODO(benh): Because a shut down isn't instantaneous (but has
-    // a shut down/kill phases) we might not actually propogate all
+    // a shut down/kill phases) we might not actually propagate all
     // the status updates appropriately here. Consider providing
     // an alternative function which skips the shut down phase and
     // simply does a kill (sending all status updates
@@ -3098,6 +3098,11 @@ ExecutorInfo Slave::getExecutorInfo(
 
     // Add an allowance for the command executor. This does lead to a
     // small overcommit of resources.
+    // TODO(vinod): If a task is using revocable resources, mark the
+    // corresponding executor resource (e.g., cpus) to be also
+    // revocable. Currently, it is OK because the containerizer is
+    // given task + executor resources on task launch resulting in
+    // the container being correctly marked as revocable.
     executor.mutable_resources()->MergeFrom(
         Resources::parse(
           "cpus:" + stringify(DEFAULT_EXECUTOR_CPUS) + ";" +
@@ -4327,7 +4332,7 @@ void Slave::sendExecutorTerminatedStatusUpdate(
 }
 
 
-double Slave::_resources_total(const std::string& name)
+double Slave::_resources_total(const string& name)
 {
   double total = 0.0;
 
@@ -4341,13 +4346,14 @@ double Slave::_resources_total(const std::string& name)
 }
 
 
-double Slave::_resources_used(const std::string& name)
+double Slave::_resources_used(const string& name)
 {
   double used = 0.0;
 
   foreachvalue (Framework* framework, frameworks) {
     foreachvalue (Executor* executor, framework->executors) {
-      foreach (const Resource& resource, executor->resources) {
+      foreach (const Resource& resource,
+               executor->resources - executor->resources.revocable()) {
         if (resource.name() == name && resource.type() == Value::SCALAR) {
           used += resource.scalar().value();
         }
@@ -4359,15 +4365,59 @@ double Slave::_resources_used(const std::string& name)
 }
 
 
-double Slave::_resources_percent(const std::string& name)
+double Slave::_resources_percent(const string& name)
 {
   double total = _resources_total(name);
 
   if (total == 0.0) {
-    return total;
-  } else {
-    return _resources_used(name) / total;
+    return 0.0;
   }
+
+  return _resources_used(name) / total;
+}
+
+
+double Slave::_resources_revocable_total(const string& name)
+{
+  double total = 0.0;
+
+  foreach (const Resource& resource, oversubscribedResources) {
+    if (resource.name() == name && resource.type() == Value::SCALAR) {
+      total += resource.scalar().value();
+    }
+  }
+
+  return total;
+}
+
+
+double Slave::_resources_revocable_used(const string& name)
+{
+  double used = 0.0;
+
+  foreachvalue (Framework* framework, frameworks) {
+    foreachvalue (Executor* executor, framework->executors) {
+      foreach (const Resource& resource, executor->resources.revocable()) {
+        if (resource.name() == name && resource.type() == Value::SCALAR) {
+          used += resource.scalar().value();
+        }
+      }
+    }
+  }
+
+  return used;
+}
+
+
+double Slave::_resources_revocable_percent(const string& name)
+{
+  double total = _resources_revocable_total(name);
+
+  if (total == 0.0) {
+    return 0.0;
+  }
+
+  return _resources_revocable_used(name) / total;
 }
 
 
@@ -4461,6 +4511,7 @@ Executor* Framework::launchExecutor(
 
   LOG(INFO) << "Launching executor " << executorInfo.executor_id()
             << " of framework " << id()
+            << " with resources " << executorInfo.resources()
             << " in work directory '" << directory << "'";
 
   slave->files->attach(executor->directory, executor->directory)
