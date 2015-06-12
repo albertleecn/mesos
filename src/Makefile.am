@@ -482,6 +482,7 @@ module_HEADERS =							\
   $(top_srcdir)/include/mesos/module/isolator.hpp			\
   $(top_srcdir)/include/mesos/module/module.hpp				\
   $(top_srcdir)/include/mesos/module/module.proto			\
+  $(top_srcdir)/include/mesos/module/qos_controller.hpp			\
   $(top_srcdir)/include/mesos/module/resource_estimator.hpp
 
 nodist_module_HEADERS = ../include/mesos/module/module.pb.h
@@ -1461,6 +1462,13 @@ libtestresource_estimator_la_SOURCES =		\
   examples/test_resource_estimator_module.cpp
 libtestresource_estimator_la_CPPFLAGS = $(MESOS_CPPFLAGS)
 libtestresource_estimator_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
+
+# Library containing example test noop qos controller module.
+noinst_LTLIBRARIES += libtestqos_controller.la
+libtestqos_controller_la_SOURCES =		\
+  examples/test_qos_controller_module.cpp
+libtestqos_controller_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libtestqos_controller_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
 mesos_tests_SOURCES =				\
   tests/anonymous_tests.cpp			\

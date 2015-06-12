@@ -16,14 +16,11 @@
  * limitations under the License.
  */
 
-#include <list>
-
-#include <mesos/resources.hpp>
-
 #include <mesos/module/resource_estimator.hpp>
 
 #include <mesos/slave/resource_estimator.hpp>
 
+#include <process/defer.hpp>
 #include <process/dispatch.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
@@ -37,39 +34,46 @@ using mesos::modules::Module;
 
 using mesos::slave::ResourceEstimator;
 
-using std::list;
-
 
 class FixedResourceEstimatorProcess
   : public Process<FixedResourceEstimatorProcess>
 {
 public:
   FixedResourceEstimatorProcess(
-      const lambda::function<Future<list<ResourceUsage>>()>& _usages,
-      const Resources& _resources)
-    : usages(_usages),
-      resources(_resources) {}
+      const lambda::function<Future<ResourceUsage>()>& _usage,
+      const Resources& _totalRevocable)
+    : usage(_usage),
+      totalRevocable(_totalRevocable) {}
 
   Future<Resources> oversubscribable()
   {
-    // TODO(jieyu): This is a stub implementation.
-    return resources;
+    return usage().then(defer(self(), &Self::_oversubscribable, lambda::_1));
+  }
+
+  Future<Resources> _oversubscribable(const ResourceUsage& usage)
+  {
+    Resources allocatedRevocable;
+    foreach (const ResourceUsage::Executor& executor, usage.executors()) {
+      allocatedRevocable += Resources(executor.allocated()).revocable();
+    }
+
+    return totalRevocable - allocatedRevocable;
   }
 
 protected:
-  const lambda::function<Future<list<ResourceUsage>>()>& usages;
-  const Resources resources;
+  const lambda::function<Future<ResourceUsage>()> usage;
+  const Resources totalRevocable;
 };
 
 
 class FixedResourceEstimator : public ResourceEstimator
 {
 public:
-  FixedResourceEstimator(const Resources& _resources)
-    : resources(_resources)
+  FixedResourceEstimator(const Resources& _totalRevocable)
+    : totalRevocable(_totalRevocable)
   {
     // Mark all resources as revocable.
-    foreach (Resource& resource, resources) {
+    foreach (Resource& resource, totalRevocable) {
       resource.mutable_revocable();
     }
   }
@@ -83,13 +87,13 @@ public:
   }
 
   virtual Try<Nothing> initialize(
-      const lambda::function<Future<list<ResourceUsage>>()>& usages)
+      const lambda::function<Future<ResourceUsage>()>& usage)
   {
     if (process.get() != NULL) {
       return Error("Fixed resource estimator has already been initialized");
     }
 
-    process.reset(new FixedResourceEstimatorProcess(usages, resources));
+    process.reset(new FixedResourceEstimatorProcess(usage, totalRevocable));
     spawn(process.get());
 
     return Nothing();
@@ -107,7 +111,7 @@ public:
   }
 
 private:
-  Resources resources;
+  Resources totalRevocable;
   Owned<FixedResourceEstimatorProcess> process;
 };
 
