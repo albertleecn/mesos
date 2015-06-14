@@ -192,6 +192,20 @@ protected:
       mesos::slave::ResourceEstimator* resourceEstimator,
       const Option<slave::Flags>& flags = None());
 
+  // Starts a slave with the specified resource estimator,
+  // containerizer and flags.
+  virtual Try<process::PID<slave::Slave>> StartSlave(
+      slave::Containerizer* containerizer,
+      mesos::slave::ResourceEstimator* resourceEstimator,
+      const Option<slave::Flags>& flags = None());
+
+  // Starts a slave with the specified QoS Controller,
+  // containerizer and flags.
+  virtual Try<process::PID<slave::Slave>> StartSlave(
+      slave::Containerizer* containerizer,
+      mesos::slave::QoSController* qosController,
+      const Option<slave::Flags>& flags = None());
+
   // Stop the specified master.
   virtual void Stop(
       const process::PID<master::Master>& pid);
@@ -753,9 +767,9 @@ class MockQoSController : public mesos::slave::QoSController
 public:
   MockQoSController()
   {
-    ON_CALL(*this, initialize())
+    ON_CALL(*this, initialize(_))
       .WillByDefault(Return(Nothing()));
-    EXPECT_CALL(*this, initialize())
+    EXPECT_CALL(*this, initialize(_))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, corrections())
@@ -765,7 +779,9 @@ public:
       .WillRepeatedly(DoDefault());
   }
 
-  MOCK_METHOD0(initialize, Try<Nothing>());
+  MOCK_METHOD1(
+      initialize,
+      Try<Nothing>(const lambda::function<process::Future<ResourceUsage>()>&));
 
   MOCK_METHOD0(
       corrections, process::Future<std::list<mesos::slave::QoSCorrection>>());
