@@ -1646,15 +1646,22 @@ Encoder* SocketManager::next(int s)
           }
 
           dispose.erase(s);
+
           auto iterator = sockets.find(s);
-          delete iterator->second;
-          sockets.erase(iterator);
 
           // We don't actually close the socket (we wait for the Socket
           // abstraction to close it once there are no more references),
           // but we do shutdown the receiving end so any DataDecoder
           // will get cleaned up (which might have the last reference).
-          shutdown(s, SHUT_RD);
+
+          // Hold on to the Socket and remove it from the 'sockets'
+          // map so that in the case where 'shutdown()' ends up
+          // calling close the termination logic is not run twice.
+          Socket* socket = iterator->second;
+          sockets.erase(iterator);
+          socket->shutdown();
+
+          delete socket;
         }
       }
     }
@@ -1714,6 +1721,9 @@ void SocketManager::close(int s)
         proxies.erase(s);
       }
 
+      dispose.erase(s);
+      auto iterator = sockets.find(s);
+
       // We need to stop any 'ignore_data' receivers as they may have
       // the last Socket reference so we shutdown recvs but don't do a
       // full close (since that will be taken care of by ~Socket, see
@@ -1722,12 +1732,16 @@ void SocketManager::close(int s)
       // from the socket. Note we need to do this before we call
       // 'sockets.erase(s)' to avoid the potential race with the last
       // reference being in 'sockets'.
-      shutdown(s, SHUT_RD);
 
-      dispose.erase(s);
-      auto iterator = sockets.find(s);
-      delete iterator->second;
+
+      // Hold on to the Socket and remove it from the 'sockets' map so
+      // that in the case where 'shutdown()' ends up calling close the
+      // termination logic is not run twice.
+      Socket* socket = iterator->second;
       sockets.erase(iterator);
+      socket->shutdown();
+
+      delete socket;
     }
   }
 
@@ -2147,8 +2161,7 @@ void ProcessManager::resume(ProcessBase* process)
   while (!terminate && !blocked) {
     Event* event = NULL;
 
-    process->lock();
-    {
+    synchronized (process->mutex) {
       if (process->events.size() > 0) {
         event = process->events.front();
         process->events.pop_front();
@@ -2158,7 +2171,6 @@ void ProcessManager::resume(ProcessBase* process)
         blocked = true;
       }
     }
-    process->unlock();
 
     if (!blocked) {
       CHECK(event != NULL);
@@ -2251,13 +2263,11 @@ void ProcessManager::cleanup(ProcessBase* process)
   // another process that gets spawned with the same PID.
   deque<Event*> events;
 
-  process->lock();
-  {
+  synchronized (process->mutex) {
     process->state = ProcessBase::TERMINATING;
     events = process->events;
     process->events.clear();
   }
-  process->unlock();
 
   // Delete pending events.
   while (!events.empty()) {
@@ -2279,8 +2289,7 @@ void ProcessManager::cleanup(ProcessBase* process)
       __sync_synchronize();
     }
 
-    process->lock();
-    {
+    synchronized (process->mutex) {
       CHECK(process->events.empty());
 
       processes.erase(process->pid.id);
@@ -2296,7 +2305,6 @@ void ProcessManager::cleanup(ProcessBase* process)
       CHECK(process->refs == 0);
       process->state = ProcessBase::TERMINATED;
     }
-    process->unlock();
 
     // Note that we don't remove the process from the clock during
     // cleanup, but rather the clock is reset for a process when it is
@@ -2619,13 +2627,11 @@ Future<Response> ProcessManager::__processes__(const Request&)
         JSON::Array* events;
       } visitor(&events);
 
-      process->lock();
-      {
+      synchronized (process->mutex) {
         foreach (Event* event, process->events) {
           event->visit(&visitor);
         }
       }
-      process->unlock();
 
       object.values["events"] = events;
       array.values.push_back(object);
@@ -2641,12 +2647,6 @@ ProcessBase::ProcessBase(const string& id)
   process::initialize();
 
   state = ProcessBase::BOTTOM;
-
-  pthread_mutexattr_t attr;
-  pthread_mutexattr_init(&attr);
-  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-  pthread_mutex_init(&m, &attr);
-  pthread_mutexattr_destroy(&attr);
 
   refs = 0;
 
@@ -2669,8 +2669,7 @@ void ProcessBase::enqueue(Event* event, bool inject)
 {
   CHECK(event != NULL);
 
-  lock();
-  {
+  synchronized (mutex) {
     if (state != TERMINATING && state != TERMINATED) {
       if (!inject) {
         events.push_back(event);
@@ -2690,7 +2689,6 @@ void ProcessBase::enqueue(Event* event, bool inject)
       delete event;
     }
   }
-  unlock();
 }
 
 
