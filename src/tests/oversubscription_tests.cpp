@@ -216,7 +216,8 @@ TEST_F(OversubscriptionTest, FetchResourceUsageFromMonitor)
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
-    .WillOnce(FutureArg<1>(&status));
+    .WillOnce(FutureArg<1>(&status))
+    .WillRepeatedly(Return());       // Ignore subsequent updates.
 
   EXPECT_CALL(exec, registered(_, _, _, _));
 
@@ -385,7 +386,8 @@ TEST_F(OversubscriptionTest, RevocableOffer)
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
-    .WillOnce(FutureArg<1>(&status));
+    .WillOnce(FutureArg<1>(&status))
+    .WillRepeatedly(Return());       // Ignore subsequent updates.
 
   driver.launchTasks({offers1.get()[0].id(), offers2.get()[0].id()}, {task});
 
@@ -577,7 +579,8 @@ TEST_F(OversubscriptionTest, FixedResourceEstimator)
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
-    .WillOnce(FutureArg<1>(&status));
+    .WillOnce(FutureArg<1>(&status))
+    .WillRepeatedly(Return());       // Ignore subsequent updates.
 
   driver.launchTasks(offer.id(), {task});
 
@@ -652,7 +655,8 @@ TEST_F(OversubscriptionTest, QoSFetchResourceUsageFromMonitor)
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
-    .WillOnce(FutureArg<1>(&status));
+    .WillOnce(FutureArg<1>(&status))
+    .WillRepeatedly(Return());       // Ignore subsequent updates.
 
   EXPECT_CALL(exec, registered(_, _, _, _));
 
@@ -678,6 +682,66 @@ TEST_F(OversubscriptionTest, QoSFetchResourceUsageFromMonitor)
   driver.stop();
   driver.join();
 
+  Shutdown();
+}
+
+
+// Ensures the slave forwards the estimation whenever receiving
+// a registered or re-registered message from the master, even
+// if the total oversubscribable resources does not change.
+TEST_F(OversubscriptionTest, Reregistration)
+{
+  loadFixedResourceEstimatorModule("cpus(*):2");
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.resource_estimator = FIXED_RESOURCE_ESTIMATOR_NAME;
+
+  Future<Nothing> slaveRecover = FUTURE_DISPATCH(_, &Slave::recover);
+
+  StandaloneMasterDetector detector;
+
+  Try<PID<Slave>> slave = StartSlave(&detector, flags);
+  ASSERT_SOME(slave);
+
+  AWAIT_READY(slaveRecover);
+
+  // Advance the clock for the slave to compute an estimate.
+  Clock::pause();
+  Clock::advance(flags.oversubscribed_resources_interval);
+  Clock::settle();
+
+  // Start a master, we expect the slave to send the update
+  // message after registering!
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Future<SlaveRegisteredMessage> slaveRegistered =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+
+  Future<UpdateSlaveMessage> update =
+    FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
+
+  detector.appoint(master.get());
+
+  AWAIT_READY(slaveRegistered);
+  AWAIT_READY(update);
+
+  Resources resources = update.get().oversubscribed_resources();
+  EXPECT_SOME_EQ(2.0, resources.cpus());
+
+  // Trigger a re-registration and expect another update message.
+  Future<SlaveReregisteredMessage> slaveReregistered =
+    FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
+
+  update = FUTURE_PROTOBUF(UpdateSlaveMessage(), _, _);
+
+  detector.appoint(master.get());
+
+  AWAIT_READY(slaveReregistered);
+  AWAIT_READY(update);
+
+  // Need to shutdown explicitly because the slave holds
+  // a pointer to the detector on our test stack!
   Shutdown();
 }
 
