@@ -199,6 +199,11 @@ protected:
       mesos::slave::ResourceEstimator* resourceEstimator,
       const Option<slave::Flags>& flags = None());
 
+  // Starts a slave with the specified QoS Controller and flags.
+  virtual Try<process::PID<slave::Slave>> StartSlave(
+      mesos::slave::QoSController* qosController,
+      const Option<slave::Flags>& flags = None());
+
   // Starts a slave with the specified QoS Controller,
   // containerizer and flags.
   virtual Try<process::PID<slave::Slave>> StartSlave(
@@ -849,7 +854,11 @@ public:
   void unmocked___recover(
       const process::Future<Nothing>& future);
 
-  MOCK_METHOD1(qosCorrections, void(
+  MOCK_METHOD0(qosCorrections, void());
+
+  void unmocked_qosCorrections();
+
+  MOCK_METHOD1(_qosCorrections, void(
       const process::Future<std::list<
           mesos::slave::QoSCorrection>>& correction));
 

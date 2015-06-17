@@ -374,6 +374,21 @@ Try<PID<slave::Slave>> MesosTest::StartSlave(
 
 
 Try<PID<slave::Slave>> MesosTest::StartSlave(
+    mesos::slave::QoSController* qoSController,
+    const Option<slave::Flags>& flags)
+{
+  return cluster.slaves.start(
+      flags.isNone() ? CreateSlaveFlags() : flags.get(),
+      None(),
+      None(),
+      None(),
+      None(),
+      None(),
+      qoSController);
+}
+
+
+Try<PID<slave::Slave>> MesosTest::StartSlave(
     slave::Containerizer* containerizer,
     mesos::slave::QoSController* qoSController,
     const Option<slave::Flags>& flags)
@@ -455,6 +470,8 @@ MockSlave::MockSlave(const slave::Flags& flags,
     .WillRepeatedly(Invoke(this, &MockSlave::unmocked_removeFramework));
   EXPECT_CALL(*this, __recover(_))
     .WillRepeatedly(Invoke(this, &MockSlave::unmocked___recover));
+  EXPECT_CALL(*this, qosCorrections())
+    .WillRepeatedly(Invoke(this, &MockSlave::unmocked_qosCorrections));
 }
 
 
@@ -503,6 +520,12 @@ void MockSlave::unmocked_removeFramework(slave::Framework* framework)
 void MockSlave::unmocked___recover(const Future<Nothing>& future)
 {
   slave::Slave::__recover(future);
+}
+
+
+void MockSlave::unmocked_qosCorrections()
+{
+  slave::Slave::qosCorrections();
 }
 
 
