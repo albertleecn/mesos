@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <limits.h>
-#include <libgen.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <signal.h>
@@ -58,6 +57,7 @@
 #include <process/io.hpp>
 #include <process/logging.hpp>
 #include <process/mime.hpp>
+#include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/profiler.hpp>
 #include <process/socket.hpp>
@@ -74,6 +74,7 @@
 #include <stout/net.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
+#include <stout/path.hpp>
 #include <stout/strings.hpp>
 #include <stout/synchronized.hpp>
 #include <stout/thread.hpp>
@@ -360,7 +361,7 @@ public:
   void terminate(const UPID& pid, bool inject, ProcessBase* sender = NULL);
   bool wait(const UPID& pid);
 
-  void installFirewall(std::vector<Owned<FirewallRule>>&& rules);
+  void installFirewall(vector<Owned<FirewallRule>>&& rules);
 
   void enqueue(ProcessBase* process);
   ProcessBase* dequeue();
@@ -388,8 +389,8 @@ private:
   // Number of running processes, to support Clock::settle operation.
   int running;
 
-  // List of rules applied to all incoming HTTP connections.
-  std::vector<Owned<FirewallRule>> firewallRules;
+  // List of rules applied to all incoming HTTP requests.
+  vector<Owned<FirewallRule>> firewallRules;
   std::recursive_mutex firewall_mutex;
 };
 
@@ -696,7 +697,7 @@ void on_accept(const Future<Socket>& socket)
 
 namespace firewall {
 
-void install(std::vector<Owned<FirewallRule>>&& rules)
+void install(vector<Owned<FirewallRule>>&& rules)
 {
   process::initialize();
 
@@ -2008,12 +2009,15 @@ bool ProcessManager::handle(
   }
 
   synchronized (firewall_mutex) {
+    // Don't use a const reference, since it cannot be guaranteed
+    // that the rules don't keep an internal state.
     foreach (Owned<FirewallRule>& rule, firewallRules) {
-      Try<Nothing> applied = rule->apply(socket, *request);
-      if (applied.isError()) {
+      Option<Error> rejection = rule->apply(socket, *request);
+      if (rejection.isSome()) {
         VLOG(1) << "Returning '403 Forbidden' for '" << request->path
-                << "' (firewall rule forbids connection): "
-                << applied.error();
+                << "' (firewall rule forbids request): "
+                << rejection.get().message;
+
         // TODO(arojas): Get rid of the duplicated code to return an
         // error.
 
@@ -2023,7 +2027,10 @@ bool ProcessManager::handle(
         // Enqueue the response with the HttpProxy so that it respects
         // the order of requests to account for HTTP/1.1 pipelining.
         dispatch(
-            proxy, &HttpProxy::enqueue, Forbidden(applied.error()), *request);
+            proxy,
+            &HttpProxy::enqueue,
+            Forbidden(rejection.get().message),
+            *request);
 
         // Cleanup request.
         delete request;
@@ -2478,7 +2485,7 @@ bool ProcessManager::wait(const UPID& pid)
 }
 
 
-void ProcessManager::installFirewall(std::vector<Owned<FirewallRule>>&& rules)
+void ProcessManager::installFirewall(vector<Owned<FirewallRule>>&& rules)
 {
   synchronized (firewall_mutex) {
     firewallRules = std::move(rules);
@@ -2795,14 +2802,12 @@ void ProcessBase::visit(const HttpEvent& event)
     }
 
     // Try and determine the Content-Type from an extension.
-    Try<string> basename = os::basename(response.path);
-    if (!basename.isError()) {
-      size_t index = basename.get().find_last_of('.');
-      if (index != string::npos) {
-        string extension = basename.get().substr(index);
-        if (assets[name].types.count(extension) > 0) {
-          response.headers["Content-Type"] = assets[name].types[extension];
-        }
+    string basename = Path(response.path).basename();
+    size_t index = basename.find_last_of('.');
+    if (index != string::npos) {
+      string extension = basename.substr(index);
+      if (assets[name].types.count(extension) > 0) {
+        response.headers["Content-Type"] = assets[name].types[extension];
       }
     }
 

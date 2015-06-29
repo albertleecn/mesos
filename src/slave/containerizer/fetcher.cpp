@@ -126,7 +126,7 @@ Try<string> Fetcher::basename(const string& uri)
 
     return path.substr(path.find_last_of("/") + 1);
   }
-  return os::basename(uri);
+  return Path(uri).basename();
 }
 
 
@@ -745,7 +745,7 @@ Future<Nothing> FetcherProcess::run(
 
   // We pass arguments to the fetcher program by means of an
   // environment variable.
-  map<string, string> environment;
+  map<string, string> environment = os::environment();
 
   environment["MESOS_FETCHER_INFO"] = stringify(JSON::Protobuf(info));
 

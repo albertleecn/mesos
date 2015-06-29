@@ -250,14 +250,13 @@ string error_string(unsigned long code)
 }
 
 
-void initialize()
+// Tests can declare this function and use it to re-configure the SSL
+// environment variables programatically. Without explicitly declaring
+// this function, it is not visible. This is the preferred behavior as
+// we do not want applications changing these settings while they are
+// running (this would be undefined behavior).
+void reinitialize()
 {
-  static Once* initialized = new Once();
-
-  if (initialized->once()) {
-    return;
-  }
-
   // Load all the flags prefixed by SSL_ from the environment. See
   // comment at top of openssl.hpp for a full list.
   Try<Nothing> load = ssl_flags->load("SSL_");
@@ -269,33 +268,42 @@ void initialize()
 
   // Exit early if SSL is not enabled.
   if (!ssl_flags->enabled) {
-    initialized->done();
     return;
   }
 
-  // We MUST have entropy, or else there's no point to crypto.
-  if (!RAND_poll()) {
-    EXIT(EXIT_FAILURE) << "SSL socket requires entropy";
+  static Once* initialized_single_entry = new Once();
+
+  // We don't want to initialize everything multiple times, as we
+  // don't clean up some of these structures. The things we DO tend
+  // to re-initialize are things that are overwrites of settings,
+  // rather than allocations of new data structures.
+  if (!initialized_single_entry->once()) {
+    // We MUST have entropy, or else there's no point to crypto.
+    if (!RAND_poll()) {
+      EXIT(EXIT_FAILURE) << "SSL socket requires entropy";
+    }
+
+    // Initialize the OpenSSL library.
+    SSL_library_init();
+    SSL_load_error_strings();
+
+    // Prepare mutexes for threading callbacks.
+    mutexes = new std::mutex[CRYPTO_num_locks()];
+
+    // Install SSL threading callbacks.
+    // TODO(jmlvanre): the id mechanism is deprecated in OpenSSL.
+    CRYPTO_set_id_callback(&id_function);
+    CRYPTO_set_locking_callback(&locking_function);
+    CRYPTO_set_dynlock_create_callback(&dyn_create_function);
+    CRYPTO_set_dynlock_lock_callback(&dyn_lock_function);
+    CRYPTO_set_dynlock_destroy_callback(&dyn_destroy_function);
+
+    ctx = SSL_CTX_new(SSLv23_method());
+    CHECK(ctx) << "Failed to create SSL context: "
+                << ERR_error_string(ERR_get_error(), NULL);
+
+    initialized_single_entry->done();
   }
-
-  // Initialize the OpenSSL library.
-  SSL_library_init();
-  SSL_load_error_strings();
-
-  // Prepare mutexes for threading callbacks.
-  mutexes = new std::mutex[CRYPTO_num_locks()];
-
-  // Install SSL threading callbacks.
-  // TODO(jmlvanre): the id mechanism is deprecated in OpenSSL.
-  CRYPTO_set_id_callback(&id_function);
-  CRYPTO_set_locking_callback(&locking_function);
-  CRYPTO_set_dynlock_create_callback(&dyn_create_function);
-  CRYPTO_set_dynlock_lock_callback(&dyn_lock_function);
-  CRYPTO_set_dynlock_destroy_callback(&dyn_destroy_function);
-
-  ctx = SSL_CTX_new(SSLv23_method());
-  CHECK(ctx) << "Failed to create SSL context: "
-             << ERR_error_string(ERR_get_error(), NULL);
 
   // Disable SSL session caching.
   SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
@@ -389,7 +397,8 @@ void initialize()
         EXIT(EXIT_FAILURE) << "Could not load default CA file and/or directory";
       }
 
-      VLOG(2) << "Using default CA file and/or directory";
+      VLOG(2) << "Using default CA file '" << X509_get_default_cert_file()
+              << "' and/or directory '" << X509_get_default_cert_dir() << "'";
     }
 
     // Set SSL peer verification callback.
@@ -433,6 +442,17 @@ void initialize()
     EXIT(EXIT_FAILURE) << "Could not set ciphers: " << ssl_flags->ciphers;
   }
 
+  // Clear all the protocol options. They will be reset if needed
+  // below. We do this because 'SSL_CTX_set_options' only augments, it
+  // does not do an overwrite.
+  SSL_CTX_clear_options(
+      ctx,
+      SSL_OP_NO_SSLv2 |
+      SSL_OP_NO_SSLv3 |
+      SSL_OP_NO_TLSv1 |
+      SSL_OP_NO_TLSv1_1 |
+      SSL_OP_NO_TLSv1_2);
+
   // Use server preference for cipher.
   long ssl_options = SSL_OP_CIPHER_SERVER_PREFERENCE;
   // Disable SSLv2.
@@ -447,6 +467,20 @@ void initialize()
   if (!ssl_flags->enable_tls_v1_2) { ssl_options |= SSL_OP_NO_TLSv1_2; }
 
   SSL_CTX_set_options(ctx, ssl_options);
+}
+
+
+void initialize()
+{
+  static Once* initialized = new Once();
+
+  if (initialized->once()) {
+    return;
+  }
+
+  // We delegate to 'reinitialize()' so that tests can change the SSL
+  // configuration programatically.
+  reinitialize();
 
   initialized->done();
 }
@@ -488,44 +522,46 @@ Try<Nothing> verify(const SSL* const ssl, const Option<string>& hostname)
       : Try<Nothing>(Nothing());
   }
 
-  int extcount = X509_get_ext_count(cert);
-  if (extcount <= 0) {
-    X509_free(cert);
-    return Error("X509_get_ext_count failed: " + stringify(extcount));
-  }
+  // From https://wiki.openssl.org/index.php/Hostname_validation.
+  // Check the Subject Alternate Name extension (SAN). This is useful
+  // for certificates that serve multiple physical hosts.
+  STACK_OF(GENERAL_NAME)* san_names =
+    reinterpret_cast<STACK_OF(GENERAL_NAME)*>(X509_get_ext_d2i(
+        reinterpret_cast<X509*>(cert),
+        NID_subject_alt_name,
+        NULL,
+        NULL));
 
-  for (int i = 0; i < extcount; i++) {
-    X509_EXTENSION* ext = X509_get_ext(cert, i);
+  if (san_names != NULL) {
+    int san_names_num = sk_GENERAL_NAME_num(san_names);
 
-    const string extstr =
-      OBJ_nid2sn(OBJ_obj2nid(X509_EXTENSION_get_object(ext)));
+    // Check each name within the extension.
+    for (int i = 0; i < san_names_num; i++) {
+      const GENERAL_NAME* current_name = sk_GENERAL_NAME_value(san_names, i);
 
-    if (extstr == "subjectAltName") {
-#if OPENSSL_VERSION_NUMBER <= 0x00909000L
-      X509V3_EXT_METHOD* method = X509V3_EXT_get(ext);
-#else
-      const X509V3_EXT_METHOD* method = X509V3_EXT_get(ext);
-#endif
-      if (method == NULL) {
-        break;
-      }
+      if (current_name->type == GEN_DNS) {
+        // Current name is a DNS name, let's check it.
+        const string dns_name =
+          reinterpret_cast<char*>(ASN1_STRING_data(current_name->d.dNSName));
 
-      const unsigned char* data = ext->value->data;
-
-      STACK_OF(CONF_VALUE)* values = method->i2v(
-          method,
-          method->d2i(NULL, &data, ext->value->length),
-          NULL);
-
-      for (int j = 0; j < sk_CONF_VALUE_num(values); j++) {
-        CONF_VALUE* value = sk_CONF_VALUE_value(values, j);
-        if ((strcmp(value->name, "DNS") == 0) &&
-            (value->value == hostname.get())) {
+        // Make sure there isn't an embedded NUL character in the DNS name.
+        const size_t length = ASN1_STRING_length(current_name->d.dNSName);
+        if (length != dns_name.length()) {
+          sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
           X509_free(cert);
-          return Nothing();
+          return Error(
+            "X509 certificate malformed: embedded NUL character in DNS name");
+        } else { // Compare expected hostname with the DNS name.
+          if (hostname.get() == dns_name) {
+            sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
+            X509_free(cert);
+            return Nothing();
+          }
         }
       }
     }
+
+    sk_GENERAL_NAME_pop_free(san_names, GENERAL_NAME_free);
   }
 
   // If we still haven't verified the hostname, try doing it via

@@ -240,13 +240,25 @@ map<string, string> executorEnvironment(
     const SlaveID& slaveId,
     const PID<Slave>& slavePid,
     bool checkpoint,
-    const Duration& recoveryTimeout)
+    const Flags& flags)
 {
-  map<string, string> env;
+  map<string, string> environment = os::environment();
+
+  if (flags.executor_environment_variables.isSome()) {
+    environment.clear();
+    foreachpair (const string& key,
+                 const JSON::Value& value,
+                 flags.executor_environment_variables.get().values) {
+      // See slave/flags.cpp where we validate each value is a string.
+      CHECK(value.is<JSON::String>());
+      environment[key] = value.as<JSON::String>().value;
+    }
+  }
+
   // Set LIBPROCESS_PORT so that we bind to a random free port (since
   // this might have been set via --port option). We do this before
   // the environment variables below in case it is included.
-  env["LIBPROCESS_PORT"] = "0";
+  environment["LIBPROCESS_PORT"] = "0";
 
   // Also add MESOS_NATIVE_JAVA_LIBRARY if it's not already present (and
   // like above, we do this before the environment variables below in
@@ -261,7 +273,7 @@ map<string, string> executorEnvironment(
       LIBDIR "/libmesos-" VERSION ".so";
 #endif
     if (os::exists(path)) {
-      env["MESOS_NATIVE_JAVA_LIBRARY"] = path;
+      environment["MESOS_NATIVE_JAVA_LIBRARY"] = path;
     }
   }
 
@@ -276,39 +288,41 @@ map<string, string> executorEnvironment(
       LIBDIR "/libmesos-" VERSION ".so";
 #endif
     if (os::exists(path)) {
-      env["MESOS_NATIVE_LIBRARY"] = path;
+      environment["MESOS_NATIVE_LIBRARY"] = path;
     }
   }
 
-  env["MESOS_FRAMEWORK_ID"] = executorInfo.framework_id().value();
-  env["MESOS_EXECUTOR_ID"] = executorInfo.executor_id().value();
-  env["MESOS_DIRECTORY"] = directory;
-  env["MESOS_SLAVE_ID"] = slaveId.value();
-  env["MESOS_SLAVE_PID"] = stringify(slavePid);
-  env["MESOS_CHECKPOINT"] = checkpoint ? "1" : "0";
+  environment["MESOS_FRAMEWORK_ID"] = executorInfo.framework_id().value();
+  environment["MESOS_EXECUTOR_ID"] = executorInfo.executor_id().value();
+  environment["MESOS_DIRECTORY"] = directory;
+  environment["MESOS_SLAVE_ID"] = slaveId.value();
+  environment["MESOS_SLAVE_PID"] = stringify(slavePid);
+  environment["MESOS_CHECKPOINT"] = checkpoint ? "1" : "0";
 
   if (checkpoint) {
-    env["MESOS_RECOVERY_TIMEOUT"] = stringify(recoveryTimeout);
+    environment["MESOS_RECOVERY_TIMEOUT"] = stringify(flags.recovery_timeout);
   }
 
-  // Include any environment variables from Hooks.
-  // TODO(karya): Call environment decorator hook _after_ putting all
-  // variables from executorInfo into 'env'. This would prevent the
-  // ones provided by hooks from being overwritten by the ones in
-  // executorInfo in case of a conflict. The overwriting takes places
-  // at the callsites of executorEnvironment (e.g., ___launch function
-  // in src/slave/containerizer/docker.cpp)
-  // TODO(karya): Provide a mechanism to pass the new environment
-  // variables created above (MESOS_*) on to the hook modules.
-  const Environment& hooksEnvironment =
-    HookManager::slaveExecutorEnvironmentDecorator(executorInfo);
+  if (HookManager::hooksAvailable()) {
+    // Include any environment variables from Hooks.
+    // TODO(karya): Call environment decorator hook _after_ putting all
+    // variables from executorInfo into 'env'. This would prevent the
+    // ones provided by hooks from being overwritten by the ones in
+    // executorInfo in case of a conflict. The overwriting takes places
+    // at the callsites of executorEnvironment (e.g., ___launch function
+    // in src/slave/containerizer/docker.cpp)
+    // TODO(karya): Provide a mechanism to pass the new environment
+    // variables created above (MESOS_*) on to the hook modules.
+    const Environment& hooksEnvironment =
+      HookManager::slaveExecutorEnvironmentDecorator(executorInfo);
 
-  foreach (const Environment::Variable& variable,
-           hooksEnvironment.variables()) {
-    env[variable.name()] = variable.value();
+    foreach (const Environment::Variable& variable,
+             hooksEnvironment.variables()) {
+      environment[variable.name()] = variable.value();
+    }
   }
 
-  return env;
+  return environment;
 }
 
 

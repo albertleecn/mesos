@@ -17,6 +17,7 @@
  */
 
 #include <algorithm>
+#include <iostream>
 #include <map>
 #include <set>
 #include <string>
@@ -60,6 +61,8 @@ using namespace process;
 using mesos::internal::log::Log;
 using mesos::internal::log::Replica;
 
+using std::cout;
+using std::endl;
 using std::map;
 using std::set;
 using std::string;
@@ -177,7 +180,7 @@ protected:
 INSTANTIATE_TEST_CASE_P(Strict, RegistrarTest, ::testing::Bool());
 
 
-TEST_P(RegistrarTest, recover)
+TEST_P(RegistrarTest, Recover)
 {
   Registrar registrar(flags, state);
 
@@ -209,7 +212,7 @@ TEST_P(RegistrarTest, recover)
 }
 
 
-TEST_P(RegistrarTest, admit)
+TEST_P(RegistrarTest, Admit)
 {
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
@@ -224,7 +227,7 @@ TEST_P(RegistrarTest, admit)
 }
 
 
-TEST_P(RegistrarTest, readmit)
+TEST_P(RegistrarTest, Readmit)
 {
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
@@ -255,7 +258,7 @@ TEST_P(RegistrarTest, readmit)
 }
 
 
-TEST_P(RegistrarTest, remove)
+TEST_P(RegistrarTest, Remove)
 {
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
@@ -313,7 +316,7 @@ TEST_P(RegistrarTest, remove)
 }
 
 
-TEST_P(RegistrarTest, bootstrap)
+TEST_P(RegistrarTest, Bootstrap)
 {
   // Run 1 readmits a slave that is not present.
   {
@@ -358,7 +361,7 @@ public:
 };
 
 
-TEST_P(RegistrarTest, fetchTimeout)
+TEST_P(RegistrarTest, FetchTimeout)
 {
   Clock::pause();
 
@@ -387,7 +390,7 @@ TEST_P(RegistrarTest, fetchTimeout)
 }
 
 
-TEST_P(RegistrarTest, storeTimeout)
+TEST_P(RegistrarTest, StoreTimeout)
 {
   Clock::pause();
 
@@ -419,7 +422,7 @@ TEST_P(RegistrarTest, storeTimeout)
 }
 
 
-TEST_P(RegistrarTest, abort)
+TEST_P(RegistrarTest, Abort)
 {
   MockStorage storage;
   State state(&storage);
@@ -456,7 +459,7 @@ INSTANTIATE_TEST_CASE_P(
     ::testing::Values(10000U, 20000U, 30000U, 50000U));
 
 
-TEST_P(Registrar_BENCHMARK_Test, performance)
+TEST_P(Registrar_BENCHMARK_Test, Performance)
 {
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
@@ -525,7 +528,7 @@ TEST_P(Registrar_BENCHMARK_Test, performance)
     result = registrar2.apply(Owned<Operation>(new RemoveSlave(info)));
   }
   AWAIT_READY_FOR(result, Minutes(5));
-  LOG(INFO) << "Removed " << slaveCount << " slaves in " << watch.elapsed();
+  cout << "Removed " << slaveCount << " slaves in " << watch.elapsed() << endl;
 }
 
 } // namespace tests {

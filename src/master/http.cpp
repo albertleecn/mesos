@@ -192,6 +192,28 @@ JSON::Object model(const Framework& framework)
     object.values["offers"] = std::move(array);
   }
 
+  // Model all of the executors of a framework.
+  {
+    JSON::Array executors;
+    int executorSize = 0;
+    foreachvalue (const auto& executorsMap,
+                  framework.executors) {
+      executorSize += executorsMap.size();
+    }
+    executors.values.reserve(executorSize); // MESOS-2353
+    foreachpair (const SlaveID& slaveId,
+                 const auto& executorsMap,
+                 framework.executors) {
+      foreachvalue (const ExecutorInfo& executor, executorsMap) {
+        JSON::Object executorJson = model(executor);
+        executorJson.values["slave_id"] = slaveId.value();
+        executors.values.push_back(executorJson);
+      }
+    }
+
+    object.values["executors"] = std::move(executors);
+  }
+
   return object;
 }
 
@@ -209,9 +231,12 @@ JSON::Object summarize(const Slave& slave)
     object.values["reregistered_time"] = slave.reregisteredTime.get().secs();
   }
 
-  object.values["resources"] = model(slave.info.resources());
+  const Resources& totalResources = slave.totalResources;
+  object.values["resources"] = model(totalResources);
   object.values["used_resources"] = model(Resources::sum(slave.usedResources));
   object.values["offered_resources"] = model(slave.offeredResources);
+  object.values["reserved_resources"] = model(totalResources.reserved());
+  object.values["unreserved_resources"] = model(totalResources.unreserved());
 
   object.values["attributes"] = model(slave.info.attributes());
   object.values["active"] = slave.active;

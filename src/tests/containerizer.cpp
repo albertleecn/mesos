@@ -103,39 +103,58 @@ Future<bool> TestContainerizer::_launch(
   drivers[containerId] = driver;
 
   // Prepare additional environment variables for the executor.
-  const map<string, string>& env = executorEnvironment(
+  // TODO(benh): Need to get flags passed into the TestContainerizer
+  // in order to properly use here.
+  slave::Flags flags;
+  flags.recovery_timeout = Duration::zero();
+
+  // We need to save the original set of environment variables so we
+  // can reset the environment after calling 'driver->start()' below.
+  hashmap<string, string> original = os::environment();
+
+  const map<string, string> environment = executorEnvironment(
       executorInfo,
       directory,
       slaveId,
       slavePid,
       checkpoint,
-      Duration::zero());
+      flags);
 
-  foreachpair (const string& name, const string variable, env) {
+  foreachpair (const string& name, const string variable, environment) {
     os::setenv(name, variable);
   }
 
-  foreach (const Environment_Variable& variable,
-      executorInfo.command().environment().variables()) {
+  // TODO(benh): Can this be removed and done exlusively in the
+  // 'executorEnvironment()' function? There are other places in the
+  // code where we do this as well and it's likely we can do this once
+  // in 'executorEnvironment()'.
+  foreach (const Environment::Variable& variable,
+           executorInfo.command().environment().variables()) {
     os::setenv(variable.name(), variable.value());
   }
+
   os::setenv("MESOS_LOCAL", "1");
 
   driver->start();
 
-  foreachkey (const string& name, env) {
-    os::unsetenv(name);
-  }
-
-  foreach(const Environment_Variable& variable,
-      executorInfo.command().environment().variables()) {
-    os::unsetenv(variable.name());
-  }
   os::unsetenv("MESOS_LOCAL");
 
-  Owned<Promise<containerizer::Termination> > promise(
+  // Unset the environment variables we set by resetting them to their
+  // original values and also removing any that were not part of the
+  // original environment.
+  foreachpair (const string& name, const string& value, original) {
+    os::setenv(name, value);
+  }
+
+  foreachkey (const string& name, environment) {
+    if (!original.contains(name)) {
+      os::unsetenv(name);
+    }
+  }
+
+  promises[containerId] =
+    Owned<Promise<containerizer::Termination>>(
       new Promise<containerizer::Termination>());
-  promises[containerId] = promise;
 
   return true;
 }
@@ -182,7 +201,7 @@ void TestContainerizer::destroy(
   std::pair<FrameworkID, ExecutorID> key(frameworkId, executorId);
   if (!containers_.contains(key)) {
     LOG(WARNING) << "Ignoring destroy of unknown container for executor '"
-                  << executorId << "' of framework '" << frameworkId << "'";
+                 << executorId << "' of framework " << frameworkId;
     return;
   }
   destroy(containers_[key]);
@@ -191,21 +210,22 @@ void TestContainerizer::destroy(
 
 void TestContainerizer::destroy(const ContainerID& containerId)
 {
-  CHECK(drivers.contains(containerId))
-    << "Failed to terminate container " << containerId
-    << " because it is has not been started";
+  if (drivers.contains(containerId)) {
+    Owned<MesosExecutorDriver> driver = drivers[containerId];
+    driver->stop();
+    driver->join();
+    drivers.erase(containerId);
+  }
 
-  Owned<MesosExecutorDriver> driver = drivers[containerId];
-  driver->stop();
-  driver->join();
-  drivers.erase(containerId);
+  if (promises.contains(containerId)) {
+    containerizer::Termination termination;
+    termination.set_killed(false);
+    termination.set_message("Killed executor");
+    termination.set_status(0);
 
-  containerizer::Termination termination;
-  termination.set_killed(false);
-  termination.set_message("Killed executor");
-  termination.set_status(0);
-  promises[containerId]->set(termination);
-  promises.erase(containerId);
+    promises[containerId]->set(termination);
+    promises.erase(containerId);
+  }
 }
 
 

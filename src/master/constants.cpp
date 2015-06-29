@@ -31,8 +31,8 @@ namespace master {
 const int MAX_OFFERS_PER_FRAMEWORK = 50;
 const double MIN_CPUS = 0.01;
 const Bytes MIN_MEM = Megabytes(32);
-const Duration SLAVE_PING_TIMEOUT = Seconds(15);
-const uint32_t MAX_SLAVE_PING_TIMEOUTS = 5;
+const Duration DEFAULT_SLAVE_PING_TIMEOUT = Seconds(15);
+const size_t DEFAULT_MAX_SLAVE_PING_TIMEOUTS = 5;
 const Duration MIN_SLAVE_REREGISTER_TIMEOUT = Minutes(10);
 const double RECOVERY_SLAVE_REMOVAL_PERCENT_LIMIT = 1.0; // 100%.
 const size_t MAX_REMOVED_SLAVES = 100000;
@@ -41,6 +41,8 @@ const uint32_t MAX_COMPLETED_TASKS_PER_FRAMEWORK = 1000;
 const Duration WHITELIST_WATCH_INTERVAL = Seconds(5);
 const uint32_t TASK_LIMIT = 100;
 const std::string MASTER_INFO_LABEL = "info";
+const std::string MASTER_INFO_JSON_LABEL = "json.info";
+
 const Duration ZOOKEEPER_SESSION_TIMEOUT = Seconds(10);
 const std::string DEFAULT_AUTHENTICATOR = "crammd5";
 const std::string DEFAULT_ALLOCATOR = "HierarchicalDRF";

@@ -1,5 +1,7 @@
 #include <errno.h>
 
+#include <string>
+
 #include <gmock/gmock.h>
 
 #include <gtest/gtest.h>
@@ -13,7 +15,7 @@ using std::string;
 class OsSignalsTest : public ::testing::Test {};
 
 
-TEST_F(OsSignalsTest, suppress)
+TEST_F(OsSignalsTest, Suppress)
 {
   int pipes[2];
 

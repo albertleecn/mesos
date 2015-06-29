@@ -204,6 +204,12 @@ AC_ARG_WITH([svn],
                            [specify where to locate the svn-1 library]),
             [], [])
 
+AC_ARG_WITH([nl],
+            AS_HELP_STRING([--with-nl=@<:@DIR@:>@],
+                           [specify where to locate the libnl3 library
+                            (required for network-isolator). [default: /usr]]),
+            [], [])
+
 AC_ARG_ENABLE([bundled-distribute],
               AS_HELP_STRING([--disable-bundled-distribute],
                              [excludes building and using the bundled distribute
@@ -239,6 +245,30 @@ AC_ARG_WITH([network-isolator],
             AS_HELP_STRING([--with-network-isolator],
                            [builds the network isolator]),
             [], [with_network_isolator=no])
+
+AC_ARG_ENABLE([libevent],
+              AS_HELP_STRING([--enable-libevent],
+                             [use libevent instead of libev default: no]),
+              [enable_libevent=yes], [])
+
+AC_ARG_ENABLE([ssl],
+              AS_HELP_STRING([--enable-ssl],
+                             [use ssl for libprocess communication
+                             default: no]),
+              [enable_ssl=yes], [])
+
+AC_ARG_WITH([libevent],
+            AS_HELP_STRING([--with-libevent=@<:@=DIR@:>@],
+                           [specify where to locate the libevent library]),
+            [], [])
+
+AC_ARG_WITH([ssl],
+            AS_HELP_STRING([--with-ssl=@<:@=DIR@:>@],
+                           [specify where to locate the ssl library]),
+            [], [])
+
+# TODO(hartem): consolidate all of the ENABLE and _WITH statements
+# above in separate sections for better readability.
 
 AC_ARG_VAR([JAVA_HOME], [location of Java Development Kit (JDK)])
 
@@ -821,6 +851,13 @@ We need CRAM-MD5 support for SASL authentication.
 
 # Perform necessary configuration for network isolator.
 if test "x$with_network_isolator" = "xyes"; then
+  if test -n "`echo $with_nl`"; then
+    CPPFLAGS="-I${with_nl}/include/libnl3 $CPPFLAGS"
+    LDFLAGS="-L${with_nl}/lib $LDFLAGS"
+  else
+    CPPFLAGS="-I/usr/include/libnl3 $CPPFLAGS"
+  fi
+
   # Check for OS support.
   AS_IF([test "$OS_NAME" = "linux"],
         [],
@@ -836,7 +873,7 @@ Network isolator is only supported on Linux!
 -------------------------------------------------------------------
 We need libnl-3 for building network isolator!
 
-Please install libnl3 (version 3.2.24 or higher):
+Please install libnl3 (version 3.2.26 or higher):
 http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
   ])])
@@ -847,18 +884,18 @@ http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
 We need libnl-3 headers for building network isolator!
 
-Please install libnl3 (version 3.2.24 or higher):
+Please install libnl3 (version 3.2.26 or higher):
 http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
   ])])
 
   # Check for libnl-route (both headers and libraries).
-  AC_CHECK_LIB([nl-route-3], [rtnl_link_veth_add], [],
+  AC_CHECK_LIB([nl-route-3], [rtnl_u32_get_classid], [],
                [AC_MSG_ERROR([cannot find libnl-route-3
 -------------------------------------------------------------------
 We need libnl-route-3 for building network isolator!
 
-Please install libnl3 (version 3.2.24 or higher):
+Please install libnl3 (version 3.2.26 or higher):
 http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
   ])])
@@ -869,7 +906,7 @@ http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
 We need libnl-route-3 headers for building network isolator!
 
-Please install libnl3 (version 3.2.24 or higher):
+Please install libnl3 (version 3.2.26 or higher):
 http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
   ])])
@@ -880,16 +917,10 @@ http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
 We need libnl-idiag-3 for building network isolator!
 
-Please install libnl3 (version 3.2.24 or higher):
+Please install libnl3 (version 3.2.26 or higher):
 http://www.infradead.org/~tgr/libnl/
 -------------------------------------------------------------------
   ])])
-
-  # TODO(jieyu): Automatically detect the location where the libnl
-  # headers are installed.
-  LIBNL_CFLAGS=-I/usr/include/libnl3
-
-  AC_SUBST([LIBNL_CFLAGS])
 
   AC_DEFINE([WITH_NETWORK_ISOLATOR])
 fi
@@ -1410,6 +1441,117 @@ AM_CONDITIONAL([WITHOUT_PYTHON_DEPS],
     [test "x$without_python_deps" = "xyes"])
 
 AM_CONDITIONAL([GIT_REPO], [test -d ${srcdir}"/.git"])
+
+
+# Check if libevent prefix path was provided, and if so, add it to
+# the CPPFLAGS and LDFLAGS with respective /include and /lib path
+# suffixes.
+if test -z "`echo $with_libevent`" &&
+   test "$OS_NAME" = "darwin" &&
+   test -n "`command -v brew`" &&
+   test -n "`brew list --versions libevent`"; then
+  with_libevent=`brew --prefix libevent`
+fi
+
+if test -n "`echo $with_libevent`"; then
+  CPPFLAGS="-I${with_libevent}/include $CPPFLAGS"
+  LDFLAGS="-L${with_libevent}/lib $LDFLAGS"
+fi
+
+if test "x$enable_libevent" = "xyes"; then
+  AC_CHECK_HEADERS([event2/event.h],
+                   [AC_CHECK_LIB([event],
+                                 [event_base_new],
+                                 [],
+                                 [AC_MSG_ERROR([cannot find libevent
+-------------------------------------------------------------------
+libevent is required for libprocess to build.
+-------------------------------------------------------------------
+                                 ])])],
+                   [AC_MSG_ERROR([cannot find libevent headers
+-------------------------------------------------------------------
+libevent is required for libprocess to build.
+-------------------------------------------------------------------
+  ])])
+
+  AC_CHECK_HEADERS([event2/thread.h],
+                   [AC_CHECK_LIB([event_pthreads],
+                                 [evthread_use_pthreads],
+                                 [],
+                                 [AC_MSG_ERROR([cannot find libevent_pthreads
+-------------------------------------------------------------------
+libevent_pthreads is required for libprocess to build.
+-------------------------------------------------------------------
+                                 ])])],
+                   [AC_MSG_ERROR([cannot find libevent_pthreads headers
+-------------------------------------------------------------------
+libevent_pthreads is required for libprocess to build.
+-------------------------------------------------------------------
+  ])])
+fi
+
+AM_CONDITIONAL([ENABLE_LIBEVENT], [test x"$enable_libevent" = "xyes"])
+
+
+# Check if libssl prefix path was provided, and if so, add it to
+# the CPPFLAGS and LDFLAGS with respective /include and /lib path
+# suffixes.
+if test -z "`echo $with_ssl`" &&
+   test "$OS_NAME" = "darwin" &&
+   test -n "`command -v brew`" &&
+   test -n "`brew list --versions openssl`"; then
+  with_ssl=`brew --prefix openssl`
+fi
+
+if test -n "`echo $with_ssl`"; then
+  CPPFLAGS="-I${with_ssl}/include $CPPFLAGS"
+  LDFLAGS="-L${with_ssl}/lib $LDFLAGS"
+fi
+
+if test "x$enable_ssl" = "xyes"; then
+  AC_CHECK_HEADERS([openssl/ssl.h],
+                   [AC_CHECK_LIB([ssl],
+                                 [SSL_CTX_new],
+                                 [],
+                                 [AC_MSG_ERROR([cannot find libssl
+-------------------------------------------------------------------
+libssl is required for an SSL-enabled build.
+-------------------------------------------------------------------
+                                 ])])],
+                   [AC_MSG_ERROR([cannot find libssl headers
+-------------------------------------------------------------------
+libssl is required for an SSL-enabled build.
+-------------------------------------------------------------------
+  ])])
+
+  AC_CHECK_LIB([crypto], [RAND_poll], [], [AC_MSG_ERROR([cannot find libcrypto
+-------------------------------------------------------------------
+libcrypto is required for an SSL-enabled build.
+-------------------------------------------------------------------
+  ])])
+
+  if test "x$enable_libevent" = "xyes"; then
+    AC_CHECK_HEADERS([event2/bufferevent_ssl.h],
+                     [AC_CHECK_LIB([event_openssl],
+                                   [bufferevent_openssl_get_ssl],
+                                   [],
+                                   [AC_MSG_ERROR([cannot find libevent_openssl
+-------------------------------------------------------------------
+libevent_openssl is required for an SSL-enabled build.
+-------------------------------------------------------------------
+                                   ])])],
+                     [AC_MSG_ERROR([cannot find libevent_openssl headers
+-------------------------------------------------------------------
+libevent_openssl is required for an SSL-enabled build.
+-------------------------------------------------------------------
+    ])])
+  else
+    AC_MSG_ERROR([SSL is currently only supported with libevent])
+  fi
+  AC_DEFINE([USE_SSL_SOCKET], [1])
+fi
+
+AM_CONDITIONAL([ENABLE_SSL], [test x"$enable_ssl" = "xyes"])
 
 
 # Provide more granular version numbers based on the version string,

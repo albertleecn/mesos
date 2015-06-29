@@ -20,6 +20,7 @@ layout: documentation
 * [Logging and Debugging](/documentation/latest/logging-and-debugging/) for viewing Mesos and framework logs.
 * [High Availability](/documentation/latest/high-availability/) for running multiple masters simultaneously.
 * [Operational Guide](/documentation/latest/operational-guide/)
+* [Monitoring](/documentation/latest/monitoring/)
 * [Network Monitoring](/documentation/latest/network-monitoring/)
 * [Slave Recovery](/documentation/latest/slave-recovery/) for doing seamless upgrades.
 * [Tools](/documentation/latest/tools/) for setting up and running a Mesos cluster.
@@ -44,13 +45,16 @@ layout: documentation
 
 * [Reporting an Issue, Improvement, or Feature](/documentation/latest/reporting-a-bug/) for getting started with JIRA.
 * [Submitting a Patch](/documentation/latest/submitting-a-patch/) for getting started with ReviewBoard, and our tooling around it.
+* [Testing Patterns](/documentation/latest/mesos-testing-patterns/) for tips and tricks used in Mesos tests.
 * [Effective Code Reviewing](/documentation/latest/effective-code-reviewing/) guidelines, tips, and learnings for how to do effective code reviews.
 * [Engineering Principles and Practices](/documentation/latest/engineering-principles-and-practices/) to serve as a shared set of project-level values for the community.
 * [Committing](/documentation/latest/committing/) guidelines for committing changes.
 * [Committers and Maintainers](/documentation/latest/committers/) a listing of project committers and component maintainers; useful when seeking feedback.
 * [Doxygen](/api/latest/c++/) documents the internal Mesos APIs.
-* [C++ Style Guide](/documentation/latest/mesos-c++-style-guide/)
-* [Doxygen Style Guide](/documentation/latest/mesos-doxygen-style-guide/)
+* [Documentation Guide](/documentation/latest/mesos-documentation-guide/)
+  * [C++ Style Guide](/documentation/latest/mesos-c++-style-guide/)
+  * [Doxygen Style Guide](/documentation/latest/mesos-doxygen-style-guide/)
+  * [Markdown Style Guide](/documentation/latest/mesos-markdown-style-guide/)
 * [Development Roadmap](/documentation/latest/mesos-roadmap/)
 * [Release Guide](/documentation/latest/release-guide/)
 

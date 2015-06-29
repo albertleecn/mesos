@@ -14,13 +14,16 @@
 #ifndef __STOUT_HASHMAP_HPP__
 #define __STOUT_HASHMAP_HPP__
 
+#include <functional>
+#include <list>
+#include <map>
 #include <utility>
 
 #include <boost/get_pointer.hpp>
 #include <boost/unordered_map.hpp>
 
-#include "hashset.hpp"
 #include "foreach.hpp"
+#include "hashset.hpp"
 #include "none.hpp"
 #include "option.hpp"
 
@@ -41,17 +44,43 @@ public:
   // 'const hashmap<T> map;' is not an error.
   hashmap() {}
 
+  // An implicit constructor for converting from a std::map.
+  //
+  // TODO(benh): Allow any arbitrary type that supports 'begin()' and
+  // 'end()' passed into the specified 'emplace'?
+  hashmap(const std::map<Key, Value>& map)
+  {
+    boost::unordered_map<Key, Value, Hash, Equal>::reserve(map.size());
+
+    for (auto iterator = map.begin(); iterator != map.end(); ++iterator) {
+      boost::unordered_map<Key, Value, Hash, Equal>::emplace(
+          iterator->first,
+          iterator->second);
+    }
+  }
+
+  // An implicit constructor for converting from an r-value std::map.
+  //
+  // TODO(benh): Allow any arbitrary type that supports 'begin()' and
+  // 'end()' passed into the specified 'insert'?
+  hashmap(std::map<Key, Value>&& map)
+  {
+    // NOTE: We're using 'insert' here with a move iterator in order
+    // to avoid copies because we know we have an r-value paramater.
+    boost::unordered_map<Key, Value, Hash, Equal>::insert(
+        std::make_move_iterator(map.begin()),
+        std::make_move_iterator(map.end()));
+  }
+
   // Allow simple construction via initializer list.
   hashmap(std::initializer_list<std::pair<Key, Value>> list)
   {
     boost::unordered_map<Key, Value, Hash, Equal>::reserve(list.size());
 
-    // TODO(cmaloney): Use 'foreach*' once supported.
-    auto it = list.begin();
-    while (it != list.end()) {
+    for (auto iterator = list.begin(); iterator != list.end(); ++iterator) {
       boost::unordered_map<Key, Value, Hash, Equal>::emplace(
-          it->first, it->second);
-      ++it;
+          iterator->first,
+          iterator->second);
     }
   }
 

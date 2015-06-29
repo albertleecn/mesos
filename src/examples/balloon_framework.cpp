@@ -17,7 +17,6 @@
  */
 
 #include <assert.h>
-#include <libgen.h>
 #include <stdlib.h>
 
 #include <sys/param.h>
@@ -31,6 +30,7 @@
 #include <stout/numify.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
+#include <stout/path.hpp>
 #include <stout/stringify.hpp>
 
 #include "common/protobuf_utils.hpp"
@@ -206,7 +206,9 @@ int main(int argc, char** argv)
   if (value.isSome()) {
     uri = path::join(value.get(), "src", "balloon-executor");
   } else {
-    uri = path::join(os::realpath(dirname(argv[0])).get(), "balloon-executor");
+    uri = path::join(
+        os::realpath(Path(argv[0]).dirname()).get(),
+        "balloon-executor");
   }
 
   ExecutorInfo executor;

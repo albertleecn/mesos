@@ -50,6 +50,8 @@
 
 #include "master/master.hpp"
 
+#include "mesos/mesos.hpp"
+
 #include "slave/flags.hpp"
 #include "slave/slave.hpp"
 
@@ -339,7 +341,7 @@ protected:
     return pid;
   }
 
-  JSON::Object statisticsHelper(
+  Result<ResourceStatistics> statisticsHelper(
       pid_t pid,
       bool enable_summary,
       bool enable_details)
@@ -347,6 +349,7 @@ protected:
     // Retrieve the socket information from inside the container.
     PortMappingStatistics statistics;
     statistics.flags.pid = pid;
+    statistics.flags.eth0_name = eth0;
     statistics.flags.enable_socket_statistics_summary = enable_summary;
     statistics.flags.enable_socket_statistics_details = enable_details;
 
@@ -376,7 +379,7 @@ protected:
     Try<JSON::Object> object = JSON::parse<JSON::Object>(out.get());
     CHECK_SOME(object);
 
-    return object.get();
+    return ::protobuf::parse<ResourceStatistics>(object.get());
   }
 
   slave::Flags flags;
@@ -431,7 +434,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerToContainerTCP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -590,7 +594,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerToContainerUDP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -751,7 +756,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_HostToContainerUDP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -867,7 +873,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_HostToContainerTCP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -991,7 +998,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerICMPExternal)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1076,7 +1084,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerICMPInternal)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1164,7 +1173,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerARPExternal)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1258,7 +1268,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_DNS)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1348,7 +1359,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_TooManyContainers)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1456,7 +1468,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_SmallEgressLimit)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Open an nc server on the host side. Note that 'invalidPort' is in
@@ -1569,32 +1582,24 @@ TEST_F(PortMappingIsolatorTest, ROOT_SmallEgressLimit)
 }
 
 
-bool HasTCPSocketsCount(const JSON::Object& object)
+bool HasTCPSocketsCount(const ResourceStatistics& statistics)
 {
-  return object.find<JSON::Number>(NET_TCP_ACTIVE_CONNECTIONS).isSome() &&
-    object.find<JSON::Number>(NET_TCP_TIME_WAIT_CONNECTIONS).isSome();
+  return statistics.has_net_tcp_active_connections() &&
+    statistics.has_net_tcp_time_wait_connections();
 }
 
 
-bool HasTCPSocketsRTT(const JSON::Object& object)
+bool HasTCPSocketsRTT(const ResourceStatistics& statistics)
 {
-  Result<JSON::Number> p50 =
-    object.find<JSON::Number>(NET_TCP_RTT_MICROSECS_P50);
-  Result<JSON::Number> p90 =
-    object.find<JSON::Number>(NET_TCP_RTT_MICROSECS_P90);
-  Result<JSON::Number> p95 =
-    object.find<JSON::Number>(NET_TCP_RTT_MICROSECS_P95);
-  Result<JSON::Number> p99 =
-    object.find<JSON::Number>(NET_TCP_RTT_MICROSECS_P99);
-
   // We either have all of the following metrics or we have nothing.
-  if (!p50.isSome() && !p90.isSome() && !p95.isSome() && !p99.isSome()) {
+  if (statistics.has_net_tcp_rtt_microsecs_p50() &&
+      statistics.has_net_tcp_rtt_microsecs_p90() &&
+      statistics.has_net_tcp_rtt_microsecs_p95() &&
+      statistics.has_net_tcp_rtt_microsecs_p99()) {
+    return true;
+  } else {
     return false;
   }
-
-  EXPECT_TRUE(p50.isSome() && p90.isSome() && p95.isSome() && p99.isSome());
-
-  return true;
 }
 
 
@@ -1615,7 +1620,8 @@ TEST_F(PortMappingIsolatorTest, ROOT_PortMappingStatistics)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher = LinuxLauncher::create(flags);
+  Try<Launcher*> launcher =
+    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
   CHECK_SOME(launcher);
 
   // Open an nc server on the host side. Note that 'invalidPort' is
@@ -1718,17 +1724,26 @@ TEST_F(PortMappingIsolatorTest, ROOT_PortMappingStatistics)
 
   // While the connection is still active, try out different flag
   // combinations.
-  JSON::Object object = statisticsHelper(pid.get(), true, true);
-  ASSERT_TRUE(HasTCPSocketsCount(object) && HasTCPSocketsRTT(object));
+  Result<ResourceStatistics> statistics =
+      statisticsHelper(pid.get(), true, true);
+  ASSERT_SOME(statistics);
+  EXPECT_TRUE(HasTCPSocketsCount(statistics.get()));
+  EXPECT_TRUE(HasTCPSocketsRTT(statistics.get()));
 
-  object = statisticsHelper(pid.get(), true, false);
-  ASSERT_TRUE(HasTCPSocketsCount(object) && !HasTCPSocketsRTT(object));
+  statistics = statisticsHelper(pid.get(), true, false);
+  ASSERT_SOME(statistics);
+  EXPECT_TRUE(HasTCPSocketsCount(statistics.get()));
+  EXPECT_FALSE(HasTCPSocketsRTT(statistics.get()));
 
-  object = statisticsHelper(pid.get(), false, true);
-  ASSERT_TRUE(!HasTCPSocketsCount(object) && HasTCPSocketsRTT(object));
+  statistics = statisticsHelper(pid.get(), false, true);
+  ASSERT_SOME(statistics);
+  EXPECT_FALSE(HasTCPSocketsCount(statistics.get()));
+  EXPECT_TRUE(HasTCPSocketsRTT(statistics.get()));
 
-  object = statisticsHelper(pid.get(), false, false);
-  ASSERT_TRUE(!HasTCPSocketsCount(object) && !HasTCPSocketsRTT(object));
+  statistics = statisticsHelper(pid.get(), false, false);
+  ASSERT_SOME(statistics);
+  EXPECT_FALSE(HasTCPSocketsCount(statistics.get()));
+  EXPECT_FALSE(HasTCPSocketsRTT(statistics.get()));
 
   // Wait for the command to finish.
   ASSERT_TRUE(waitForFileCreation(container1Ready));
@@ -1972,8 +1987,6 @@ TEST_F(PortMappingMesosTest, CGROUPS_ROOT_RecoverMixedContainers)
 
 // Test that all configurations (tc filters etc) is cleaned up for an
 // orphaned container using the network isolator.
-// TODO(jieyu): Consider adding a test to verify that unknown orphans
-// (not known by the launcher) are also cleaned up.
 TEST_F(PortMappingMesosTest, CGROUPS_ROOT_CleanUpOrphan)
 {
   Try<PID<Master> > master = StartMaster();
@@ -2162,6 +2175,123 @@ TEST_F(PortMappingMesosTest, ROOT_NetworkNamespaceHandleSymlink)
   Shutdown();
 
   delete containerizer.get();
+}
+
+
+// This test verfies that the isolator is able to recover a mix of
+// known and unkonwn orphans. This is used to capture the regression
+// described in MESOS-2914.
+TEST_F(PortMappingMesosTest, CGROUPS_ROOT_RecoverMixedKnownAndUnKnownOrphans)
+{
+  Try<PID<Master>> master = StartMaster(CreateMasterFlags());
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "network/port_mapping";
+
+  Try<MesosContainerizer*> containerizer =
+    MesosContainerizer::create(flags, true, &fetcher);
+
+  ASSERT_SOME(containerizer);
+
+  Try<PID<Slave> > slave = StartSlave(containerizer.get(), flags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.CopyFrom(DEFAULT_FRAMEWORK_INFO);
+  frameworkInfo.set_checkpoint(true);
+
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get(), DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(_, _, _));
+
+  Future<vector<Offer> > offers;
+  EXPECT_CALL(sched, resourceOffers(_, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(DeclineOffers());      // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers.get().size());
+
+  Offer offer = offers.get()[0];
+
+  TaskInfo task1 = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:64").get(),
+      "sleep 1000");
+
+  TaskInfo task2 = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:64").get(),
+      "sleep 1000");
+
+  Future<TaskStatus> status1;
+  Future<TaskStatus> status2;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status1))
+    .WillOnce(FutureArg<1>(&status2))
+    .WillRepeatedly(Return());       // Ignore subsequent updates.
+
+  driver.launchTasks(offers.get()[0].id(), {task1, task2});
+
+  AWAIT_READY(status1);
+  ASSERT_EQ(TASK_RUNNING, status1.get().state());
+
+  AWAIT_READY(status2);
+  ASSERT_EQ(TASK_RUNNING, status2.get().state());
+
+  // Obtain the container IDs.
+  Future<hashset<ContainerID>> containers = containerizer.get()->containers();
+  AWAIT_READY(containers);
+  ASSERT_EQ(2u, containers.get().size());
+
+  Stop(slave.get());
+  delete containerizer.get();
+
+  // Wipe the slave meta directory so that the slave will treat the
+  // above running tasks as orphans.
+  ASSERT_SOME(os::rmdir(paths::getMetaRootDir(flags.work_dir)));
+
+  // Remove the network namespace symlink for one container so that it
+  // becomes an unknown orphan.
+  const ContainerID containerId = *(containers.get().begin());
+  const string symlink = path::join(
+      slave::PORT_MAPPING_BIND_MOUNT_SYMLINK_ROOT(),
+      stringify(containerId));
+
+  ASSERT_TRUE(os::exists(symlink));
+  ASSERT_TRUE(os::stat::islink(symlink));
+  ASSERT_SOME(os::rm(symlink));
+
+  Future<SlaveRegisteredMessage> slaveRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+
+  Future<Nothing> knownOrphansDestroyed =
+    FUTURE_DISPATCH(_, &MesosContainerizerProcess::___recover);
+
+  // Restart the slave.
+  slave = StartSlave(flags);
+  ASSERT_SOME(slave);
+
+  AWAIT_READY(slaveRegisteredMessage);
+  AWAIT_READY(knownOrphansDestroyed);
+
+  // We settle the clock here to ensure that the processing of
+  // 'MesosContainerizerProcess::___destroy()' is complete and the
+  // metric is updated.
+  Clock::pause();
+  Clock::settle();
+  Clock::resume();
+
+  JSON::Object metrics = Metrics();
+  EXPECT_EQ(
+      0u,
+      metrics.values["containerizer/mesos/container_destroy_errors"]);
 }
 
 } // namespace tests {

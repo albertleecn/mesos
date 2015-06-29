@@ -1,15 +1,15 @@
+#include <string>
+
 #include <gtest/gtest.h>
 
 #include <gmock/gmock.h>
-
-#include <string>
 
 #include <stout/uuid.hpp>
 
 using std::string;
 
 
-TEST(UUIDTest, test)
+TEST(UUIDTest, Test)
 {
   UUID uuid1 = UUID::random();
   UUID uuid2 = UUID::fromBytes(uuid1.toBytes());

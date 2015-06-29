@@ -235,7 +235,7 @@ TEST(SorterTest, UpdateAllocation)
   volume.mutable_disk()->mutable_volume()->set_container_path("data");
 
   // Compute the updated allocation.
-  Resources oldAllocation = sorter.allocation("a")[slaveId];
+  Resources oldAllocation = sorter.allocation("a", slaveId);
   Try<Resources> newAllocation = oldAllocation.apply(CREATE(volume));
   ASSERT_SOME(newAllocation);
 
@@ -245,6 +245,7 @@ TEST(SorterTest, UpdateAllocation)
   hashmap<SlaveID, Resources> allocation = sorter.allocation("a");
   EXPECT_EQ(1u, allocation.size());
   EXPECT_EQ(newAllocation.get(), allocation[slaveId]);
+  EXPECT_EQ(newAllocation.get(), sorter.allocation("a", slaveId));
 }
 
 
@@ -274,19 +275,18 @@ TEST(SorterTest, MultipleSlaves)
   sorter.allocated("framework", slaveA, slaveResources);
   sorter.allocated("framework", slaveB, slaveResources);
 
-  hashmap<SlaveID, Resources> allocation = sorter.allocation("framework");
-  EXPECT_EQ(2u, allocation.size());
-  EXPECT_EQ(slaveResources, allocation[slaveA]);
-  EXPECT_EQ(slaveResources, allocation[slaveB]);
+  EXPECT_EQ(2u, sorter.allocation("framework").size());
+  EXPECT_EQ(slaveResources, sorter.allocation("framework", slaveA));
+  EXPECT_EQ(slaveResources, sorter.allocation("framework", slaveB));
 }
 
 
-// We aggregate resources from multiple slaves into the sorter.
-// Since non-scalar resources don't aggregate well across slaves,
-// we need to keep track of the SlaveIDs of the resources.
-// This tests that no resources vanish in the process of aggregation
-// by performing a updates from unreserved to reserved resources.
-TEST(SorterTest, MultipleSlaveUpdates)
+// We aggregate resources from multiple slaves into the sorter. Since
+// non-scalar resources don't aggregate well across slaves, we need to
+// keep track of the SlaveIDs of the resources. This tests that no
+// resources vanish in the process of aggregation by performing update
+// allocations from unreserved to reserved resources.
+TEST(SorterTest, MultipleSlavesUpdateAllocation)
 {
   DRFSorter sorter;
 
@@ -320,10 +320,9 @@ TEST(SorterTest, MultipleSlaveUpdates)
   sorter.update("framework", slaveA, slaveResources, newAllocation.get());
   sorter.update("framework", slaveB, slaveResources, newAllocation.get());
 
-  hashmap<SlaveID, Resources> allocation = sorter.allocation("framework");
-  EXPECT_EQ(2u, allocation.size());
-  EXPECT_EQ(newAllocation.get(), allocation[slaveA]);
-  EXPECT_EQ(newAllocation.get(), allocation[slaveB]);
+  EXPECT_EQ(2u, sorter.allocation("framework").size());
+  EXPECT_EQ(newAllocation.get(), sorter.allocation("framework", slaveA));
+  EXPECT_EQ(newAllocation.get(), sorter.allocation("framework", slaveB));
 }
 
 
@@ -366,6 +365,49 @@ TEST(SorterTest, UpdateTotal)
 }
 
 
+// Similar to the above 'UpdateTotal' test, but tests the scenario
+// when there are multiple slaves.
+TEST(SorterTest, MultipleSlavesUpdateTotal)
+{
+  DRFSorter sorter;
+
+  SlaveID slaveA;
+  slaveA.set_value("slaveA");
+
+  SlaveID slaveB;
+  slaveB.set_value("slaveB");
+
+  sorter.add("a");
+  sorter.add("b");
+
+  sorter.add(slaveA, Resources::parse("cpus:5;mem:50").get());
+  sorter.add(slaveB, Resources::parse("cpus:5;mem:50").get());
+
+  // Dominant share of "a" is 0.2 (cpus).
+  sorter.allocated(
+      "a", slaveA, Resources::parse("cpus:2;mem:1").get());
+
+  // Dominant share of "b" is 0.1 (cpus).
+  sorter.allocated(
+      "b", slaveB, Resources::parse("cpus:1;mem:3").get());
+
+  list<string> sorted = sorter.sort();
+  ASSERT_EQ(2u, sorted.size());
+  EXPECT_EQ("b", sorted.front());
+  EXPECT_EQ("a", sorted.back());
+
+  // Update the total resources of slaveA.
+  sorter.update(slaveA, Resources::parse("cpus:95;mem:50").get());
+
+  // Now the dominant share of "a" is 0.02 (cpus) and "b" is 0.03
+  // (mem), which should change the sort order.
+  sorted = sorter.sort();
+  ASSERT_EQ(2u, sorted.size());
+  EXPECT_EQ("a", sorted.front());
+  EXPECT_EQ("b", sorted.back());
+}
+
+
 // This test verifies that revocable resources are properly accounted
 // for in the DRF sorter.
 TEST(SorterTest, RevocableResources)
@@ -397,8 +439,8 @@ TEST(SorterTest, RevocableResources)
   sorter.allocated("b", slaveId, b);
 
   // Check that the allocations are correct.
-  ASSERT_EQ(a, sorter.allocation("a")[slaveId]);
-  ASSERT_EQ(b, sorter.allocation("b")[slaveId]);
+  ASSERT_EQ(a, sorter.allocation("a", slaveId));
+  ASSERT_EQ(b, sorter.allocation("b", slaveId));
 
   // Check that the sort is correct.
   list<string> sorted = sorter.sort();

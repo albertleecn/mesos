@@ -124,7 +124,9 @@ public:
                 const SlaveID& _slaveId,
                 const PID<Master>& _master,
                 const Option<shared_ptr<RateLimiter>>& _limiter,
-                const shared_ptr<Metrics> _metrics)
+                const shared_ptr<Metrics> _metrics,
+                const Duration& _slavePingTimeout,
+                const size_t _maxSlavePingTimeouts)
     : ProcessBase(process::ID::generate("slave-observer")),
       slave(_slave),
       slaveInfo(_slaveInfo),
@@ -132,6 +134,8 @@ public:
       master(_master),
       limiter(_limiter),
       metrics(_metrics),
+      slavePingTimeout(_slavePingTimeout),
+      maxSlavePingTimeouts(_maxSlavePingTimeouts),
       timeouts(0),
       pinged(false),
       connected(true)
@@ -170,7 +174,7 @@ protected:
     send(slave, "PING", data.data(), data.size());
 
     pinged = true;
-    delay(SLAVE_PING_TIMEOUT, self(), &SlaveObserver::timeout);
+    delay(slavePingTimeout, self(), &SlaveObserver::timeout);
   }
 
   void pong(const UPID& from, const string& body)
@@ -190,9 +194,9 @@ protected:
   {
     if (pinged) {
       timeouts++; // No pong has been received before the timeout.
-      if (timeouts >= MAX_SLAVE_PING_TIMEOUTS) {
+      if (timeouts >= maxSlavePingTimeouts) {
         // No pong has been received for the last
-        // 'MAX_SLAVE_PING_TIMEOUTS' pings.
+        // 'maxSlavePingTimeouts' pings.
         shutdown();
       }
     }
@@ -261,6 +265,8 @@ private:
   const Option<shared_ptr<RateLimiter>> limiter;
   shared_ptr<Metrics> metrics;
   Option<Future<Nothing>> shuttingDown;
+  const Duration slavePingTimeout;
+  const size_t maxSlavePingTimeouts;
   uint32_t timeouts;
   bool pinged;
   bool connected;
@@ -969,10 +975,10 @@ void Master::exited(const UPID& pid)
 
       // Delay dispatching a message to ourselves for the timeout.
       delay(failoverTimeout,
-          self(),
-          &Master::frameworkFailoverTimeout,
-          framework->id(),
-          framework->reregisteredTime);
+            self(),
+            &Master::frameworkFailoverTimeout,
+            framework->id(),
+            framework->reregisteredTime);
 
       return;
     }
@@ -1010,7 +1016,7 @@ void Master::exited(const UPID& pid)
 
       // Remove all non-checkpointing frameworks.
       hashset<FrameworkID> frameworkIds =
-          slave->tasks.keys() | slave->executors.keys();
+        slave->tasks.keys() | slave->executors.keys();
 
       foreach (const FrameworkID& frameworkId, frameworkIds) {
         Framework* framework = getFramework(frameworkId);
@@ -1313,7 +1319,7 @@ void Master::recoveredSlavesTimeout(const Registry& registry)
 
   if (removalPercentage > limit) {
     EXIT(1) << "Post-recovery slave removal limit exceeded! After "
-            << SLAVE_PING_TIMEOUT * MAX_SLAVE_PING_TIMEOUTS
+            << flags.slave_reregister_timeout
             << " there were " << slaves.recovered.size()
             << " (" << removalPercentage * 100 << "%) slaves recovered from the"
             << " registry that did not re-register: \n"
@@ -1550,9 +1556,8 @@ Future<Option<Error>> Master::validate(
     return None();
   }
 
-  LOG(INFO)
-    << "Authorizing framework principal '" << frameworkInfo.principal()
-    << "' to receive offers for role '" << frameworkInfo.role() << "'";
+  LOG(INFO) << "Authorizing framework principal '" << frameworkInfo.principal()
+            << "' to receive offers for role '" << frameworkInfo.role() << "'";
 
   mesos::ACL::RegisterFramework request;
   if (frameworkInfo.has_principal()) {
@@ -2398,6 +2403,7 @@ void Master::accept(
             task.task_id(),
             TASK_LOST,
             TaskStatus::SOURCE_MASTER,
+            None(),
             "Task launched with invalid offers: " + error.get().message,
             TaskStatus::REASON_INVALID_OFFERS);
 
@@ -2509,6 +2515,7 @@ void Master::_accept(
             task.task_id(),
             TASK_LOST,
             TaskStatus::SOURCE_MASTER,
+            None(),
             slave == NULL ? "Slave removed" : "Slave disconnected",
             reason);
 
@@ -2683,6 +2690,7 @@ void Master::_accept(
                 task.task_id(),
                 TASK_ERROR,
                 TaskStatus::SOURCE_MASTER,
+                None(),
                 authorization.isFailed() ?
                     "Authorization failure: " + authorization.failure() :
                     "Not authorized to launch as user '" + user + "'",
@@ -2725,6 +2733,7 @@ void Master::_accept(
                 task_.task_id(),
                 TASK_ERROR,
                 TaskStatus::SOURCE_MASTER,
+                None(),
                 validationError.get().message,
                 TaskStatus::REASON_TASK_INVALID);
 
@@ -2757,12 +2766,14 @@ void Master::_accept(
             message.set_pid(framework->pid);
             message.mutable_task()->MergeFrom(task_);
 
-            // Set labels retrieved from label-decorator hooks.
-            message.mutable_task()->mutable_labels()->CopyFrom(
-                HookManager::masterLaunchTaskLabelDecorator(
-                    task_,
-                    framework->info,
-                    slave->info));
+            if (HookManager::hooksAvailable()) {
+              // Set labels retrieved from label-decorator hooks.
+              message.mutable_task()->mutable_labels()->CopyFrom(
+                  HookManager::masterLaunchTaskLabelDecorator(
+                      task_,
+                      framework->info,
+                      slave->info));
+            }
 
             send(slave->pid, message);
           }
@@ -2863,6 +2874,7 @@ void Master::kill(Framework* framework, const scheduler::Call::Kill& kill)
         taskId,
         TASK_KILLED,
         TaskStatus::SOURCE_MASTER,
+        None(),
         "Killed pending task");
 
     forward(update, UPID(), framework);
@@ -3142,8 +3154,15 @@ void Master::registerSlave(
 
       LOG(INFO) << "Slave " << *slave << " already registered,"
                 << " resending acknowledgement";
+
+      Duration pingTimeout =
+        flags.slave_ping_timeout * flags.max_slave_ping_timeouts;
+      MasterSlaveConnection connection;
+      connection.set_total_ping_timeout_seconds(pingTimeout.secs());
+
       SlaveRegisteredMessage message;
-      message.mutable_slave_id()->MergeFrom(slave->id);
+      message.mutable_slave_id()->CopyFrom(slave->id);
+      message.mutable_connection()->CopyFrom(connection);
       send(from, message);
       return;
     }
@@ -3216,8 +3235,14 @@ void Master::_registerSlave(
 
     addSlave(slave);
 
+    Duration pingTimeout =
+      flags.slave_ping_timeout * flags.max_slave_ping_timeouts;
+    MasterSlaveConnection connection;
+    connection.set_total_ping_timeout_seconds(pingTimeout.secs());
+
     SlaveRegisteredMessage message;
-    message.mutable_slave_id()->MergeFrom(slave->id);
+    message.mutable_slave_id()->CopyFrom(slave->id);
+    message.mutable_connection()->CopyFrom(connection);
     send(slave->pid, message);
 
     LOG(INFO) << "Registered slave " << *slave
@@ -3412,8 +3437,14 @@ void Master::_reregisterSlave(
 
     addSlave(slave, completedFrameworks);
 
+    Duration pingTimeout =
+      flags.slave_ping_timeout * flags.max_slave_ping_timeouts;
+    MasterSlaveConnection connection;
+    connection.set_total_ping_timeout_seconds(pingTimeout.secs());
+
     SlaveReregisteredMessage message;
-    message.mutable_slave_id()->MergeFrom(slave->id);
+    message.mutable_slave_id()->CopyFrom(slave->id);
+    message.mutable_connection()->CopyFrom(connection);
     send(slave->pid, message);
 
     LOG(INFO) << "Re-registered slave " << *slave
@@ -3809,6 +3840,7 @@ void Master::_reconcileTasks(
           task.task_id(),
           TASK_STAGING,
           TaskStatus::SOURCE_MASTER,
+          None(),
           "Reconciliation: Latest task state",
           TaskStatus::REASON_RECONCILIATION);
 
@@ -3839,6 +3871,7 @@ void Master::_reconcileTasks(
           task->task_id(),
           state,
           TaskStatus::SOURCE_MASTER,
+          None(),
           "Reconciliation: Latest task state",
           TaskStatus::REASON_RECONCILIATION,
           executorId,
@@ -3894,6 +3927,7 @@ void Master::_reconcileTasks(
           task_.task_id(),
           TASK_STAGING,
           TaskStatus::SOURCE_MASTER,
+          None(),
           "Reconciliation: Latest task state",
           TaskStatus::REASON_RECONCILIATION);
     } else if (task != NULL) {
@@ -3912,6 +3946,7 @@ void Master::_reconcileTasks(
           task->task_id(),
           state,
           TaskStatus::SOURCE_MASTER,
+          None(),
           "Reconciliation: Latest task state",
           TaskStatus::REASON_RECONCILIATION,
           executorId,
@@ -3924,6 +3959,7 @@ void Master::_reconcileTasks(
           status.task_id(),
           TASK_LOST,
           TaskStatus::SOURCE_MASTER,
+          None(),
           "Reconciliation: Task is unknown to the slave",
           TaskStatus::REASON_RECONCILIATION);
     } else if (slaves.transitioning(slaveId)) {
@@ -3939,6 +3975,7 @@ void Master::_reconcileTasks(
           status.task_id(),
           TASK_LOST,
           TaskStatus::SOURCE_MASTER,
+          None(),
           "Reconciliation: Task is unknown",
           TaskStatus::REASON_RECONCILIATION);
     }
@@ -4265,8 +4302,14 @@ void Master::reconcile(
   // To resolve both cases correctly, we must reconcile through the
   // slave. For slaves that do not support reconciliation, we keep
   // the old semantics and cover only case (1) via TASK_LOST.
+  Duration pingTimeout =
+    flags.slave_ping_timeout * flags.max_slave_ping_timeouts;
+  MasterSlaveConnection connection;
+  connection.set_total_ping_timeout_seconds(pingTimeout.secs());
+
   SlaveReregisteredMessage reregistered;
-  reregistered.mutable_slave_id()->MergeFrom(slave->id);
+  reregistered.mutable_slave_id()->CopyFrom(slave->id);
+  reregistered.mutable_connection()->CopyFrom(connection);
 
   // NOTE: copies are needed because removeTask modified slave->tasks.
   foreachkey (const FrameworkID& frameworkId, utils::copy(slave->tasks)) {
@@ -4307,6 +4350,7 @@ void Master::reconcile(
               task->task_id(),
               TASK_LOST,
               TaskStatus::SOURCE_MASTER,
+              None(),
               "Task is unknown to the slave",
               TaskStatus::REASON_TASK_UNKNOWN);
 
@@ -4568,6 +4612,7 @@ void Master::removeFramework(Framework* framework)
         task->task_id(),
         TASK_KILLED,
         TaskStatus::SOURCE_MASTER,
+        None(),
         "Framework " + framework->id().value() + " removed",
         TaskStatus::REASON_FRAMEWORK_REMOVED,
         (task->has_executor_id()
@@ -4663,6 +4708,7 @@ void Master::removeFramework(Slave* slave, Framework* framework)
         task->task_id(),
         TASK_LOST,
         TaskStatus::SOURCE_MASTER,
+        None(),
         "Slave " + slave->info.hostname() + " disconnected",
         TaskStatus::REASON_SLAVE_DISCONNECTED,
         (task->has_executor_id()
@@ -4698,7 +4744,14 @@ void Master::addSlave(
 
   // Set up an observer for the slave.
   slave->observer = new SlaveObserver(
-      slave->pid, slave->info, slave->id, self(), slaves.limiter, metrics);
+      slave->pid,
+      slave->info,
+      slave->id,
+      self(),
+      slaves.limiter,
+      metrics,
+      flags.slave_ping_timeout,
+      flags.max_slave_ping_timeouts);
 
   spawn(slave->observer);
 
@@ -4795,6 +4848,7 @@ void Master::removeSlave(
           task->task_id(),
           TASK_LOST,
           TaskStatus::SOURCE_MASTER,
+          None(),
           "Slave " + slave->info.hostname() + " removed: " + message,
           TaskStatus::REASON_SLAVE_REMOVED,
           (task->has_executor_id() ?
@@ -4951,9 +5005,13 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
     task->set_state(status.state());
   }
 
-  // Set the status update state and uuid for the task.
-  task->set_status_update_state(status.state());
-  task->set_status_update_uuid(update.uuid());
+  // Set the status update state and uuid for the task. Note that
+  // master-generated updates are terminal and do not have a uuid
+  // (in which case the master also calls removeTask()).
+  if (update.has_uuid()) {
+    task->set_status_update_state(status.state());
+    task->set_status_update_uuid(update.uuid());
+  }
 
   // TODO(brenden) Consider wiping the `message` field?
   if (task->statuses_size() > 0 &&

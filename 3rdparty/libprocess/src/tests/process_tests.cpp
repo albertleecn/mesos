@@ -8,6 +8,7 @@
 #include <string>
 #include <sstream>
 #include <tuple>
+#include <vector>
 
 #include <process/async.hpp>
 #include <process/collect.hpp>
@@ -22,6 +23,7 @@
 #include <process/gmock.hpp>
 #include <process/gtest.hpp>
 #include <process/network.hpp>
+#include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/run.hpp>
 #include <process/socket.hpp>
@@ -48,7 +50,9 @@ using process::firewall::FirewallRule;
 using process::network::Address;
 using process::network::Socket;
 
+using std::move;
 using std::string;
+using std::vector;
 
 using testing::_;
 using testing::Assign;
@@ -58,7 +62,7 @@ using testing::ReturnArg;
 
 // TODO(bmahler): Move tests into their own files as appropriate.
 
-TEST(Process, event)
+TEST(Process, Event)
 {
   Event* event = new TerminateEvent(UPID());
   EXPECT_FALSE(event->is<MessageEvent>());
@@ -68,7 +72,7 @@ TEST(Process, event)
 }
 
 
-TEST(Process, future)
+TEST(Process, Future)
 {
   Promise<bool> promise;
   promise.set(true);
@@ -77,7 +81,7 @@ TEST(Process, future)
 }
 
 
-TEST(Process, associate)
+TEST(Process, Associate)
 {
   Promise<bool> promise1;
   Future<bool> future1(true);
@@ -122,7 +126,7 @@ void onAny(const Future<bool>& future, bool* b)
 }
 
 
-TEST(Process, onAny)
+TEST(Process, OnAny)
 {
   bool b = false;
   Future<bool>(true)
@@ -147,7 +151,7 @@ string itoa2(int* const& i)
 }
 
 
-TEST(Process, then)
+TEST(Process, Then)
 {
   Promise<int*> promise;
 
@@ -179,7 +183,7 @@ Future<int> repair(const Future<int>& future)
 
 // Checks that 'repair' callback gets executed if the future failed
 // and not executed if the future is completed successfully.
-TEST(Process, repair)
+TEST(Process, Repair)
 {
   // Check that the 'repair' callback _does not_ get executed by
   // making sure that when we complete the promise with a value that's
@@ -221,7 +225,7 @@ Future<Nothing> after(volatile bool* executed, const Future<Nothing>& future)
 
 // Checks that the 'after' callback gets executed if the future is not
 // completed.
-TEST(Process, after1)
+TEST(Process, After1)
 {
   Clock::pause();
 
@@ -257,7 +261,7 @@ TEST(Process, after1)
 
 // Checks that completing a promise will keep the 'after' callback
 // from executing.
-TEST(Process, after2)
+TEST(Process, After2)
 {
   Clock::pause();
 
@@ -326,7 +330,7 @@ Future<string> third(const string& s)
 }
 
 
-TEST(Process, chain)
+TEST(Process, Chain)
 {
   Future<string> s = readyFuture()
     .then(lambda::bind(&second, lambda::_1))
@@ -374,7 +378,7 @@ Future<int> inner2(volatile bool* executed, const Future<int>& future)
 
 // Tests that Future::discard does not complete the future unless
 // Promise::discard is invoked.
-TEST(Process, discard1)
+TEST(Process, Discard1)
 {
   Promise<bool> promise1;
   Promise<int> promise2;
@@ -415,7 +419,7 @@ TEST(Process, discard1)
 
 // Tests that Future::discard does not complete the future and
 // Promise::set can still be invoked to complete the future.
-TEST(Process, discard2)
+TEST(Process, Discard2)
 {
   Promise<bool> promise1;
   Promise<int> promise2;
@@ -458,7 +462,7 @@ TEST(Process, discard2)
 
 // Tests that Future::discard does not complete the future and
 // Promise::fail can still be invoked to complete the future.
-TEST(Process, discard3)
+TEST(Process, Discard3)
 {
   Promise<bool> promise1;
   Promise<int> promise2;
@@ -505,7 +509,7 @@ public:
 };
 
 
-TEST(Process, spawn)
+TEST(Process, Spawn)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -539,7 +543,7 @@ public:
 };
 
 
-TEST(Process, dispatch)
+TEST(Process, Dispatch)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -575,7 +579,7 @@ TEST(Process, dispatch)
 }
 
 
-TEST(Process, defer1)
+TEST(Process, Defer1)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -673,7 +677,7 @@ private:
 };
 
 
-TEST(Process, defer2)
+TEST(Process, Defer2)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -707,7 +711,7 @@ void set(T* t1, const T& t2)
 }
 
 
-TEST(Process, defer3)
+TEST(Process, Defer3)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -741,7 +745,7 @@ public:
 };
 
 
-TEST(Process, handlers)
+TEST(Process, Handlers)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -763,7 +767,7 @@ TEST(Process, handlers)
 
 // Tests DROP_MESSAGE and DROP_DISPATCH and in particular that an
 // event can get dropped before being processed.
-TEST(Process, expect)
+TEST(Process, Expect)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -794,7 +798,7 @@ TEST(Process, expect)
 
 
 // Tests the FutureArg<N> action.
-TEST(Process, action)
+TEST(Process, Action)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -841,7 +845,7 @@ public:
 };
 
 
-TEST(Process, inheritance)
+TEST(Process, Inheritance)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -872,7 +876,7 @@ TEST(Process, inheritance)
 }
 
 
-TEST(Process, thunk)
+TEST(Process, Thunk)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -917,7 +921,7 @@ public:
 };
 
 
-TEST(Process, delegate)
+TEST(Process, Delegate)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -947,7 +951,7 @@ public:
 };
 
 
-TEST(Process, delay)
+TEST(Process, Delay)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -986,7 +990,7 @@ public:
 };
 
 
-TEST(Process, order)
+TEST(Process, Order)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1041,7 +1045,7 @@ public:
 };
 
 
-TEST(Process, donate)
+TEST(Process, Donate)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1064,7 +1068,7 @@ public:
 };
 
 
-TEST(Process, exited)
+TEST(Process, Exited)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1088,7 +1092,7 @@ TEST(Process, exited)
 }
 
 
-TEST(Process, injectExited)
+TEST(Process, InjectExited)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1112,7 +1116,7 @@ TEST(Process, injectExited)
 }
 
 
-TEST(Process, select)
+TEST(Process, Select)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1145,7 +1149,7 @@ TEST(Process, select)
 }
 
 
-TEST(Process, collect)
+TEST(Process, Collect)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1188,7 +1192,7 @@ TEST(Process, collect)
 }
 
 
-TEST(Process, await1)
+TEST(Process, Await1)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1231,7 +1235,7 @@ TEST(Process, await1)
 }
 
 
-TEST(Process, await2)
+TEST(Process, Await2)
 {
   Promise<int> promise1;
   Promise<bool> promise2;
@@ -1257,7 +1261,7 @@ TEST(Process, await2)
 }
 
 
-TEST(Process, await3)
+TEST(Process, Await3)
 {
   Promise<int> promise1;
   Promise<bool> promise2;
@@ -1314,7 +1318,7 @@ public:
 };
 
 
-TEST(Process, settle)
+TEST(Process, Settle)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1329,7 +1333,7 @@ TEST(Process, settle)
 }
 
 
-TEST(Process, pid)
+TEST(Process, Pid)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1364,7 +1368,7 @@ public:
 };
 
 
-TEST(Process, listener)
+TEST(Process, Listener)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1394,7 +1398,7 @@ public:
 };
 
 
-TEST(Process, executor)
+TEST(Process, Executor)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1442,7 +1446,7 @@ public:
 };
 
 
-TEST(Process, remote)
+TEST(Process, Remote)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1477,7 +1481,7 @@ TEST(Process, remote)
 
 
 // Like the 'remote' test but uses http::post.
-TEST(Process, http1)
+TEST(Process, Http1)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1508,7 +1512,7 @@ TEST(Process, http1)
 
 
 // Like 'http1' but using a 'Libprocess-From' header.
-TEST(Process, http2)
+TEST(Process, Http2)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1607,7 +1611,7 @@ void bar(int a)
 }
 
 
-TEST(Process, async)
+TEST(Process, Async)
 {
   ASSERT_TRUE(GTEST_IS_THREADSAFE);
 
@@ -1642,7 +1646,7 @@ public:
 };
 
 
-TEST(Process, provide)
+TEST(Process, Provide)
 {
   const Try<string> mkdtemp = os::mkdtemp();
   ASSERT_SOME(mkdtemp);
@@ -1680,7 +1684,7 @@ int baz(string s) { return 42; }
 Future<int> bam(string s) { return 42; }
 
 
-TEST(Process, defers)
+TEST(Process, Defers)
 {
   {
     std::function<Future<int>(string)> f =
@@ -1917,19 +1921,19 @@ public:
 // attempts to connect to those endpoints.
 TEST(Process, FirewallDisablePaths)
 {
-  const string processId = "testprocess";
+  const string id = "testprocess";
 
+  // TODO(arojas): Add initilization list construction when available.
   hashset<string> endpoints;
-  endpoints.insert(path::join("", processId, "handler1"));
-  endpoints.insert(path::join("", processId, "handler2/nested"));
+  endpoints.insert(path::join("", id, "handler1"));
+  endpoints.insert(path::join("", id, "handler2/nested"));
   // Patterns are not supported, so this should do nothing.
-  endpoints.insert(path::join("", processId, "handler3/*"));
+  endpoints.insert(path::join("", id, "handler3/*"));
 
-  std::vector<Owned<FirewallRule>> rules;
-  rules.emplace_back(new DisabledEndpointsFirewallRule(endpoints));
-  process::firewall::install(std::move(rules));
+  process::firewall::install(
+      {Owned<FirewallRule>(new DisabledEndpointsFirewallRule(endpoints))});
 
-  HTTPEndpointProcess process(processId);
+  HTTPEndpointProcess process(id);
 
   PID<HTTPEndpointProcess> pid = spawn(process);
 
@@ -1990,17 +1994,17 @@ TEST(Process, FirewallDisablePaths)
 // An empty vector should allow all paths.
 TEST(Process, FirewallUninstall)
 {
-  const string processId = "testprocess";
+  const string id = "testprocess";
 
+  // TODO(arojas): Add initilization list construction when available.
   hashset<string> endpoints;
-  endpoints.insert(path::join("", processId, "handler1"));
-  endpoints.insert(path::join("", processId, "handler2"));
+  endpoints.insert(path::join("", id, "handler1"));
+  endpoints.insert(path::join("", id, "handler2"));
 
-  std::vector<Owned<FirewallRule>> rules;
-  rules.emplace_back(new DisabledEndpointsFirewallRule(endpoints));
-  process::firewall::install(std::move(rules));
+  process::firewall::install(
+      {Owned<FirewallRule>(new DisabledEndpointsFirewallRule(endpoints))});
 
-  HTTPEndpointProcess process(processId);
+  HTTPEndpointProcess process(id);
 
   PID<HTTPEndpointProcess> pid = spawn(process);
 
@@ -2014,7 +2018,7 @@ TEST(Process, FirewallUninstall)
   AWAIT_READY(response);
   EXPECT_EQ(http::statuses[403], response.get().status);
 
-  process::firewall::install(std::vector<Owned<FirewallRule>>());
+  process::firewall::install({});
 
   EXPECT_CALL(process, handler1(_))
     .WillOnce(Return(http::OK()));

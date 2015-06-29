@@ -30,7 +30,6 @@
 #endif // __sun
 #include <glob.h>
 #include <grp.h>
-#include <libgen.h>
 #include <limits.h>
 #include <netdb.h>
 #include <pwd.h>
@@ -55,14 +54,16 @@
 #include <sys/wait.h>
 
 #include <list>
+#include <map>
+#include <queue>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <stout/bytes.hpp>
 #include <stout/duration.hpp>
 #include <stout/error.hpp>
 #include <stout/foreach.hpp>
-#include <stout/hashmap.hpp>
 #include <stout/none.hpp>
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
@@ -100,16 +101,6 @@
 #ifdef __APPLE__
 #include <stout/os/sysctl.hpp>
 #endif // __APPLE__
-
-#if defined(__APPLE__)
-// Assigning the result pointer to ret silences an unused var warning.
-#define gethostbyname2_r(name, af, ret, buf, buflen, result, h_errnop)  \
-  ({ (void)ret; *(result) = gethostbyname2(name, af); 0; })
-#elif defined(__sun)
-#define gethostbyname2_r(name, af, ret, buf, buflen, result, h_errnop)  \
-  ({ (void)af; *(result) = \
-    gethostbyname_r(name, ret, buf, buflen, h_errnop); 0; })
-#endif
 
 // Need to declare 'environ' pointer for non OS X platforms.
 #ifndef __APPLE__
@@ -149,11 +140,11 @@ inline char*** environp()
 }
 
 
-inline hashmap<std::string, std::string> environment()
+inline std::map<std::string, std::string> environment()
 {
   char** environ = os::environ();
 
-  hashmap<std::string, std::string> result;
+  std::map<std::string, std::string> result;
 
   for (size_t index = 0; environ[index] != NULL; index++) {
     std::string entry(environ[index]);
@@ -325,36 +316,6 @@ inline Try<Nothing> rm(const std::string& path)
   }
 
   return Nothing();
-}
-
-
-inline Try<std::string> basename(const std::string& path)
-{
-  char* temp = new char[path.size() + 1];
-  char* result = ::basename(::strcpy(temp, path.c_str()));
-  if (result == NULL) {
-    delete[] temp;
-    return ErrnoError();
-  }
-
-  std::string s(result);
-  delete[] temp;
-  return s;
-}
-
-
-inline Try<std::string> dirname(const std::string& path)
-{
-  char* temp = new char[path.size() + 1];
-  char* result = ::dirname(::strcpy(temp, path.c_str()));
-  if (result == NULL) {
-    delete[] temp;
-    return ErrnoError();
-  }
-
-  std::string s(result);
-  delete[] temp;
-  return s;
 }
 
 

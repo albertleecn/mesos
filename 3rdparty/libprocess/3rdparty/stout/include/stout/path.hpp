@@ -15,6 +15,8 @@
 #define __STOUT_PATH_HPP__
 
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <stout/strings.hpp>
 
@@ -26,7 +28,78 @@ public:
     : value(strings::remove(path, "file://", strings::PREFIX)) {}
 
   // TODO(cmaloney): Add more useful operations such as 'absolute()'
-  // and 'basename', and 'dirname', etc.
+  // etc.
+
+  // Like the standard '::basename()' except it is thread safe.
+  inline std::string basename()
+  {
+    if (value.empty()) {
+      return std::string(".");
+    }
+
+    size_t end = value.size() - 1;
+
+    // Remove trailing slashes.
+    if (value[end] == '/') {
+      end = value.find_last_not_of('/', end);
+
+      // Paths containing only slashes result into "/".
+      if (end == std::string::npos) {
+        return std::string("/");
+      }
+    }
+
+    // 'start' should point towards the character after the last slash
+    // that is non trailing.
+    size_t start = value.find_last_of('/', end);
+
+    if (start == std::string::npos) {
+      start = 0;
+    } else {
+      start++;
+    }
+
+    return value.substr(start, end + 1 - start);
+  }
+
+  // Like the standard '::dirname()' except it is thread safe.
+  inline std::string dirname()
+  {
+    if (value.empty()) {
+      return std::string(".");
+    }
+
+    size_t end = value.size() - 1;
+
+    // Remove trailing slashes.
+    if (value[end] == '/') {
+      end = value.find_last_not_of('/', end);
+    }
+
+    // Remove anything trailing the last slash.
+    end = value.find_last_of('/', end);
+
+    // Paths containing no slashes result in ".".
+    if (end == std::string::npos) {
+      return std::string(".");
+    }
+
+    // Paths containing only slashes result in "/".
+    if (end == 0) {
+      return std::string("/");
+    }
+
+    // 'end' should point towards the last non slash character
+    // preceding the last slash.
+    end = value.find_last_not_of('/', end);
+
+    // Paths containing no non slash characters result in "/".
+    if (end == std::string::npos) {
+      return std::string("/");
+    }
+
+    return value.substr(0, end + 1);
+  }
 
   const std::string value;
 };
@@ -42,96 +115,21 @@ inline std::ostream& operator << (
 
 namespace path {
 
+// Base case.
 inline std::string join(const std::string& path1, const std::string& path2)
 {
-  return
-    strings::remove(path1, "/", strings::SUFFIX) + "/" +
-    strings::remove(path2, "/", strings::PREFIX);
+  return strings::remove(path1, "/", strings::SUFFIX) + "/" +
+         strings::remove(path2, "/", strings::PREFIX);
 }
 
 
+template <typename... Paths>
 inline std::string join(
     const std::string& path1,
     const std::string& path2,
-    const std::string& path3)
+    Paths&&... paths)
 {
-  return join(path1, join(path2, path3));
-}
-
-
-inline std::string join(
-    const std::string& path1,
-    const std::string& path2,
-    const std::string& path3,
-    const std::string& path4)
-{
-  return join(path1, join(path2, path3, path4));
-}
-
-
-inline std::string join(
-    const std::string& path1,
-    const std::string& path2,
-    const std::string& path3,
-    const std::string& path4,
-    const std::string& path5)
-{
-  return join(path1, join(path2, path3, path4, path5));
-}
-
-
-inline std::string join(
-    const std::string& path1,
-    const std::string& path2,
-    const std::string& path3,
-    const std::string& path4,
-    const std::string& path5,
-    const std::string& path6)
-{
-  return join(path1, join(path2, path3, path4, path5, path6));
-}
-
-
-inline std::string join(
-    const std::string& path1,
-    const std::string& path2,
-    const std::string& path3,
-    const std::string& path4,
-    const std::string& path5,
-    const std::string& path6,
-    const std::string& path7)
-{
-  return join(path1, join(path2, path3, path4, path5, path6, path7));
-}
-
-
-inline std::string join(
-    const std::string& path1,
-    const std::string& path2,
-    const std::string& path3,
-    const std::string& path4,
-    const std::string& path5,
-    const std::string& path6,
-    const std::string& path7,
-    const std::string& path8)
-{
-  return join(path1, join(path2, path3, path4, path5, path6, path7, path8));
-}
-
-
-inline std::string join(
-    const std::string& path1,
-    const std::string& path2,
-    const std::string& path3,
-    const std::string& path4,
-    const std::string& path5,
-    const std::string& path6,
-    const std::string& path7,
-    const std::string& path8,
-    const std::string& path9)
-{
-  return join(path1, join(
-      path2, path3, path4, path5, path6, path7, path8, path9));
+  return join(path1, join(path2, std::forward<Paths>(paths)...));
 }
 
 

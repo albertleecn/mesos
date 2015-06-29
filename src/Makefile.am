@@ -122,10 +122,6 @@ if WITH_BUNDLED_ZOOKEEPER
   MESOS_CPPFLAGS += -I../$(ZOOKEEPER)/generated
 endif
 
-if WITH_NETWORK_ISOLATOR
-  MESOS_CPPFLAGS += $(LIBNL_CFLAGS)
-endif
-
 if WITH_BUNDLED_PROTOBUF
   MESOS_CPPFLAGS += -I../$(PROTOBUF)/src
 endif
@@ -347,6 +343,7 @@ nodist_libmesos_no_3rdparty_la_SOURCES =				\
 # TODO(tillt): Remove authentication/cram_md5/* which will enable us to
 # lose the immediate cyrus-sasl2 dependency.
 libmesos_no_3rdparty_la_SOURCES =					\
+	authentication/cram_md5/authenticatee.cpp			\
 	authentication/cram_md5/authenticator.cpp			\
 	authentication/cram_md5/auxprop.cpp				\
 	authorizer/authorizer.cpp					\
@@ -889,7 +886,7 @@ mesos_usage_LDADD = libmesos.la $(LDADD)
 pkglibexec_PROGRAMS += mesos-docker-executor
 mesos_docker_executor_SOURCES = docker/executor.cpp
 mesos_docker_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
-mesos_docker_executor_LDADD = libmesos.la
+mesos_docker_executor_LDADD = libmesos.la $(LDADD)
 
 bin_PROGRAMS += mesos-log
 mesos_log_SOURCES = log/main.cpp

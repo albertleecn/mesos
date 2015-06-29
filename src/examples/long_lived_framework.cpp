@@ -16,8 +16,6 @@
  * limitations under the License.
  */
 
-#include <libgen.h>
-
 #include <iostream>
 #include <string>
 
@@ -28,6 +26,7 @@
 #include <stout/numify.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
+#include <stout/path.hpp>
 #include <stout/stringify.hpp>
 
 using namespace mesos;
@@ -167,8 +166,9 @@ int main(int argc, char** argv)
   if (value.isSome()) {
     uri = path::join(value.get(), "src", "long-lived-executor");
   } else {
-    uri =
-      path::join(os::realpath(dirname(argv[0])).get(), "long-lived-executor");
+    uri = path::join(
+        os::realpath(Path(argv[0]).dirname()).get(),
+        "long-lived-executor");
   }
 
   ExecutorInfo executor;

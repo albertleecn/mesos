@@ -15,9 +15,7 @@ nobase_include_HEADERS =		\
   stout/flags/fetch.hpp			\
   stout/flags/flag.hpp			\
   stout/flags/flags.hpp			\
-  stout/flags/loader.hpp		\
   stout/flags/parse.hpp			\
-  stout/flags/stringifier.hpp		\
   stout/foreach.hpp			\
   stout/format.hpp			\
   stout/fs.hpp				\
@@ -41,7 +39,6 @@ nobase_include_HEADERS =		\
   stout/option.hpp			\
   stout/os.hpp				\
   stout/os/close.hpp			\
-  stout/os/execenv.hpp			\
   stout/os/exists.hpp			\
   stout/os/fcntl.hpp			\
   stout/os/fork.hpp			\

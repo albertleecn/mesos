@@ -44,6 +44,7 @@
 #include <stout/numify.hpp>
 #include <stout/os.hpp>
 #include <stout/option.hpp>
+#include <stout/path.hpp>
 #include <stout/protobuf.hpp>
 #include <stout/result.hpp>
 #include <stout/stringify.hpp>
@@ -72,7 +73,9 @@
 #include "linux/routing/link/link.hpp"
 
 #include "linux/routing/queueing/fq_codel.hpp"
+#include "linux/routing/queueing/htb.hpp"
 #include "linux/routing/queueing/ingress.hpp"
+#include "linux/routing/queueing/statistics.hpp"
 
 #include "mesos/resources.hpp"
 
@@ -87,6 +90,7 @@ using namespace process;
 using namespace routing;
 using namespace routing::filter;
 using namespace routing::queueing;
+using namespace routing::queueing::statistics;
 
 using std::cerr;
 using std::cout;
@@ -112,13 +116,6 @@ using filter::ip::PortRange;
 namespace mesos {
 namespace internal {
 namespace slave {
-
-const char NET_TCP_ACTIVE_CONNECTIONS[] = "net_tcp_active_connections";
-const char NET_TCP_TIME_WAIT_CONNECTIONS[] = "net_tcp_time_wait_connections";
-const char NET_TCP_RTT_MICROSECS_P50[] = "net_tcp_rtt_microsecs_p50";
-const char NET_TCP_RTT_MICROSECS_P90[] = "net_tcp_rtt_microsecs_p90";
-const char NET_TCP_RTT_MICROSECS_P95[] = "net_tcp_rtt_microsecs_p95";
-const char NET_TCP_RTT_MICROSECS_P99[] = "net_tcp_rtt_microsecs_p99";
 
 using mesos::slave::ExecutorRunState;
 using mesos::slave::Isolator;
@@ -314,13 +311,10 @@ static Try<ContainerID> getContainerIdFromSymlink(const string& symlink)
     return Error("Not a symlink");
   }
 
-  Try<string> _containerId = os::basename(symlink);
-  if (_containerId.isError()) {
-    return Error("Failed to get the basename: " + _containerId.error());
-  }
+  string _containerId = Path(symlink).basename();
 
   ContainerID containerId;
-  containerId.set_value(_containerId.get());
+  containerId.set_value(_containerId);
 
   return containerId;
 }
@@ -334,12 +328,9 @@ static Result<pid_t> getPidFromNamespaceHandle(const string& handle)
     return Error("Not expecting a symlink");
   }
 
-  Try<string> _pid = os::basename(handle);
-  if (_pid.isError()) {
-    return Error("Failed to get the basename: " + _pid.error());
-  }
+  string _pid = Path(handle).basename();
 
-  Try<pid_t> pid = numify<pid_t>(_pid.get());
+  Try<pid_t> pid = numify<pid_t>(_pid);
   if (pid.isError()) {
     return None();
   }
@@ -670,6 +661,10 @@ const char* PortMappingStatistics::NAME = "statistics";
 
 PortMappingStatistics::Flags::Flags()
 {
+  add(&eth0_name,
+      "eth0_name",
+      "The name of the public network interface (e.g., eth0)");
+
   add(&pid,
       "pid",
       "The pid of the process whose namespaces we will enter");
@@ -687,6 +682,48 @@ PortMappingStatistics::Flags::Flags()
 }
 
 
+// A helper that copies the traffic control statistics from the
+// statistics hashmap into the ResourceStatistics protocol buffer.
+static void addTrafficControlStatistics(
+    const string& id,
+    const hashmap<string, uint64_t>& statistics,
+    ResourceStatistics* result)
+{
+  TrafficControlStatistics *tc = result->add_net_traffic_control_statistics();
+
+  tc->set_id(id);
+
+  // TODO(pbrett) Use protobuf reflection here.
+  if (statistics.contains(BACKLOG)) {
+    tc->set_backlog(statistics.at(BACKLOG));
+  }
+  if (statistics.contains(BYTES)) {
+    tc->set_bytes(statistics.at(BYTES));
+  }
+  if (statistics.contains(DROPS)) {
+    tc->set_drops(statistics.at(DROPS));
+  }
+  if (statistics.contains(OVERLIMITS)) {
+    tc->set_overlimits(statistics.at(OVERLIMITS));
+  }
+  if (statistics.contains(PACKETS)) {
+    tc->set_packets(statistics.at(PACKETS));
+  }
+  if (statistics.contains(QLEN)) {
+    tc->set_qlen(statistics.at(QLEN));
+  }
+  if (statistics.contains(RATE_BPS)) {
+    tc->set_ratebps(statistics.at(RATE_BPS));
+  }
+  if (statistics.contains(RATE_PPS)) {
+    tc->set_ratepps(statistics.at(RATE_PPS));
+  }
+  if (statistics.contains(REQUEUES)) {
+    tc->set_requeues(statistics.at(REQUEUES));
+  }
+}
+
+
 int PortMappingStatistics::execute()
 {
   if (flags.help) {
@@ -701,6 +738,11 @@ int PortMappingStatistics::execute()
     return 1;
   }
 
+  if (flags.eth0_name.isNone()) {
+    cerr << "The public interface name (e.g., eth0) is not specified" << endl;
+    return 1;
+  }
+
   // Enter the network namespace.
   Try<Nothing> setns = ns::setns(flags.pid.get(), "net");
   if (setns.isError()) {
@@ -709,7 +751,11 @@ int PortMappingStatistics::execute()
     return 1;
   }
 
-  JSON::Object object;
+  ResourceStatistics result;
+
+  // NOTE: We use a dummy value here since this field will be cleared
+  // before the result is sent to the containerizer.
+  result.set_timestamp(0);
 
   if (flags.enable_socket_statistics_summary) {
     // Collections for socket statistics summary are below.
@@ -757,7 +803,7 @@ int PortMappingStatistics::execute()
             continue;
           }
 
-          object.values[NET_TCP_ACTIVE_CONNECTIONS] = inuse.get();
+          result.set_net_tcp_active_connections(inuse.get());
         } else if (tokens[i] == "tw") {
           if (i + 1 >= tokens.size()) {
             cerr << "Unexpected output from /proc/net/sockstat" << endl;
@@ -774,7 +820,7 @@ int PortMappingStatistics::execute()
             continue;
           }
 
-          object.values[NET_TCP_TIME_WAIT_CONNECTIONS] = tw.get();
+          result.set_net_tcp_time_wait_connections(tw.get());
         }
       }
     }
@@ -821,14 +867,44 @@ int PortMappingStatistics::execute()
       size_t p95 = RTTs.size() * 95 / 100;
       size_t p99 = RTTs.size() * 99 / 100;
 
-      object.values[NET_TCP_RTT_MICROSECS_P50] = RTTs[p50];
-      object.values[NET_TCP_RTT_MICROSECS_P90] = RTTs[p90];
-      object.values[NET_TCP_RTT_MICROSECS_P95] = RTTs[p95];
-      object.values[NET_TCP_RTT_MICROSECS_P99] = RTTs[p99];
+      result.set_net_tcp_rtt_microsecs_p50(RTTs[p50]);
+      result.set_net_tcp_rtt_microsecs_p90(RTTs[p90]);
+      result.set_net_tcp_rtt_microsecs_p95(RTTs[p95]);
+      result.set_net_tcp_rtt_microsecs_p99(RTTs[p99]);
     }
   }
 
-  cout << stringify(object);
+  // Collect traffic statistics for the container from the container
+  // virtual interface and export them in JSON.
+  const string& eth0 = flags.eth0_name.get();
+
+  // Overlimits are reported on the HTB qdisc at the egress root.
+  Result<hashmap<string, uint64_t>> statistics =
+    htb::statistics(eth0, EGRESS_ROOT);
+
+  if (statistics.isSome()) {
+    addTrafficControlStatistics(
+        NET_ISOLATOR_BW_LIMIT,
+        statistics.get(),
+        &result);
+  } else {
+    cerr << "Failed to get the network statistics for "
+         << "the htb qdisc on " << eth0 << endl;
+  }
+
+  // Drops due to the bandwidth limit should be reported at the leaf.
+  statistics = fq_codel::statistics(eth0, CONTAINER_TX_HTB_CLASS_ID);
+  if (statistics.isSome()) {
+    addTrafficControlStatistics(
+        NET_ISOLATOR_BLOAT_REDUCTION,
+        statistics.get(),
+        &result);
+  } else {
+    cerr << "Failed to get the network statistics for "
+         << "the fq_codel qdisc on " << eth0 << endl;
+  }
+
+  cout << stringify(JSON::Protobuf(result));
   return 0;
 }
 
@@ -1552,6 +1628,12 @@ Try<Isolator*> PortMappingIsolatorProcess::create(const Flags& flags)
 }
 
 
+process::Future<Option<int>> PortMappingIsolatorProcess::namespaces()
+{
+  return CLONE_NEWNET;
+}
+
+
 Future<Nothing> PortMappingIsolatorProcess::recover(
     const list<ExecutorRunState>& states,
     const hashset<ContainerID>& orphans)
@@ -1769,13 +1851,19 @@ Future<Nothing> PortMappingIsolatorProcess::recover(
     pids.erase(pid);
   }
 
-  // Cleanup unknown orphan containers. Known orphan cgroups will be
-  // destroyed by the containerizer using the normal cleanup path. See
-  // MESOS-2367 for details.
+  // Recover orphans. Known orphans will be destroyed by containerizer
+  // using the normal cleanup path (refer to MESOS-2367 for details).
+  // Unknown orphans will be cleaned up immediately. The recovery will
+  // fail if there is some unknown orphan that cannot be cleaned up.
+  vector<Info*> unknownOrphans;
+
   foreach (pid_t pid, pids) {
     Try<Info*> recover = _recover(pid);
     if (recover.isError()) {
       foreachvalue (Info* info, infos) {
+        delete info;
+      }
+      foreach (Info* info, unknownOrphans) {
         delete info;
       }
 
@@ -1784,27 +1872,45 @@ Future<Nothing> PortMappingIsolatorProcess::recover(
           stringify(pid) + ": " + recover.error());
     }
 
-    // Clean up unknown orphan containers. Known orphan containers
-    // will be cleaned up by the containerizer using the normal
-    // cleanup path. See MESOS-2367 for details.
-    Option<ContainerID> containerId;
-
     if (linkers.get(pid).size() == 1) {
-      containerId = linkers.get(pid).front();
-      CHECK(!infos.contains(containerId.get()));
+      const ContainerID containerId = linkers.get(pid).front();
+      CHECK(!infos.contains(containerId));
 
-      if (orphans.contains(containerId.get())) {
-        infos[containerId.get()] = recover.get();
+      if (orphans.contains(containerId)) {
+        infos[containerId] = recover.get();
         continue;
       }
     }
 
-    // The recovery should fail if we cannot cleanup an orphan.
-    Try<Nothing> cleanup = _cleanup(recover.get(), containerId);
+    unknownOrphans.push_back(recover.get());
+  }
+
+  foreach (Info* info, unknownOrphans) {
+    CHECK_SOME(info->pid);
+    pid_t pid = info->pid.get();
+
+    Option<ContainerID> containerId;
+    if (linkers.get(pid).size() == 1) {
+      containerId = linkers.get(pid).front();
+    }
+
+    // NOTE: If 'infos' is empty (means there is no regular container
+    // or known orphan), the '_cleanup' below will remove the ICMP and
+    // ARP packet filters on host eth0. This will cause subsequent
+    // calls to '_cleanup' for unknown orphans to fail. However, this
+    // is OK because when slave restarts and tries to recover again,
+    // it'll try to remove the remaining unknown orphans.
+    // TODO(jieyu): Consider call '_cleanup' for all the unknown
+    // orphans before returning even if error occurs.
+    Try<Nothing> cleanup = _cleanup(info, containerId);
     if (cleanup.isError()) {
       foreachvalue (Info* info, infos) {
         delete info;
       }
+
+      // TODO(jieyu): Also delete 'info' in unknownOrphans. Notice
+      // that some 'info' in unknownOrphans might have already been
+      // deleted in '_cleanup' above.
 
       return Failure(
           "Failed to cleanup orphaned container with pid " +
@@ -2691,14 +2797,10 @@ Future<ResourceStatistics> PortMappingIsolatorProcess::usage(
     result.set_net_tx_dropped(tx_dropped.get());
   }
 
-  if (!flags.network_enable_socket_statistics_summary &&
-      !flags.network_enable_socket_statistics_details) {
-    return result;
-  }
-
   // Retrieve the socket information from inside the container.
   PortMappingStatistics statistics;
   statistics.flags.pid = info->pid.get();
+  statistics.flags.eth0_name = eth0;
   statistics.flags.enable_socket_statistics_summary =
     flags.network_enable_socket_statistics_summary;
   statistics.flags.enable_socket_statistics_details =
@@ -2774,45 +2876,25 @@ Future<ResourceStatistics> PortMappingIsolatorProcess::__usage(
 
   Try<JSON::Object> object = JSON::parse<JSON::Object>(out.get());
   if (object.isError()) {
-    return Failure("Failed to parse the output from the process that gets the "
-       "network statistics: " + object.error());
+    return Failure(
+        "Failed to parse the output from the process that gets the "
+        "network statistics: " + object.error());
   }
 
-  Result<JSON::Number> active =
-    object.get().find<JSON::Number>(NET_TCP_ACTIVE_CONNECTIONS);
-  if (active.isSome()) {
-    result.set_net_tcp_active_connections(active.get().value);
+  Result<ResourceStatistics> _result =
+      protobuf::parse<ResourceStatistics>(object.get());
+
+  if (_result.isError()) {
+    return Failure(
+        "Failed to parse the output from the process that gets the "
+        "network statistics: " + object.error());
   }
 
-  Result<JSON::Number> tw =
-    object.get().find<JSON::Number>(NET_TCP_TIME_WAIT_CONNECTIONS);
-  if (tw.isSome()) {
-    result.set_net_tcp_time_wait_connections(tw.get().value);
-  }
+  result.MergeFrom(_result.get());
 
-  Result<JSON::Number> p50 =
-    object.get().find<JSON::Number>(NET_TCP_RTT_MICROSECS_P50);
-  if (p50.isSome()) {
-    result.set_net_tcp_rtt_microsecs_p50(p50.get().value);
-  }
-
-  Result<JSON::Number> p90 =
-    object.get().find<JSON::Number>(NET_TCP_RTT_MICROSECS_P90);
-  if (p90.isSome()) {
-    result.set_net_tcp_rtt_microsecs_p90(p90.get().value);
-  }
-
-  Result<JSON::Number> p95 =
-    object.get().find<JSON::Number>(NET_TCP_RTT_MICROSECS_P95);
-  if (p95.isSome()) {
-    result.set_net_tcp_rtt_microsecs_p95(p95.get().value);
-  }
-
-  Result<JSON::Number> p99 =
-    object.get().find<JSON::Number>(NET_TCP_RTT_MICROSECS_P99);
-  if (p99.isSome()) {
-    result.set_net_tcp_rtt_microsecs_p99(p99.get().value);
-  }
+  // NOTE: We unset the 'timestamp' field here because otherwise it
+  // will overwrite the timestamp set in the containerizer.
+  result.clear_timestamp();
 
   return result;
 }

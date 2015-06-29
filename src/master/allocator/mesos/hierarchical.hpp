@@ -25,8 +25,11 @@
 #include <mesos/resources.hpp>
 #include <mesos/type_utils.hpp>
 
+#include <process/event.hpp>
 #include <process/delay.hpp>
 #include <process/id.hpp>
+#include <process/metrics/gauge.hpp>
+#include <process/metrics/metrics.hpp>
 #include <process/timeout.hpp>
 
 #include <stout/check.hpp>
@@ -67,11 +70,18 @@ template <typename RoleSorter, typename FrameworkSorter>
 class HierarchicalAllocatorProcess : public MesosAllocatorProcess
 {
 public:
-  HierarchicalAllocatorProcess();
+  HierarchicalAllocatorProcess()
+    : ProcessBase(process::ID::generate("hierarchical-allocator")),
+      initialized(false),
+      metrics(*this),
+      roleSorter(NULL) {}
 
-  virtual ~HierarchicalAllocatorProcess();
+  virtual ~HierarchicalAllocatorProcess() {}
 
-  process::PID<HierarchicalAllocatorProcess> self();
+  process::PID<HierarchicalAllocatorProcess> self() const
+  {
+    return process::PID<Self>(this);
+  }
 
   void initialize(
       const Duration& allocationInterval,
@@ -118,7 +128,7 @@ public:
       const SlaveID& slaveId);
 
   void updateWhitelist(
-      const Option<hashset<std::string> >& whitelist);
+      const Option<hashset<std::string>>& whitelist);
 
   void requestResources(
       const FrameworkID& frameworkId,
@@ -178,6 +188,24 @@ protected:
       void(const FrameworkID&,
            const hashmap<SlaveID, Resources>&)> offerCallback;
 
+  struct Metrics
+  {
+    explicit Metrics(const Self& process)
+      : event_queue_dispatches(
+            "allocator/event_queue_dispatches",
+            process::defer(process.self(), &Self::_event_queue_dispatches))
+    {
+      process::metrics::add(event_queue_dispatches);
+    }
+
+    ~Metrics()
+    {
+      process::metrics::remove(event_queue_dispatches);
+    }
+
+    process::metrics::Gauge event_queue_dispatches;
+  } metrics;
+
   struct Framework
   {
     std::string role;
@@ -189,6 +217,11 @@ protected:
     hashset<Filter*> filters; // Active filters for the framework.
   };
 
+  double _event_queue_dispatches()
+  {
+    return static_cast<double>(eventCount<process::DispatchEvent>());
+  }
+
   hashmap<FrameworkID, Framework> frameworks;
 
   struct Slave
@@ -196,8 +229,21 @@ protected:
     // Total amount of regular *and* oversubscribed resources.
     Resources total;
 
-    // Available regular *and* oversubscribed resources.
-    Resources available;
+    // Regular *and* oversubscribed resources that are allocated.
+    //
+    // NOTE: We keep track of slave's allocated resources despite
+    // having that information in sorters. This is because the
+    // information in sorters is not accurate if some framework
+    // hasn't reregistered. See MESOS-2919 for details.
+    Resources allocated;
+
+    // We track the total and allocated resources on the slave, the
+    // available resources are computed as follows:
+    //
+    //   available = total - allocated
+    //
+    // Note that it's possible for the slave to be over-allocated!
+    // In this case, allocated > total.
 
     bool activated;  // Whether to offer resources.
     bool checkpoint; // Whether slave supports checkpointing.
@@ -210,7 +256,7 @@ protected:
   hashmap<std::string, mesos::master::RoleInfo> roles;
 
   // Slaves to send offers for.
-  Option<hashset<std::string> > whitelist;
+  Option<hashset<std::string>> whitelist;
 
   // There are two levels of sorting, hence "hierarchical".
   // Level 1 sorts across roles:
@@ -251,6 +297,11 @@ public:
 
   virtual bool filter(const SlaveID& _slaveId, const Resources& _resources)
   {
+    // TODO(jieyu): Consider separating the superset check for regular
+    // and revocable resources. For example, frameworks might want
+    // more revocable resources only or non-revocable resources only,
+    // but currently the filter only expires if there is more of both
+    // revocable and non-revocable resources.
     return slaveId == _slaveId &&
            resources.contains(_resources) && // Refused resources are superset.
            timeout.remaining() > Seconds(0);
@@ -260,25 +311,6 @@ public:
   const Resources resources;
   const process::Timeout timeout;
 };
-
-
-template <class RoleSorter, class FrameworkSorter>
-HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::HierarchicalAllocatorProcess() // NOLINT(whitespace/line_length)
-  : ProcessBase(process::ID::generate("hierarchical-allocator")),
-    initialized(false) {}
-
-
-template <class RoleSorter, class FrameworkSorter>
-HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::~HierarchicalAllocatorProcess() // NOLINT(whitespace/line_length)
-{}
-
-
-template <class RoleSorter, class FrameworkSorter>
-process::PID<HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter> >
-HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::self()
-{
-  return process::PID<HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter> >(this); // NOLINT(whitespace/line_length)
-}
 
 
 template <class RoleSorter, class FrameworkSorter>
@@ -488,14 +520,14 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::addSlave(
 
   slaves[slaveId] = Slave();
   slaves[slaveId].total = total;
-  slaves[slaveId].available = total - Resources::sum(used);
+  slaves[slaveId].allocated = Resources::sum(used);
   slaves[slaveId].activated = true;
   slaves[slaveId].checkpoint = slaveInfo.checkpoint();
   slaves[slaveId].hostname = slaveInfo.hostname();
 
   LOG(INFO) << "Added slave " << slaveId << " (" << slaves[slaveId].hostname
             << ") with " << slaves[slaveId].total
-            << " (and " << slaves[slaveId].available << " available)";
+            << " (allocated: " << slaves[slaveId].allocated << ")";
 
   allocate(slaveId);
 }
@@ -553,24 +585,10 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::updateSlave(
       slaveId,
       slaves[slaveId].total.unreserved());
 
-  // Calculate the current allocation of oversubscribed resources.
-  Resources allocation;
-  foreachkey (const std::string& role, roles) {
-    allocation += roleSorter->allocation(role)[slaveId].revocable();
-  }
-
-  // Update the available resources.
-
-  // First remove the old oversubscribed resources from available.
-  slaves[slaveId].available -= slaves[slaveId].available.revocable();
-
-  // Now add the new estimate of available oversubscribed resources.
-  slaves[slaveId].available += oversubscribed - allocation;
-
-  LOG(INFO) << "Slave " << slaveId << " (" << slaves[slaveId].hostname
-            << ") updated with oversubscribed resources " << oversubscribed
+  LOG(INFO) << "Slave " << slaveId << " (" << slaves[slaveId].hostname << ")"
+            << " updated with oversubscribed resources " << oversubscribed
             << " (total: " << slaves[slaveId].total
-            << ", available: " << slaves[slaveId].available << ")";
+            << ", allocated: " << slaves[slaveId].allocated << ")";
 
   allocate(slaveId);
 }
@@ -607,7 +625,7 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::deactivateSlave(
 template <class RoleSorter, class FrameworkSorter>
 void
 HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::updateWhitelist(
-    const Option<hashset<std::string> >& _whitelist)
+    const Option<hashset<std::string>>& _whitelist)
 {
   CHECK(initialized);
 
@@ -648,36 +666,40 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::updateAllocation(
   CHECK(slaves.contains(slaveId));
   CHECK(frameworks.contains(frameworkId));
 
-  // The total resources on the slave are composed of both allocated
-  // and available resources:
-  //
-  //    total = available + allocated
-  //
   // Here we apply offer operations to the allocated resources, which
   // in turns leads to an update of the total. The available resources
   // remain unchanged.
 
+  // Update the allocated resources.
   FrameworkSorter* frameworkSorter =
     frameworkSorters[frameworks[frameworkId].role];
 
-  Resources allocation =
-    frameworkSorter->allocation(frameworkId.value())[slaveId];
+  Resources frameworkAllocation =
+    frameworkSorter->allocation(frameworkId.value(), slaveId);
 
-  // Update the allocated resources.
-  Try<Resources> updatedAllocation = allocation.apply(operations);
-  CHECK_SOME(updatedAllocation);
+  Try<Resources> updatedFrameworkAllocation =
+    frameworkAllocation.apply(operations);
+
+  CHECK_SOME(updatedFrameworkAllocation);
 
   frameworkSorter->update(
       frameworkId.value(),
       slaveId,
-      allocation,
-      updatedAllocation.get());
+      frameworkAllocation,
+      updatedFrameworkAllocation.get());
 
   roleSorter->update(
       frameworks[frameworkId].role,
       slaveId,
-      allocation.unreserved(),
-      updatedAllocation.get().unreserved());
+      frameworkAllocation.unreserved(),
+      updatedFrameworkAllocation.get().unreserved());
+
+  Try<Resources> updatedSlaveAllocation =
+    slaves[slaveId].allocated.apply(operations);
+
+  CHECK_SOME(updatedSlaveAllocation);
+
+  slaves[slaveId].allocated = updatedSlaveAllocation.get();
 
   // Update the total resources.
   Try<Resources> updatedTotal = slaves[slaveId].total.apply(operations);
@@ -685,17 +707,11 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::updateAllocation(
 
   slaves[slaveId].total = updatedTotal.get();
 
-  // TODO(bmahler): Validate that the available resources are
-  // unaffected. This requires augmenting the sorters with
-  // SlaveIDs for allocations, so that we can do:
-  //
-  //   CHECK_EQ(slaves[slaveId].total - updatedAllocation,
-  //            slaves[slaveId].available);
-
   // TODO(jieyu): Do not log if there is no update.
   LOG(INFO) << "Updated allocation of framework " << frameworkId
             << " on slave " << slaveId
-            << " from " << allocation << " to " << updatedAllocation.get();
+            << " from " << frameworkAllocation
+            << " to " << updatedFrameworkAllocation.get();
 }
 
 
@@ -732,14 +748,19 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::recoverResources(
     }
   }
 
-  // Update resources allocatable on slave (if slave still exists,
+  // Update resources allocated on slave (if slave still exists,
   // which it might not in the event that we dispatched Master::offer
   // before we received Allocator::removeSlave).
   if (slaves.contains(slaveId)) {
-    slaves[slaveId].available += resources;
+    // NOTE: We cannot add the following CHECK due to the double
+    // precision errors. See MESOS-1187 for details.
+    // CHECK(slaves[slaveId].allocated.contains(resources));
+
+    slaves[slaveId].allocated -= resources;
 
     LOG(INFO) << "Recovered " << resources
-              << " (total allocatable: " << slaves[slaveId].available
+              << " (total: " << slaves[slaveId].total
+              << ", allocated: " << slaves[slaveId].allocated
               << ") on slave " << slaveId
               << " from framework " << frameworkId;
   }
@@ -869,7 +890,7 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::allocate(
   //       framework having the corresponding role.
   //   (2) For unreserved resources on the slave, allocate these
   //       to a framework of any role.
-  hashmap<FrameworkID, hashmap<SlaveID, Resources> > offerable;
+  hashmap<FrameworkID, hashmap<SlaveID, Resources>> offerable;
 
   // Randomize the order in which slaves' resources are allocated.
   // TODO(vinod): Implement a smarter sorting algorithm.
@@ -888,11 +909,12 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::allocate(
         FrameworkID frameworkId;
         frameworkId.set_value(frameworkId_);
 
+        // Calculate the currently available resources on the slave.
+        Resources available = slaves[slaveId].total - slaves[slaveId].allocated;
+
         // NOTE: Currently, frameworks are allowed to have '*' role.
         // Calling reserved('*') returns an empty Resources object.
-        Resources resources =
-          slaves[slaveId].available.unreserved() +
-          slaves[slaveId].available.reserved(role);
+        Resources resources = available.unreserved() + available.reserved(role);
 
         // Remove revocable resources if the framework has not opted
         // for them.
@@ -917,7 +939,7 @@ HierarchicalAllocatorProcess<RoleSorter, FrameworkSorter>::allocate(
         // meaning that we always allocate the entire remaining
         // slave resources to a single framework.
         offerable[frameworkId][slaveId] = resources;
-        slaves[slaveId].available -= resources;
+        slaves[slaveId].allocated += resources;
 
         // Reserved resources are only accounted for in the framework
         // sorter, since the reserved resources are not shared across

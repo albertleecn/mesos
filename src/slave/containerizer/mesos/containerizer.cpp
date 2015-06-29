@@ -111,27 +111,27 @@ Try<MesosContainerizer*> MesosContainerizer::create(
   LOG(INFO) << "Using isolation: " << isolation;
 
   // Create a MesosContainerizerProcess using isolators and a launcher.
-  hashmap<string, Try<Isolator*> (*)(const Flags&)> creators;
-
-  creators["posix/cpu"]   = &PosixCpuIsolatorProcess::create;
-  creators["posix/mem"]   = &PosixMemIsolatorProcess::create;
-  creators["posix/disk"]  = &PosixDiskIsolatorProcess::create;
+  static const hashmap<string, Try<Isolator*> (*)(const Flags&)> creators = {
+    {"posix/cpu", &PosixCpuIsolatorProcess::create},
+    {"posix/mem", &PosixMemIsolatorProcess::create},
+    {"posix/disk", &PosixDiskIsolatorProcess::create},
 #ifdef __linux__
-  creators["cgroups/cpu"] = &CgroupsCpushareIsolatorProcess::create;
-  creators["cgroups/mem"] = &CgroupsMemIsolatorProcess::create;
-  creators["cgroups/perf_event"] = &CgroupsPerfEventIsolatorProcess::create;
-  creators["filesystem/shared"] = &SharedFilesystemIsolatorProcess::create;
-  creators["namespaces/pid"] = &NamespacesPidIsolatorProcess::create;
+    {"cgroups/cpu", &CgroupsCpushareIsolatorProcess::create},
+    {"cgroups/mem", &CgroupsMemIsolatorProcess::create},
+    {"cgroups/perf_event", &CgroupsPerfEventIsolatorProcess::create},
+    {"filesystem/shared", &SharedFilesystemIsolatorProcess::create},
+    {"namespaces/pid", &NamespacesPidIsolatorProcess::create},
 #endif // __linux__
 #ifdef WITH_NETWORK_ISOLATOR
-  creators["network/port_mapping"] = &PortMappingIsolatorProcess::create;
+    {"network/port_mapping", &PortMappingIsolatorProcess::create},
 #endif
+  };
 
   vector<Owned<Isolator>> isolators;
 
   foreach (const string& type, strings::tokenize(isolation, ",")) {
     if (creators.contains(type)) {
-      Try<Isolator*> isolator = creators[type](flags_);
+      Try<Isolator*> isolator = creators.at(type)(flags_);
       if (isolator.isError()) {
         return Error(
             "Could not create isolator " + type + ": " + isolator.error());
@@ -158,13 +158,17 @@ Try<MesosContainerizer*> MesosContainerizer::create(
   }
 
 #ifdef __linux__
+  int namespaces = 0;
+  foreach (const Owned<Isolator>& isolator, isolators) {
+    if (isolator->namespaces().get().isSome()) {
+      namespaces |= isolator->namespaces().get().get();
+    }
+  }
+
   // Determine which launcher to use based on the isolation flag.
   Try<Launcher*> launcher =
-    (strings::contains(isolation, "cgroups") ||
-     strings::contains(isolation, "network/port_mapping") ||
-     strings::contains(isolation, "filesystem/shared") ||
-     strings::contains(isolation, "namespaces"))
-    ? LinuxLauncher::create(flags_)
+    (strings::contains(isolation, "cgroups") || namespaces != 0)
+    ? LinuxLauncher::create(flags_, namespaces)
     : PosixLauncher::create(flags_);
 #else
   Try<Launcher*> launcher = PosixLauncher::create(flags_);
@@ -688,18 +692,18 @@ Future<bool> MesosContainerizerProcess::_launch(
   }
 
   // Prepare environment variables for the executor.
-  map<string, string> env = executorEnvironment(
+  map<string, string> environment = executorEnvironment(
       executorInfo,
       directory,
       slaveId,
       slavePid,
       checkpoint,
-      flags.recovery_timeout);
+      flags);
 
   // Include any enviroment variables from CommandInfo.
   foreach (const Environment::Variable& variable,
            executorInfo.command().environment().variables()) {
-    env[variable.name()] = variable.value();
+    environment[variable.name()] = variable.value();
   }
 
   // Use a pipe to block the child until it's been isolated.
@@ -746,7 +750,7 @@ Future<bool> MesosContainerizerProcess::_launch(
       (local ? Subprocess::FD(STDERR_FILENO)
              : Subprocess::PATH(path::join(directory, "stderr"))),
       launchFlags,
-      env,
+      environment,
       None());
 
   if (forked.isError()) {
@@ -1326,6 +1330,27 @@ Try<Nothing> MesosContainerizerProcess::updateVolumes(
       return Error(
           "Failed to symlink persistent volume from '" +
           original + "' to '" + link + "'");
+    }
+
+    // Set the ownership of persistent volume to match the sandbox
+    // directory. Currently, persistent volumes in mesos are
+    // exclusive. If one persistent volume is used by one
+    // task/executor, it cannot be concurrently used by other
+    // task/executor. But if we allow multiple executors use same
+    // persistent volume at the same time in the future, the ownership
+    // of persistent volume may conflict here.
+    // TODO(haosdent): We need to update this after we have a proposed
+    // plan to adding user/group to persistent volumes.
+    struct stat s;
+    if (::stat(container->directory.c_str(), &s) < 0) {
+      return Error("Failed to get permissions on '" + container->directory +
+                   "': " + strerror(errno));
+    }
+
+    Try<Nothing> chown = os::chown(s.st_uid, s.st_gid, original, true);
+    if (chown.isError()) {
+      return Error("Failed to chown persistent volume '" + original +
+                   "': " + chown.error());
     }
   }
 

@@ -60,10 +60,10 @@ extern const Bytes MIN_MEM;
 // configurable, then we'll need to rely on upper/lower bounds
 // to ensure that the slave is not unnecessarily triggering
 // re-registrations.
-extern const Duration SLAVE_PING_TIMEOUT;
+extern const Duration DEFAULT_SLAVE_PING_TIMEOUT;
 
 // Maximum number of ping timeouts until slave is considered failed.
-extern const uint32_t MAX_SLAVE_PING_TIMEOUTS;
+extern const size_t DEFAULT_MAX_SLAVE_PING_TIMEOUTS;
 
 // The minimum timeout that can be used by a newly elected leader to
 // allow re-registration of slaves. Any slaves that do not re-register
@@ -98,8 +98,19 @@ extern const Duration WHITELIST_WATCH_INTERVAL;
 // Default number of tasks (limit) for /master/tasks.json endpoint.
 extern const uint32_t TASK_LIMIT;
 
-// Label used by the Leader Contender and Detector.
+/**
+ * Label used by the Leader Contender and Detector.
+ *
+ * \deprecated Will be deprecated as of Mesos 0.24: see MESOS-2340.
+ */
 extern const std::string MASTER_INFO_LABEL;
+
+/**
+ * Label used by the Leader Contender and Detector, for JSON content.
+ *
+ * \since Mesos 0.23 (see MESOS-2340).
+ */
+extern const std::string MASTER_INFO_JSON_LABEL;
 
 // Timeout used for ZooKeeper related operations.
 // TODO(vinod): Master detector/contender should use this timeout.

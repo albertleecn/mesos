@@ -1,11 +1,12 @@
-#include <iostream>
-
 #include <pthread.h>
 #include <unistd.h> // For getpid, getppid.
 
-#include <gmock/gmock.h>
-
+#include <iostream>
+#include <list>
 #include <set>
+#include <string>
+
+#include <gmock/gmock.h>
 
 #include <stout/abort.hpp>
 #include <stout/gtest.hpp>
@@ -22,7 +23,7 @@ using std::set;
 using std::string;
 
 
-TEST(ProcTest, pids)
+TEST(ProcTest, Pids)
 {
   Try<set<pid_t> > pids = proc::pids();
 
@@ -33,7 +34,7 @@ TEST(ProcTest, pids)
 }
 
 
-TEST(ProcTest, cpus)
+TEST(ProcTest, Cpus)
 {
   Try<std::list<CPU> > cpus = proc::cpus();
 

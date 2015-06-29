@@ -65,15 +65,6 @@ inline std::string PORT_MAPPING_VETH_PREFIX() { return "mesos"; }
 // NOTE: This constant is exposed for testing.
 inline std::string PORT_MAPPING_BIND_MOUNT_ROOT() { return "/var/run/netns"; }
 
-// These field names are used in the output of the mesos network helper
-// and in the port mapping tests to read the output.
-extern const char NET_TCP_ACTIVE_CONNECTIONS[];
-extern const char NET_TCP_TIME_WAIT_CONNECTIONS[];
-extern const char NET_TCP_RTT_MICROSECS_P50[];
-extern const char NET_TCP_RTT_MICROSECS_P90[];
-extern const char NET_TCP_RTT_MICROSECS_P95[];
-extern const char NET_TCP_RTT_MICROSECS_P99[];
-
 // The root directory where we keep all the namespace handle
 // symlinks. This is introduced in 0.23.0.
 // NOTE: This constant is exposed for testing.
@@ -81,6 +72,12 @@ inline std::string PORT_MAPPING_BIND_MOUNT_SYMLINK_ROOT()
 {
   return "/var/run/mesos/netns";
 }
+
+
+// These names are used to identify the traffic control statistics
+// output for each of the Linux Traffic Control Qdiscs we report.
+constexpr char NET_ISOLATOR_BW_LIMIT[] = "bw_limit";
+constexpr char NET_ISOLATOR_BLOAT_REDUCTION[] = "bloat_reduction";
 
 
 // Responsible for allocating ephemeral ports for the port mapping
@@ -154,6 +151,8 @@ public:
   static Try<mesos::slave::Isolator*> create(const Flags& flags);
 
   virtual ~PortMappingIsolatorProcess() {}
+
+  virtual process::Future<Option<int>> namespaces();
 
   virtual process::Future<Nothing> recover(
       const std::list<mesos::slave::ExecutorRunState>& states,
@@ -385,6 +384,7 @@ public:
   {
     Flags();
 
+    Option<std::string> eth0_name;
     Option<pid_t> pid;
     bool enable_socket_statistics_summary;
     bool enable_socket_statistics_details;
