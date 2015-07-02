@@ -320,6 +320,7 @@ Master::Master(
 
   info_.set_port(self().address.port);
   info_.set_pid(self());
+  info_.set_version(MESOS_VERSION);
 
   // Determine our hostname or use the hostname provided.
   string hostname;
@@ -1583,9 +1584,8 @@ void Master::drop(
   // TODO(bmahler): Increment a metric.
 
   LOG(ERROR) << "Dropping " << call.type() << " call"
-             << " from framework " << call.framework_info().id()
-             << " (" << call.framework_info().name()
-             << ") at " << from << ": " << message;
+             << " from framework " << call.framework_id()
+             << " at " << from << ": " << message;
 }
 
 
@@ -1611,23 +1611,34 @@ void Master::receive(
     const scheduler::Call& call)
 {
   // TODO(vinod): Add metrics for calls.
-  // TODO(vinod): Implement the unimplemented calls.
-  const FrameworkInfo& frameworkInfo = call.framework_info();
 
-  // For SUBSCRIBE call, no need to look up the framework. Therefore,
-  // we handle them first and separately from other types of calls.
-  switch (call.type()) {
-    case scheduler::Call::SUBSCRIBE:
-      drop(from, call, "Unimplemented");
+  if (call.type() == scheduler::Call::SUBSCRIBE) {
+    if (!call.has_subscribe()) {
+      drop(from, call, "Expecting 'subscribe' to be present");
       return;
+    }
 
-    default:
-      break;
+    if (!(call.subscribe().framework_info().id() == call.framework_id())) {
+      drop(from,
+           call,
+           "Framework id in the call doesn't match the framework id"
+           " in the 'subscribe' message");
+      return;
+    }
+
+    subscribe(from, call.subscribe());
+    return;
+  }
+
+  // All calls except SUBSCRIBE should have framework id set.
+  if (!call.has_framework_id()) {
+    drop(from, call, "Expecting framework id to be present");
+    return;
   }
 
   // We consolidate the framework lookup and pid validation logic here
   // because they are common for all the call handlers.
-  Framework* framework = getFramework(frameworkInfo.id());
+  Framework* framework = getFramework(call.framework_id());
 
   if (framework == NULL) {
     drop(from, call, "Framework cannot be found");
@@ -1639,54 +1650,79 @@ void Master::receive(
     return;
   }
 
-  // TODO(jieyu): Validate frameworkInfo to make sure it's the same as
-  // the one that the framework used during registration and that the
-  // framework id is set and non-empty except for SUBSCRIBE call.
-
   switch (call.type()) {
-    case scheduler::Call::REVIVE:
-    case scheduler::Call::DECLINE:
-      drop(from, call, "Unimplemented");
+    case scheduler::Call::TEARDOWN: {
+      removeFramework(framework);
       break;
+    }
 
-    case scheduler::Call::ACCEPT:
+    case scheduler::Call::ACCEPT: {
       if (!call.has_accept()) {
         drop(from, call, "Expecting 'accept' to be present");
         return;
       }
       accept(framework, call.accept());
       break;
+    }
 
-    case scheduler::Call::RECONCILE:
+    case scheduler::Call::DECLINE: {
+      if (!call.has_decline()) {
+        drop(from, call, "Expecting 'decline' to be present");
+        return;
+      }
+      decline(framework, call.decline());
+      break;
+    }
+
+    case scheduler::Call::REVIVE: {
+      revive(framework);
+      break;
+    }
+
+    case scheduler::Call::KILL: {
+      if (!call.has_kill()) {
+        drop(from, call, "Expecting 'kill' to be present");
+        return;
+      }
+      kill(framework, call.kill());
+      break;
+    }
+
+    case scheduler::Call::SHUTDOWN: {
+      if (!call.has_shutdown()) {
+        drop(from, call, "Expecting 'shutdown' to be present");
+        return;
+      }
+      shutdown(framework, call.shutdown());
+      break;
+    }
+
+    case scheduler::Call::ACKNOWLEDGE: {
+      if (!call.has_acknowledge()) {
+        drop(from, call, "Expecting 'acknowledge' to be present");
+        return;
+      }
+      acknowledge(framework, call.acknowledge());
+      break;
+    }
+
+    case scheduler::Call::RECONCILE: {
       if (!call.has_reconcile()) {
         drop(from, call, "Expecting 'reconcile' to be present");
         return;
       }
       reconcile(framework, call.reconcile());
       break;
+    }
 
-    case scheduler::Call::SHUTDOWN:
-      if (!call.has_shutdown()) {
-        drop(from, call, "Expecting 'shutdown' to be present");
+    case scheduler::Call::MESSAGE: {
+      if (!call.has_message()) {
+        drop(from, call, "Expecting 'message' to be present");
+        return;
       }
-      shutdown(framework, call.shutdown());
+      message(framework, call.message());
       break;
-
-    case scheduler::Call::KILL:
-      if (!call.has_kill()) {
-        drop(from, call, "Expecting 'kill' to be present");
-      }
-      kill(framework, call.kill());
-      break;
-
-    case scheduler::Call::ACKNOWLEDGE:
-    case scheduler::Call::MESSAGE:
-      drop(from, call, "Unimplemented");
-      break;
-
-    case scheduler::Call::TEARDOWN:
-      removeFramework(framework);
-      break;
+    }
 
     default:
       drop(from, call, "Unknown call type");
@@ -2048,6 +2084,22 @@ void Master::_reregisterFramework(
 }
 
 
+void Master::subscribe(
+    const UPID& from,
+    const scheduler::Call::Subscribe& subscribe)
+{
+  const FrameworkInfo& frameworkInfo = subscribe.framework_info();
+
+  // TODO(vinod): Instead of calling '(re-)registerFramework()' from
+  // here refactor those methods to call 'subscribe()'.
+  if (frameworkInfo.has_id() || frameworkInfo.id() == "") {
+    registerFramework(from, frameworkInfo);
+  } else {
+    reregisterFramework(from, frameworkInfo, subscribe.force());
+  }
+}
+
+
 void Master::unregisterFramework(
     const UPID& from,
     const FrameworkID& frameworkId)
@@ -2233,21 +2285,34 @@ void Master::launchTasks(
     return;
   }
 
-  scheduler::Call::Accept message;
-  message.mutable_filters()->CopyFrom(filters);
+  // Currently when no tasks are specified in the launchTasks message
+  // it is implicitly considered a decline of the offers.
+  if (!tasks.empty()) {
+    scheduler::Call::Accept message;
+    message.mutable_filters()->CopyFrom(filters);
 
-  Offer::Operation* operation = message.add_operations();
-  operation->set_type(Offer::Operation::LAUNCH);
+    Offer::Operation* operation = message.add_operations();
+    operation->set_type(Offer::Operation::LAUNCH);
 
-  foreach (const TaskInfo& task, tasks) {
-    operation->mutable_launch()->add_task_infos()->CopyFrom(task);
+    foreach (const TaskInfo& task, tasks) {
+      operation->mutable_launch()->add_task_infos()->CopyFrom(task);
+    }
+
+    foreach (const OfferID& offerId, offerIds) {
+      message.add_offer_ids()->CopyFrom(offerId);
+    }
+
+    accept(framework, message);
+  } else {
+    scheduler::Call::Decline message;
+    message.mutable_filters()->CopyFrom(filters);
+
+    foreach (const OfferID& offerId, offerIds) {
+      message.add_offer_ids()->CopyFrom(offerId);
+    }
+
+    decline(framework, message);
   }
-
-  foreach (const OfferID& offerId, offerIds) {
-    message.add_offer_ids()->CopyFrom(offerId);
-  }
-
-  accept(framework, message);
 }
 
 
@@ -2798,6 +2863,34 @@ void Master::_accept(
 }
 
 
+void Master::decline(
+    Framework* framework,
+    const scheduler::Call::Decline& decline)
+{
+  CHECK_NOTNULL(framework);
+
+  LOG(INFO) << "Processing DECLINE call for offers: " << decline.offer_ids()
+            << " for framework " << *framework;
+
+  //  Return resources to the allocator.
+  foreach (const OfferID& offerId, decline.offer_ids()) {
+    Offer* offer = getOffer(offerId);
+    if (offer != NULL) {
+      allocator->recoverResources(
+          offer->framework_id(),
+          offer->slave_id(),
+          offer->resources(),
+          decline.filters());
+
+      removeOffer(offer);
+    } else {
+      LOG(WARNING) << "Ignoring decline of offer " << offerId
+                   << " since it is no longer valid";
+    }
+  }
+}
+
+
 void Master::reviveOffers(const UPID& from, const FrameworkID& frameworkId)
 {
   ++metrics->messages_revive_offers;
@@ -2818,7 +2911,15 @@ void Master::reviveOffers(const UPID& from, const FrameworkID& frameworkId)
     return;
   }
 
-  LOG(INFO) << "Reviving offers for framework " << *framework;
+  revive(framework);
+}
+
+
+void Master::revive(Framework* framework)
+{
+  CHECK_NOTNULL(framework);
+
+  LOG(INFO) << "Processing REVIVE call for framework " << *framework;
   allocator->reviveOffers(framework->id());
 }
 
@@ -2955,43 +3056,62 @@ void Master::statusUpdateAcknowledgement(
 
   if (framework == NULL) {
     LOG(WARNING)
-      << "Ignoring status update acknowledgement message for task " << taskId
-      << " of framework " << frameworkId << " on slave " << slaveId
-      << " because the framework cannot be found";
+      << "Ignoring status update acknowledgement " << UUID::fromBytes(uuid)
+      << " for task " << taskId << " of framework " << frameworkId
+      << " on slave " << slaveId << " because the framework cannot be found";
     metrics->invalid_status_update_acknowledgements++;
     return;
   }
 
   if (from != framework->pid) {
     LOG(WARNING)
-      << "Ignoring status update acknowledgement message for task " << taskId
-      << " of framework " << *framework << " on slave " << slaveId
-      << " because it is not expected from " << from;
+      << "Ignoring status update acknowledgement " << UUID::fromBytes(uuid)
+      << " for task " << taskId << " of framework " << *framework
+      << " on slave " << slaveId << " because it is not expected from " << from;
     metrics->invalid_status_update_acknowledgements++;
     return;
   }
+
+  scheduler::Call::Acknowledge message;
+  message.mutable_slave_id()->CopyFrom(slaveId);
+  message.mutable_task_id()->CopyFrom(taskId);
+  message.set_uuid(uuid);
+
+  acknowledge(framework, message);
+}
+
+
+void Master::acknowledge(
+    Framework* framework,
+    const scheduler::Call::Acknowledge& acknowledge)
+{
+  CHECK_NOTNULL(framework);
+
+  const SlaveID slaveId = acknowledge.slave_id();
+  const TaskID taskId = acknowledge.task_id();
+  const UUID uuid = UUID::fromBytes(acknowledge.uuid());
 
   Slave* slave = slaves.registered.get(slaveId);
 
   if (slave == NULL) {
     LOG(WARNING)
-      << "Cannot send status update acknowledgement message for task " << taskId
-      << " of framework " << *framework << " to slave " << slaveId
-      << " because slave is not registered";
+      << "Cannot send status update acknowledgement " << uuid
+      << " for task " << taskId << " of framework " << *framework
+      << " to slave " << slaveId << " because slave is not registered";
     metrics->invalid_status_update_acknowledgements++;
     return;
   }
 
   if (!slave->connected) {
     LOG(WARNING)
-      << "Cannot send status update acknowledgement message for task " << taskId
-      << " of framework " << *framework << " to slave " << *slave
-      << " because slave is disconnected";
+      << "Cannot send status update acknowledgement " << uuid
+      << " for task " << taskId << " of framework " << *framework
+      << " to slave " << *slave << " because slave is disconnected";
     metrics->invalid_status_update_acknowledgements++;
     return;
   }
 
-  Task* task = slave->getTask(frameworkId, taskId);
+  Task* task = slave->getTask(framework->id(), taskId);
 
   if (task != NULL) {
     // Status update state and uuid should be either set or unset
@@ -3008,29 +3128,29 @@ void Master::statusUpdateAcknowledgement(
       // retry the update, at which point the master will set the
       // status update state.
       LOG(ERROR)
-        << "Ignoring status update acknowledgement message for task " << taskId
-        << " of framework " << *framework << " to slave " << *slave
-        << " because it no update was sent by this master";
+        << "Ignoring status update acknowledgement " << uuid
+        << " for task " << taskId << " of framework " << *framework
+        << " to slave " << *slave << " because the update was not"
+        << " sent by this master";
       metrics->invalid_status_update_acknowledgements++;
       return;
     }
 
     // Remove the task once the terminal update is acknowledged.
     if (protobuf::isTerminalState(task->status_update_state()) &&
-        task->status_update_uuid() == uuid) {
+        UUID::fromBytes(task->status_update_uuid()) == uuid) {
       removeTask(task);
      }
   }
 
-  LOG(INFO) << "Forwarding status update acknowledgement "
-            << UUID::fromBytes(uuid) << " for task " << taskId
-            << " of framework " << *framework << " to slave " << *slave;
+  LOG(INFO) << "Processing ACKNOWLEDGE call " << uuid << " for task " << taskId
+            << " of framework " << *framework << " on slave " << slaveId;
 
   StatusUpdateAcknowledgementMessage message;
   message.mutable_slave_id()->CopyFrom(slaveId);
-  message.mutable_framework_id()->CopyFrom(frameworkId);
+  message.mutable_framework_id()->CopyFrom(framework->id());
   message.mutable_task_id()->CopyFrom(taskId);
-  message.set_uuid(uuid);
+  message.set_uuid(uuid.toBytes());
 
   send(slave->pid, message);
 
@@ -3067,11 +3187,26 @@ void Master::schedulerMessage(
     return;
   }
 
-  Slave* slave = slaves.registered.get(slaveId);
+  scheduler::Call::Message message_;
+  message_.mutable_slave_id()->CopyFrom(slaveId);
+  message_.mutable_executor_id()->CopyFrom(executorId);
+  message_.set_data(data);
+
+  message(framework, message_);
+}
+
+
+void Master::message(
+    Framework* framework,
+    const scheduler::Call::Message& message)
+{
+  CHECK_NOTNULL(framework);
+
+  Slave* slave = slaves.registered.get(message.slave_id());
 
   if (slave == NULL) {
     LOG(WARNING) << "Cannot send framework message for framework "
-                 << *framework << " to slave " << slaveId
+                 << *framework << " to slave " << message.slave_id()
                  << " because slave is not registered";
     metrics->invalid_framework_to_executor_messages++;
     return;
@@ -3085,15 +3220,15 @@ void Master::schedulerMessage(
     return;
   }
 
-  LOG(INFO) << "Sending framework message for framework "
+  LOG(INFO) << "Processing MESSAGE call from framework "
             << *framework << " to slave " << *slave;
 
-  FrameworkToExecutorMessage message;
-  message.mutable_slave_id()->MergeFrom(slaveId);
-  message.mutable_framework_id()->MergeFrom(frameworkId);
-  message.mutable_executor_id()->MergeFrom(executorId);
-  message.set_data(data);
-  send(slave->pid, message);
+  FrameworkToExecutorMessage message_;
+  message_.mutable_slave_id()->MergeFrom(message.slave_id());
+  message_.mutable_framework_id()->MergeFrom(framework->id());
+  message_.mutable_executor_id()->MergeFrom(message.executor_id());
+  message_.set_data(message.data());
+  send(slave->pid, message_);
 
   metrics->valid_framework_to_executor_messages++;
 }

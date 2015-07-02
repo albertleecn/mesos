@@ -191,21 +191,20 @@ public:
       return;
     }
 
+    // Only a SUBSCRIBE call may not have set the framework ID.
+    if (call.type() != Call::SUBSCRIBE && !call.has_framework_id()) {
+      drop(call, "Expecting 'framework_id' to be present");
+      return;
+    }
+
     // If no user was specified in FrameworkInfo, use the current user.
-    // TODO(benh): Make FrameworkInfo.user be optional and add a
-    // 'user' to either TaskInfo or CommandInfo.
-    if (call.framework_info().user() == "") {
+    // TODO(benh): Make FrameworkInfo.user be optional.
+    if (call.type() == Call::SUBSCRIBE &&
+        call.subscribe().framework_info().user() == "") {
       Result<string> user = os::user();
       CHECK_SOME(user);
 
-      call.mutable_framework_info()->set_user(user.get());
-    }
-
-    // Only a SUBSCRIBE call may not have set the framework ID.
-    if (call.type() != Call::SUBSCRIBE &&
-        (!call.framework_info().has_id() || call.framework_info().id() == "")) {
-      drop(call, "Call is missing FrameworkInfo.id");
-      return;
+      call.mutable_subscribe()->mutable_framework_info()->set_user(user.get());
     }
 
     if (!call.IsInitialized()) {
@@ -216,35 +215,23 @@ public:
 
     switch (call.type()) {
       case Call::SUBSCRIBE: {
-        if (!call.framework_info().has_id() ||
-            call.framework_info().id() == "") {
-          RegisterFrameworkMessage message;
-          message.mutable_framework()->CopyFrom(call.framework_info());
-          send(master.get(), message);
-        } else {
-          ReregisterFrameworkMessage message;
-          message.mutable_framework()->CopyFrom(call.framework_info());
-          message.set_failover(failover);
-          send(master.get(), message);
+        if (!call.has_subscribe()) {
+          drop(call, "Expecting 'subscribe' to be present");
+          return;
         }
+
+        if (!(call.subscribe().framework_info().id() == call.framework_id())) {
+          drop(call, "Framework id in the call doesn't match the framework id"
+                     " in the 'subscribe' message");
+          return;
+        }
+
+        send(master.get(), call);
         break;
       }
 
       case Call::TEARDOWN: {
         send(master.get(), call);
-        break;
-      }
-
-      case Call::DECLINE: {
-        if (!call.has_decline()) {
-          drop(call, "Expecting 'decline' to be present");
-          return;
-        }
-        LaunchTasksMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        message.mutable_filters()->CopyFrom(call.decline().filters());
-        message.mutable_offer_ids()->CopyFrom(call.decline().offer_ids());
-        send(master.get(), message);
         break;
       }
 
@@ -257,10 +244,17 @@ public:
         break;
       }
 
+      case Call::DECLINE: {
+        if (!call.has_decline()) {
+          drop(call, "Expecting 'decline' to be present");
+          return;
+        }
+        send(master.get(), call);
+        break;
+      }
+
       case Call::REVIVE: {
-        ReviveOffersMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        send(master.get(), message);
+        send(master.get(), call);
         break;
       }
 
@@ -287,12 +281,7 @@ public:
           drop(call, "Expecting 'acknowledge' to be present");
           return;
         }
-        StatusUpdateAcknowledgementMessage message;
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        message.mutable_slave_id()->CopyFrom(call.acknowledge().slave_id());
-        message.mutable_task_id()->CopyFrom(call.acknowledge().task_id());
-        message.set_uuid(call.acknowledge().uuid());
-        send(master.get(), message);
+        send(master.get(), call);
         break;
       }
 
@@ -301,7 +290,6 @@ public:
           drop(call, "Expecting 'reconcile' to be present");
           return;
         }
-
         send(master.get(), call);
         break;
       }
@@ -311,12 +299,10 @@ public:
           drop(call, "Expecting 'message' to be present");
           return;
         }
-        FrameworkToExecutorMessage message;
-        message.mutable_slave_id()->CopyFrom(call.message().slave_id());
-        message.mutable_framework_id()->CopyFrom(call.framework_info().id());
-        message.mutable_executor_id()->CopyFrom(call.message().executor_id());
-        message.set_data(call.message().data());
-        send(master.get(), message);
+        // TODO(vinod): Add support for sending the call directly to
+        // the slave, instead of relaying it through the master, as
+        // the scheduler driver does.
+        send(master.get(), call);
         break;
       }
 

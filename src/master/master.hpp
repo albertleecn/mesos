@@ -1004,6 +1004,10 @@ private:
       const process::UPID& from,
       const scheduler::Call& call);
 
+  void subscribe(
+      const process::UPID& from,
+      const scheduler::Call::Subscribe& subscribe);
+
   void accept(
       Framework* framework,
       const scheduler::Call::Accept& accept);
@@ -1015,9 +1019,11 @@ private:
     const scheduler::Call::Accept& accept,
     const process::Future<std::list<process::Future<bool>>>& authorizations);
 
-  void reconcile(
+  void decline(
       Framework* framework,
-      const scheduler::Call::Reconcile& reconcile);
+      const scheduler::Call::Decline& decline);
+
+  void revive(Framework* framework);
 
   void kill(
       Framework* framework,
@@ -1026,6 +1032,18 @@ private:
   void shutdown(
       Framework* framework,
       const scheduler::Call::Shutdown& shutdown);
+
+  void acknowledge(
+      Framework* framework,
+      const scheduler::Call::Acknowledge& acknowledge);
+
+  void reconcile(
+      Framework* framework,
+      const scheduler::Call::Reconcile& reconcile);
+
+  void message(
+      Framework* framework,
+      const scheduler::Call::Message& message);
 
   bool elected() const
   {

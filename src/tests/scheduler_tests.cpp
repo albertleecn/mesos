@@ -141,8 +141,11 @@ TEST_F(SchedulerTest, TaskRunning)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
     call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
 
     mesos.send(call);
   }
@@ -184,8 +187,7 @@ TEST_F(SchedulerTest, TaskRunning)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::ACCEPT);
 
     Call::Accept* accept = call.mutable_accept();
@@ -246,8 +248,11 @@ TEST_F(SchedulerTest, ReconcileTask)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
     call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
 
     mesos.send(call);
   }
@@ -274,8 +279,7 @@ TEST_F(SchedulerTest, ReconcileTask)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::ACCEPT);
 
     Call::Accept* accept = call.mutable_accept();
@@ -295,8 +299,7 @@ TEST_F(SchedulerTest, ReconcileTask)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::RECONCILE);
 
     Call::Reconcile::Task* task = call.mutable_reconcile()->add_tasks();
@@ -354,8 +357,11 @@ TEST_F(SchedulerTest, KillTask)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
     call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
 
     mesos.send(call);
   }
@@ -382,8 +388,7 @@ TEST_F(SchedulerTest, KillTask)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::ACCEPT);
 
     Call::Accept* accept = call.mutable_accept();
@@ -404,8 +409,7 @@ TEST_F(SchedulerTest, KillTask)
   {
     // Acknowledge TASK_RUNNING update.
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::ACKNOWLEDGE);
 
     Call::Acknowledge* acknowledge = call.mutable_acknowledge();
@@ -421,8 +425,7 @@ TEST_F(SchedulerTest, KillTask)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::KILL);
 
     Call::Kill* kill = call.mutable_kill();
@@ -478,8 +481,11 @@ TEST_F(SchedulerTest, ShutdownExecutor)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
     call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
 
     mesos.send(call);
   }
@@ -506,8 +512,7 @@ TEST_F(SchedulerTest, ShutdownExecutor)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::ACCEPT);
 
     Call::Accept* accept = call.mutable_accept();
@@ -531,8 +536,7 @@ TEST_F(SchedulerTest, ShutdownExecutor)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::SHUTDOWN);
 
     Call::Shutdown* shutdown = call.mutable_shutdown();
@@ -590,8 +594,11 @@ TEST_F(SchedulerTest, Teardown)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
     call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
 
     mesos.send(call);
   }
@@ -618,8 +625,7 @@ TEST_F(SchedulerTest, Teardown)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::ACCEPT);
 
     Call::Accept* accept = call.mutable_accept();
@@ -643,14 +649,293 @@ TEST_F(SchedulerTest, Teardown)
 
   {
     Call call;
-    call.mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
-    call.mutable_framework_info()->mutable_id()->CopyFrom(id);
+    call.mutable_framework_id()->CopyFrom(id);
     call.set_type(Call::TEARDOWN);
 
     mesos.send(call);
   }
 
   AWAIT_READY(shutdown);
+
+  Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
+}
+
+
+TEST_F(SchedulerTest, Decline)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Try<PID<Slave>> slave = StartSlave();
+  ASSERT_SOME(slave);
+
+  Callbacks callbacks;
+
+  Future<Nothing> connected;
+  EXPECT_CALL(callbacks, connected())
+    .WillOnce(FutureSatisfy(&connected));
+
+  scheduler::Mesos mesos(
+      master.get(),
+      DEFAULT_CREDENTIAL,
+      lambda::bind(&Callbacks::connected, lambda::ref(callbacks)),
+      lambda::bind(&Callbacks::disconnected, lambda::ref(callbacks)),
+      lambda::bind(&Callbacks::received, lambda::ref(callbacks), lambda::_1));
+
+  AWAIT_READY(connected);
+
+  Queue<Event> events;
+
+  EXPECT_CALL(callbacks, received(_))
+    .WillRepeatedly(Enqueue(&events));
+
+  {
+    Call call;
+    call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
+
+    mesos.send(call);
+  }
+
+  Future<Event> event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::SUBSCRIBED, event.get().type());
+
+  FrameworkID id(event.get().subscribed().framework_id());
+
+  event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::OFFERS, event.get().type());
+  ASSERT_EQ(1, event.get().offers().offers().size());
+
+  Offer offer = event.get().offers().offers(0);
+  {
+    Call call;
+    call.mutable_framework_id()->CopyFrom(id);
+    call.set_type(Call::DECLINE);
+
+    Call::Decline* decline = call.mutable_decline();
+    decline->add_offer_ids()->CopyFrom(offer.id());
+
+    // Set 0s filter to immediately get another offer.
+    Filters filters;
+    filters.set_refuse_seconds(0);
+    decline->mutable_filters()->CopyFrom(filters);
+
+    mesos.send(call);
+  }
+
+  // If the resources were properly declined, the scheduler should
+  // get another offer with same amount of resources.
+  event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::OFFERS, event.get().type());
+  ASSERT_EQ(1, event.get().offers().offers().size());
+  ASSERT_EQ(offer.resources(), event.get().offers().offers(0).resources());
+
+  Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
+}
+
+
+TEST_F(SchedulerTest, Revive)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Try<PID<Slave>> slave = StartSlave();
+  ASSERT_SOME(slave);
+
+  Callbacks callbacks;
+
+  Future<Nothing> connected;
+  EXPECT_CALL(callbacks, connected())
+    .WillOnce(FutureSatisfy(&connected));
+
+  scheduler::Mesos mesos(
+      master.get(),
+      DEFAULT_CREDENTIAL,
+      lambda::bind(&Callbacks::connected, lambda::ref(callbacks)),
+      lambda::bind(&Callbacks::disconnected, lambda::ref(callbacks)),
+      lambda::bind(&Callbacks::received, lambda::ref(callbacks), lambda::_1));
+
+  AWAIT_READY(connected);
+
+  Queue<Event> events;
+
+  EXPECT_CALL(callbacks, received(_))
+    .WillRepeatedly(Enqueue(&events));
+
+  {
+    Call call;
+    call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
+
+    mesos.send(call);
+  }
+
+  Future<Event> event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::SUBSCRIBED, event.get().type());
+
+  FrameworkID id(event.get().subscribed().framework_id());
+
+  event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::OFFERS, event.get().type());
+  EXPECT_NE(0, event.get().offers().offers().size());
+
+  Offer offer = event.get().offers().offers(0);
+  {
+    Call call;
+    call.mutable_framework_id()->CopyFrom(id);
+    call.set_type(Call::DECLINE);
+
+    Call::Decline* decline = call.mutable_decline();
+    decline->add_offer_ids()->CopyFrom(offer.id());
+
+    // Set 1hr filter to not immediately get another offer.
+    Filters filters;
+    filters.set_refuse_seconds(Hours(1).secs());
+    decline->mutable_filters()->CopyFrom(filters);
+
+    mesos.send(call);
+  }
+
+  // No offers should be sent within 30 mins because we set a filter
+  // for 1 hr.
+  Clock::pause();
+  Clock::advance(Minutes(30));
+  Clock::settle();
+
+  event = events.get();
+  ASSERT_TRUE(event.isPending());
+
+  // On revival the filters should be cleared and the scheduler should
+  // get another offer with same amount of resources.
+  {
+    Call call;
+    call.mutable_framework_id()->CopyFrom(id);
+    call.set_type(Call::REVIVE);
+
+    mesos.send(call);
+  }
+
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::OFFERS, event.get().type());
+  EXPECT_NE(0, event.get().offers().offers().size());
+  ASSERT_EQ(offer.resources(), event.get().offers().offers(0).resources());
+
+  Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
+}
+
+
+TEST_F(SchedulerTest, Message)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+
+  TestContainerizer containerizer(&exec);
+
+  Try<PID<Slave>> slave = StartSlave(&containerizer);
+  ASSERT_SOME(slave);
+
+  Callbacks callbacks;
+
+  Future<Nothing> connected;
+  EXPECT_CALL(callbacks, connected())
+    .WillOnce(FutureSatisfy(&connected));
+
+  scheduler::Mesos mesos(
+      master.get(),
+      DEFAULT_CREDENTIAL,
+      lambda::bind(&Callbacks::connected, lambda::ref(callbacks)),
+      lambda::bind(&Callbacks::disconnected, lambda::ref(callbacks)),
+      lambda::bind(&Callbacks::received, lambda::ref(callbacks), lambda::_1));
+
+  AWAIT_READY(connected);
+
+  Queue<Event> events;
+
+  EXPECT_CALL(callbacks, received(_))
+    .WillRepeatedly(Enqueue(&events));
+
+  {
+    Call call;
+    call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_FRAMEWORK_INFO);
+    subscribe->set_force(true);
+
+    mesos.send(call);
+  }
+
+  Future<Event> event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::SUBSCRIBED, event.get().type());
+
+  FrameworkID id(event.get().subscribed().framework_id());
+
+  event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::OFFERS, event.get().type());
+  EXPECT_NE(0, event.get().offers().offers().size());
+
+  EXPECT_CALL(exec, registered(_, _, _, _))
+    .Times(1);
+
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
+
+  Offer offer = event.get().offers().offers(0);
+  TaskInfo taskInfo = createTask(offer, "", DEFAULT_EXECUTOR_ID);
+
+  {
+    Call call;
+    call.mutable_framework_id()->CopyFrom(id);
+    call.set_type(Call::ACCEPT);
+
+    Call::Accept* accept = call.mutable_accept();
+    accept->add_offer_ids()->CopyFrom(offer.id());
+
+    Offer::Operation* operation = accept->add_operations();
+    operation->set_type(Offer::Operation::LAUNCH);
+    operation->mutable_launch()->add_task_infos()->CopyFrom(taskInfo);
+
+    mesos.send(call);
+  }
+
+  event = events.get();
+  AWAIT_READY(event);
+  EXPECT_EQ(Event::UPDATE, event.get().type());
+  EXPECT_EQ(TASK_RUNNING, event.get().update().status().state());
+
+  Future<string> data;
+  EXPECT_CALL(exec, frameworkMessage(_, _))
+    .WillOnce(FutureArg<1>(&data));
+
+  {
+    Call call;
+    call.mutable_framework_id()->CopyFrom(id);
+    call.set_type(Call::MESSAGE);
+
+    Call::Message* message = call.mutable_message();
+    message->mutable_slave_id()->CopyFrom(offer.slave_id());
+    message->mutable_executor_id()->CopyFrom(DEFAULT_EXECUTOR_ID);
+    message->set_data("hello world");
+
+    mesos.send(call);
+  }
+
+  AWAIT_ASSERT_EQ("hello world", data);
 
   Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
 }
