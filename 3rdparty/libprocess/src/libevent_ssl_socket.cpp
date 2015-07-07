@@ -437,13 +437,15 @@ Future<Nothing> LibeventSSLSocketImpl::connect(const Address& address)
   }
 
   // Construct the bufferevent in the connecting state.
+  // We set 'BEV_OPT_DEFER_CALLBACKS' to avoid calling the
+  // 'event_callback' before 'bufferevent_socket_connect' returns.
   CHECK(bev == NULL);
   bev = bufferevent_openssl_socket_new(
       base,
       get(),
       ssl,
       BUFFEREVENT_SSL_CONNECTING,
-      BEV_OPT_THREADSAFE);
+      BEV_OPT_THREADSAFE | BEV_OPT_DEFER_CALLBACKS);
 
   if (bev == NULL) {
     // We need to free 'ssl' here because the bev won't clean it up
@@ -781,7 +783,9 @@ Try<Nothing> LibeventSSLSocketImpl::listen(int backlog)
 Future<Socket> LibeventSSLSocketImpl::accept()
 {
   return accept_queue.get()
-    .then([](const Future<Socket>& future) { return future; });
+    .then([](const Future<Socket>& future) -> Future<Socket> {
+      return future;
+    });
 }
 
 
