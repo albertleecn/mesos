@@ -1,3 +1,17 @@
+/**
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License
+*/
+
 #ifndef __PROCESS_HTTP_HPP__
 #define __PROCESS_HTTP_HPP__
 
@@ -18,7 +32,6 @@
 #include <process/future.hpp>
 #include <process/owned.hpp>
 #include <process/pid.hpp>
-#include <process/time.hpp>
 
 #include <stout/error.hpp>
 #include <stout/hashmap.hpp>
@@ -106,7 +119,7 @@ struct Request
   // Returns whether the encoding is considered acceptable in the request.
   // TODO(bmahler): Consider this logic being in decoder.hpp, and having the
   // Request contain a member variable for each popular HTTP 1.0/1.1 header.
-  bool accepts(const std::string& encoding) const;
+  bool acceptsEncoding(const std::string& encoding) const;
 };
 
 
@@ -364,21 +377,6 @@ struct Accepted : Response
   explicit Accepted(const std::string& body) : Response(body)
   {
     status = "202 Accepted";
-  }
-};
-
-
-struct NotModified : Response
-{
-  explicit NotModified(const Time& lastModified)
-  {
-    status = "304 Not Modified";
-
-    std::string mtime = stringify(RFC1123(lastModified));
-
-    if (!mtime.empty()) {
-      headers["Last-Modified"] = mtime;
-    }
   }
 };
 

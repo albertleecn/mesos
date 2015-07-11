@@ -42,7 +42,7 @@ This release also includes API changes, new modules, and deprecations.
   * [MESOS-2475] - Add the Resource::ReservationInfo protobuf message.
   * [MESOS-2614] - Update name, hostname, failover_timeout, and webui_url in
                    master on framework re-registration
-  * [MESOS-2654] - A new 'capabilities' field has been addd to FrameworkInfo to
+  * [MESOS-2654] - A new 'capabilities' field has been added to FrameworkInfo to
                    opt in to revocable resources.
   * [MESOS-2691] - Update Resource message to include revocable resources.
   * [MESOS-2955] - Introduce acceptOffers scheduler driver API for performing
@@ -179,6 +179,8 @@ This release also includes several bug fixes and stability improvements.
   * [MESOS-2996] - Failing Docker tests on CentOS Linux release 7.1.1503.
   * [MESOS-2997] - SSL connection failure causes failed CHECK.
   * [MESOS-3005] - SSL tests can fail depending on hostname configuration
+  * [MESOS-3025] - 0.22.x scheduler driver drops 0.23.x reconciliation status
+                   updates due to missing StatusUpdate.uuid.
 
 ** Documentation
   * [MESOS-2205] - Add user documentation for reservations

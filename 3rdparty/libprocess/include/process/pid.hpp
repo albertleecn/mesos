@@ -1,3 +1,17 @@
+/**
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License
+*/
+
 #ifndef __PROCESS_PID_HPP__
 #define __PROCESS_PID_HPP__
 
@@ -16,7 +30,13 @@ namespace process {
 // Forward declaration to break cyclic dependencies.
 class ProcessBase;
 
-
+/**
+ * An "untyped" `PID`, used to encapsulate the process ID for
+ * lower-layer abstractions (eg, when receiving incoming requests)
+ * in the dispatching mechanism.
+ *
+ * @see process::PID
+ */
 struct UPID
 {
   UPID() = default;
@@ -78,6 +98,32 @@ struct UPID
 };
 
 
+/**
+ * A "process identifier" used to uniquely identify a process when
+ * dispatching messages.
+ *
+ * Typed with the actual process class's type, which must be
+ * derived from `process::ProcessBase`.
+ *
+ * Use it like this:
+ *
+ *    using namespace process;
+ *
+ *    class SimpleProcess : public Process<SimpleProcess>
+ *    {
+ *       // ...
+ *    };
+ *
+ *
+ *    SimpleProcess process;
+ *    PID<SimpleProcess> pid = spawn(process);
+ *
+ *    // ...
+ *
+ *    dispatchpid, &SimpleProcess::method, "argument");
+ *
+ * @see process::ProcessBase
+ */
 template <typename T = ProcessBase>
 struct PID : UPID
 {

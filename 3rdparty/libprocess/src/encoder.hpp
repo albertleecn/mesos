@@ -1,3 +1,17 @@
+/**
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License
+*/
+
 #ifndef __ENCODER_HPP__
 #define __ENCODER_HPP__
 
@@ -189,7 +203,7 @@ public:
     if (response.type == http::Response::BODY &&
         response.body.length() >= GZIP_MINIMUM_BODY_LENGTH &&
         !headers.contains("Content-Encoding") &&
-        request.accepts("gzip")) {
+        request.acceptsEncoding("gzip")) {
       Try<std::string> compressed = gzip::compress(body);
       if (compressed.isError()) {
         LOG(WARNING) << "Failed to gzip response body: " << compressed.error();

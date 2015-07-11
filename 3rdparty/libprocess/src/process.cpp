@@ -1,3 +1,17 @@
+/**
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License
+*/
+
 #include <errno.h>
 #include <limits.h>
 #include <netdb.h>
@@ -8,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
 #include <arpa/inet.h>
@@ -81,8 +94,6 @@
 #include <stout/thread.hpp>
 #include <stout/unreachable.hpp>
 
-#include <stout/os/stat.hpp>
-
 #include "config.hpp"
 #include "decoder.hpp"
 #include "encoder.hpp"
@@ -96,7 +107,6 @@
 using namespace process::firewall;
 using namespace process::metrics::internal;
 
-using process::RFC1123;
 using process::wait; // Necessary on some OS's to disambiguate.
 
 using process::http::Accepted;
@@ -104,7 +114,6 @@ using process::http::BadRequest;
 using process::http::Forbidden;
 using process::http::InternalServerError;
 using process::http::NotFound;
-using process::http::NotModified;
 using process::http::OK;
 using process::http::Request;
 using process::http::Response;
@@ -3014,53 +3023,6 @@ void ProcessBase::visit(const HttpEvent& event)
       }
     }
 
-    // Get the modification time of the file.
-    // TODO(arojas): Use Path.mtime() once it is available.
-    const Try<long> systemMtime = os::stat::mtime(response.path);
-    const Try<Time> mtime = systemMtime.isSome()
-                              ? Time::create(systemMtime.get())
-                              : Error(systemMtime.error());
-
-    bool modified = true;
-
-    // In order to use the HTTP cache the following is needed:
-    // 1. Request must include the header 'If-Modified-Since' and it
-    //    must be a valid date.
-    // 2. Modification time from the resource must be determined.
-    // 3. Both times must be equal.
-    // However, if any of the conditions are not met, there's no need
-    // to propagate the error. If a condition is not satisfied, the
-    // whole file is returned and the appropriate reason is logged.
-    if (mtime.isSome() &&
-        event.request->headers.contains("If-Modified-Since")) {
-      tm clientMtime = {};
-
-      if (strptime(
-              event.request->headers["If-Modified-Since"].c_str(),
-              "%a, %d %b %Y %T %Z",
-              &clientMtime) != NULL) {
-        const time_t client = std::mktime(&clientMtime);
-        const time_t server = static_cast<time_t>(mtime.get().secs());
-
-        if (client != -1 && client == server) {
-          modified = false;
-        } else if (client == -1 || server == -1) {
-          VLOG(1) << "Failed to create 'time_t' through mktime";
-        }
-      } else {
-        VLOG(1) << "Failed to parse time.";
-      }
-    }
-
-    // Provide the Last-Modified header to the client so it can set up
-    // the cache.
-    if (mtime.isSome()) {
-      response.headers["Last-Modified"] = stringify(RFC1123(mtime.get()));
-    } else {
-      VLOG(1) << "Failed to get mtime for " << response.path << ": "
-                    << mtime.error();
-    }
-
     // TODO(benh): Use "text/plain" for assets that don't have an
     // extension or we don't have a mapping for? It might be better to
     // just let the browser guess (or do it's own default).
@@ -3070,15 +3032,7 @@ void ProcessBase::visit(const HttpEvent& event)
 
     // Enqueue the response with the HttpProxy so that it respects the
     // order of requests to account for HTTP/1.1 pipelining.
-    if (modified) {
-      dispatch(proxy, &HttpProxy::enqueue, response, *event.request);
-    } else {
-      dispatch(
-          proxy,
-          &HttpProxy::enqueue,
-          NotModified(mtime.get()),
-          *event.request);
-    }
+    dispatch(proxy, &HttpProxy::enqueue, response, *event.request);
   } else {
     VLOG(1) << "Returning '404 Not Found' for '" << event.request->path << "'";
 
