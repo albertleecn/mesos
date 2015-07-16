@@ -908,7 +908,12 @@ class SharedFilesystemIsolatorTest : public MesosTest {};
 // directory (/var/tmp). Check that a file written by a process inside
 // the container doesn't appear on the host filesystem but does appear
 // under the container's work directory.
-TEST_F(SharedFilesystemIsolatorTest, ROOT_RelativeVolume)
+// This test is disabled since we're planning to remove the shared
+// filesystem isolator and this test is not working on other distros
+// such as CentOS 7.1
+// TODO(tnachen): Remove this test when shared filesystem isolator
+// is removed.
+TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_RelativeVolume)
 {
   slave::Flags flags = CreateSlaveFlags();
   flags.isolation = "filesystem/shared";
@@ -1009,7 +1014,12 @@ TEST_F(SharedFilesystemIsolatorTest, ROOT_RelativeVolume)
 }
 
 
-TEST_F(SharedFilesystemIsolatorTest, ROOT_AbsoluteVolume)
+// This test is disabled since we're planning to remove the shared
+// filesystem isolator and this test is not working on other distros
+// such as CentOS 7.1
+// TODO(tnachen): Remove this test when shared filesystem isolator
+// is removed.
+TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_AbsoluteVolume)
 {
   slave::Flags flags = CreateSlaveFlags();
   flags.isolation = "filesystem/shared";
@@ -1168,7 +1178,7 @@ public:
   {
     // Remove the user in case it wasn't cleaned up from a previous
     // test.
-    os::system("userdel -r " + UNPRIVILEGED_USERNAME);
+    os::system("userdel -r " + UNPRIVILEGED_USERNAME + " > /dev/null");
 
     ASSERT_EQ(0, os::system("useradd " + UNPRIVILEGED_USERNAME));
   }
@@ -1227,9 +1237,9 @@ TYPED_TEST(UserCgroupIsolatorTest, ROOT_CGROUPS_UserCgroup)
   AWAIT_READY(isolator.get()->isolate(containerId, pid));
 
   // Get the container's cgroups from /proc/$PID/cgroup. We're only
-  // interested in the non-root cgroups, i.e., we exclude those with
-  // paths "/", e.g., only cpu and cpuacct from this example:
-  // 6:blkio:/
+  // interested in the cgroups path that is setup by the isolator,
+  // which sets up cgroup under /mesos.
+  // 6:blkio:/user.slice
   // 5:perf_event:/
   // 4:memory:/
   // 3:freezer:/
@@ -1239,7 +1249,7 @@ TYPED_TEST(UserCgroupIsolatorTest, ROOT_CGROUPS_UserCgroup)
   ostringstream output;
   Try<int> status = os::shell(
       &output,
-      "grep -v '/$' /proc/" +
+      "grep '/mesos' /proc/" +
       stringify(pid) +
       "/cgroup | awk -F ':' '{print $2$3}'");
 

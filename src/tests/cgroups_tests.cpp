@@ -134,10 +134,9 @@ protected:
           baseHierarchy = TEST_CGROUPS_HIERARCHY;
         } else {
           // Strip the subsystem to get the base hierarchy.
-          baseHierarchy = strings::remove(
-              hierarchy.get(),
-              subsystem,
-              strings::SUFFIX);
+          Try<std::string> baseDirname = Path(hierarchy.get()).dirname();
+          ASSERT_SOME(baseDirname);
+          baseHierarchy = baseDirname.get();
         }
       }
 
@@ -1196,6 +1195,9 @@ TEST_F(CgroupsAnyHierarchyWithCpuAcctMemoryTest, ROOT_CGROUPS_CpuAcctsStats)
   CHECK_SOME(cgroups::assign(hierarchy, TEST_CGROUPS_ROOT, ::getpid()));
 
   ASSERT_SOME(cgroups::cpuacct::stat(hierarchy, TEST_CGROUPS_ROOT));
+
+  // Move ourselves to the root cgroup.
+  CHECK_SOME(cgroups::assign(hierarchy, "", ::getpid()));
 
   AWAIT_READY(cgroups::destroy(hierarchy, TEST_CGROUPS_ROOT));
 }
