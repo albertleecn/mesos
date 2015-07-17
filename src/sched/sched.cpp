@@ -93,7 +93,12 @@ using namespace mesos::internal;
 using namespace mesos::internal::master;
 using namespace mesos::scheduler;
 
-using namespace process;
+using process::Clock;
+using process::DispatchEvent;
+using process::Future;
+using process::MessageEvent;
+using process::Process;
+using process::UPID;
 
 using std::map;
 using std::string;
@@ -165,6 +170,8 @@ public:
 protected:
   virtual void initialize()
   {
+    install<Event>(&SchedulerProcess::receive);
+
     // TODO(benh): Get access to flags so that we can decide whether
     // or not to make ZooKeeper verbose.
     install<FrameworkRegisteredMessage>(
@@ -198,7 +205,6 @@ protected:
     install<ExecutorToFrameworkMessage>(
         &SchedulerProcess::frameworkMessage,
         &ExecutorToFrameworkMessage::slave_id,
-        &ExecutorToFrameworkMessage::framework_id,
         &ExecutorToFrameworkMessage::executor_id,
         &ExecutorToFrameworkMessage::data);
 
@@ -417,6 +423,144 @@ protected:
     // corresponds to the original authenticator that started the timer.
     if (future.discard()) { // This is a no-op if the future is already ready.
       LOG(WARNING) << "Authentication timed out";
+    }
+  }
+
+  void drop(const Event& event, const string& message)
+  {
+    // TODO(bmahler): Increment a metric.
+
+    // NOTE: The << operator for 'event.type()' from
+    // type_utils.hpp does not resolve here.
+    LOG(WARNING) << "Dropping "
+                 << mesos::scheduler::Event_Type_Name(event.type())
+                 << ": " << message;
+  }
+
+  void receive(const UPID& from, const Event& event)
+  {
+    switch (event.type()) {
+      case Event::SUBSCRIBED: {
+        if (!event.has_subscribed()) {
+          drop(event, "Expecting 'subscribed' to be present");
+          break;
+        }
+
+        drop(event, "Unimplemented");
+        break;
+      }
+
+      case Event::OFFERS: {
+        if (!event.has_offers()) {
+          drop(event, "Expecting 'offers' to be present");
+          break;
+        }
+
+        drop(event, "Unimplemented");
+        break;
+      }
+
+      case Event::RESCIND: {
+        if (!event.has_rescind()) {
+          drop(event, "Expecting 'rescind' to be present");
+          break;
+        }
+
+        // TODO(bmahler): Rename 'rescindOffer' to 'rescind'
+        // to match the Event naming scheme.
+        rescindOffer(from, event.rescind().offer_id());
+        break;
+      }
+
+      case Event::UPDATE: {
+        if (!event.has_update()) {
+          drop(event, "Expecting 'update' to be present");
+          break;
+        }
+
+        const TaskStatus& status = event.update().status();
+
+        // Create a StatusUpdate based on the TaskStatus.
+        StatusUpdate update;
+        update.mutable_framework_id()->CopyFrom(framework.id());
+        update.mutable_status()->CopyFrom(status);
+        update.set_timestamp(status.timestamp());
+
+        if (status.has_executor_id()) {
+          update.mutable_executor_id()->CopyFrom(status.executor_id());
+        }
+
+        if (status.has_slave_id()) {
+          update.mutable_slave_id()->CopyFrom(status.slave_id());
+        }
+
+        if (status.has_uuid()) {
+          update.set_uuid(status.uuid());
+        }
+
+        // Note that we do not need to set the 'pid' now that
+        // the driver uses 'uuid' absence to skip acknowledgement.
+        //
+        // TODO(bmahler): Implement an 'update' method to match
+        // the Event naming scheme, and have 'statusUpdate' call
+        // into it.
+        statusUpdate(from, update, UPID());
+        break;
+      }
+
+      case Event::MESSAGE: {
+        if (!event.has_message()) {
+          drop(event, "Expecting 'message' to be present");
+          break;
+        }
+
+        // TODO(bmahler): Rename 'frameworkMessage' to 'message'
+        // to match the Event naming scheme.
+        frameworkMessage(
+            event.message().slave_id(),
+            event.message().executor_id(),
+            event.message().data());
+        break;
+      }
+
+      case Event::FAILURE: {
+        if (!event.has_failure()) {
+          drop(event, "Expecting 'failure' to be present");
+          break;
+        }
+
+        // TODO(bmahler): Add a 'failure' method and have the
+        // lost slave handler call into it.
+
+        if (event.failure().has_slave_id() &&
+            event.failure().has_executor_id()) {
+          // NOTE: We silently drop executor FAILURE messages
+          // because this matches the existing behavior of the
+          // scheduler driver: there is currently no install
+          // handler for ExitedExecutorMessage.
+        } else if (event.failure().has_slave_id()) {
+          lostSlave(from, event.failure().slave_id());
+        } else {
+          drop(event, "Expecting 'slave_id' to be present");
+        }
+
+        break;
+      }
+
+      case Event::ERROR: {
+        if (!event.has_error()) {
+          drop(event, "Expecting 'error' to be present");
+          break;
+        }
+
+        error(event.error().message());
+        break;
+      }
+
+      default: {
+        drop(event, "Unknown event");
+        break;
+      }
     }
   }
 
@@ -730,8 +874,8 @@ protected:
       }
 
       // See above for when we don't need to acknowledge.
-      if (update.has_uuid() && update.uuid() != "" &&
-          from != UPID() && pid != UPID()) {
+      if ((update.has_uuid() && update.uuid() != "") ||
+          (from != UPID() && pid != UPID())) {
         // We drop updates while we're disconnected.
         CHECK(connected);
         CHECK_SOME(master);
@@ -786,10 +930,10 @@ protected:
     VLOG(1) << "Scheduler::slaveLost took " << stopwatch.elapsed();
   }
 
-  void frameworkMessage(const SlaveID& slaveId,
-                        const FrameworkID& frameworkId,
-                        const ExecutorID& executorId,
-                        const string& data)
+  void frameworkMessage(
+      const SlaveID& slaveId,
+      const ExecutorID& executorId,
+      const string& data)
   {
     if (!running) {
       VLOG(1)

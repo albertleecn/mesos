@@ -59,6 +59,11 @@ mesos::internal::slave::Flags::Flags()
       "for the Mesos Containerizer.",
       "posix/cpu,posix/mem");
 
+  add(&Flags::provisioners,
+      "provisioners",
+      "Comma separated list of image rootfs provisioners,\n"
+      "e.g., appc,docker");
+
   add(&Flags::default_role,
       "default_role",
       "Any resources in the --resources flag that\n"
@@ -353,12 +358,6 @@ mesos::internal::slave::Flags::Flags()
       "containerizer.\n",
       "docker");
 
-  add(&Flags::docker_sandbox_directory,
-      "docker_sandbox_directory",
-      "The absolute path for the directory in the container where the\n"
-      "sandbox is mapped to.\n",
-      "/mnt/mesos/sandbox");
-
   add(&Flags::docker_remove_delay,
       "docker_remove_delay",
       "The amount of time to wait before removing docker containers\n"
@@ -390,6 +389,12 @@ mesos::internal::slave::Flags::Flags()
       "to provide docker CLI access to the docker daemon. This must be the\n"
       "path used by the slave's docker image.\n",
       "/var/run/docker.sock");
+
+  add(&Flags::sandbox_directory,
+      "sandbox_directory",
+      "The absolute path for the directory in the container where the\n"
+      "sandbox is mapped to.\n",
+      "/mnt/mesos/sandbox");
 
   add(&Flags::default_container_info,
       "default_container_info",

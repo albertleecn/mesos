@@ -16,29 +16,28 @@
  * limitations under the License.
  */
 
-#ifndef __CGROUPS_ISOLATOR_CONSTANTS_HPP__
-#define __CGROUPS_ISOLATOR_CONSTANTS_HPP__
+#include <stout/hashmap.hpp>
+#include <stout/strings.hpp>
 
-#include <stout/bytes.hpp>
-#include <stout/duration.hpp>
+#include "slave/containerizer/provisioner.hpp"
+
+#include "slave/containerizer/provisioners/appc.hpp"
+
+using namespace process;
+
+using std::string;
 
 namespace mesos {
 namespace internal {
 namespace slave {
 
-// CPU subsystem constants.
-const uint64_t CPU_SHARES_PER_CPU = 1024;
-const uint64_t CPU_SHARES_PER_CPU_REVOCABLE = 10;
-const uint64_t MIN_CPU_SHARES = 2; // Linux constant.
-const Duration CPU_CFS_PERIOD = Milliseconds(100); // Linux default.
-const Duration MIN_CPU_CFS_QUOTA = Milliseconds(1);
-
-
-// Memory subsystem constants.
-const Bytes MIN_MEMORY = Megabytes(32);
+Try<hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>>
+  Provisioner::create(const Flags& flags, Fetcher* fetcher)
+{
+  // TODO(tnachen): Load provisioners when one of them is available.
+  return hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>();
+}
 
 } // namespace slave {
 } // namespace internal {
 } // namespace mesos {
-
-#endif // __CGROUPS_ISOLATOR_CONSTANTS_HPP__

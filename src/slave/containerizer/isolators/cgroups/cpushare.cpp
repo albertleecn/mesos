@@ -41,7 +41,6 @@
 #include <stout/try.hpp>
 
 #include "linux/cgroups.hpp"
-#include "linux/sched.hpp"
 
 #include "slave/flags.hpp"
 
@@ -335,25 +334,6 @@ Future<Nothing> CgroupsCpushareIsolatorProcess::isolate(
     }
   }
 
-  // NOTE: This only sets the executor and descendants to IDLE policy
-  // if the initial CPU resource is revocable and not if initial CPU
-  // is non-revocable but subsequent updates include revocable CPU.
-  if (info->resources.isSome() &&
-      info->resources.get().revocable().cpus().isSome() &&
-      flags.revocable_cpu_low_priority) {
-    Try<Nothing> set = sched::policy::set(sched::Policy::IDLE, pid);
-    if (set.isError()) {
-      return Failure("Failed to set SCHED_IDLE for pid " + stringify(pid) +
-                     " in container '" + stringify(containerId) + "'" +
-                     " with revocable CPU: " + set.error());
-    }
-
-    LOG(INFO) << "Set scheduling policy to SCHED_IDLE for pid " << pid
-              << " in container '" << containerId << "' because it includes '"
-              << info->resources.get().revocable().cpus().get()
-              << "' revocable CPU";
-  }
-
   return Nothing();
 }
 
@@ -394,8 +374,18 @@ Future<Nothing> CgroupsCpushareIsolatorProcess::update(
   double cpus = resources.cpus().get();
 
   // Always set cpu.shares.
-  uint64_t shares =
-    std::max((uint64_t) (CPU_SHARES_PER_CPU * cpus), MIN_CPU_SHARES);
+  uint64_t shares;
+
+  if (flags.revocable_cpu_low_priority &&
+      resources.revocable().cpus().isSome()) {
+    shares = std::max(
+        (uint64_t) (CPU_SHARES_PER_CPU_REVOCABLE * cpus),
+        MIN_CPU_SHARES);
+  } else {
+    shares = std::max(
+        (uint64_t) (CPU_SHARES_PER_CPU * cpus),
+        MIN_CPU_SHARES);
+  }
 
   Try<Nothing> write = cgroups::cpu::shares(
       hierarchy.get(),
