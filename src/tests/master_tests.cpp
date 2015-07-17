@@ -29,6 +29,8 @@
 
 #include <mesos/master/allocator.hpp>
 
+#include <mesos/scheduler/scheduler.hpp>
+
 #include <process/clock.hpp>
 #include <process/future.hpp>
 #include <process/gmock.hpp>
@@ -239,13 +241,10 @@ TEST_F(MasterTest, ShutdownFrameworkWhileTaskRunning)
 
   AWAIT_READY(update);
 
-  // Set expectation that Master receives UnregisterFrameworkMessage,
-  // which triggers marking running tasks as killed.
-  UnregisterFrameworkMessage message;
-  message.mutable_framework_id()->MergeFrom(offer.framework_id());
-
-  Future<UnregisterFrameworkMessage> unregisterFrameworkMessage =
-    FUTURE_PROTOBUF(message, _, master.get());
+  // Set expectation that Master receives teardown call, which
+  // triggers marking running tasks as killed.
+  Future<mesos::scheduler::Call> teardownCall = FUTURE_CALL(
+      mesos::scheduler::Call(), mesos::scheduler::Call::TEARDOWN, _, _);
 
   // Set expectation that Executor's shutdown callback is invoked.
   Future<Nothing> shutdown;
@@ -256,14 +255,14 @@ TEST_F(MasterTest, ShutdownFrameworkWhileTaskRunning)
   driver.stop();
   driver.join();
 
-  // Wait for UnregisterFrameworkMessage message to be dispatched and
-  // executor's shutdown callback to be called.
-  AWAIT_READY(unregisterFrameworkMessage);
+  // Wait for teardown call to be dispatched and executor's shutdown
+  // callback to be called.
+  AWAIT_READY(teardownCall);
   AWAIT_READY(shutdown);
 
-  // We have to be sure the UnregisterFrameworkMessage is processed
-  // completely and running tasks enter a terminal state before we
-  // request the master state.
+  // We have to be sure the teardown call is processed completely and
+  // running tasks enter a terminal state before we request the master
+  // state.
   Clock::pause();
   Clock::settle();
   Clock::resume();
@@ -540,9 +539,8 @@ TEST_F(MasterTest, KillUnknownTaskSlaveInTransition)
   EXPECT_CALL(sched, statusUpdate(&driver, _))
     .Times(0);
 
-  // Set expectation that Master receives killTask message.
-  Future<KillTaskMessage> killTaskMessage =
-    FUTURE_PROTOBUF(KillTaskMessage(), _, master.get());
+  Future<mesos::scheduler::Call> killCall = FUTURE_CALL(
+      mesos::scheduler::Call(), mesos::scheduler::Call::KILL, _, _);
 
   // Attempt to kill unknown task while slave is transitioning.
   TaskID unknownTaskId;
@@ -554,7 +552,7 @@ TEST_F(MasterTest, KillUnknownTaskSlaveInTransition)
 
   driver.killTask(unknownTaskId);
 
-  AWAIT_READY(killTaskMessage);
+  AWAIT_READY(killCall);
 
   // Wait for all messages to be dispatched and processed completely to satisfy
   // the expectation that we didn't receive a status update.
@@ -2561,8 +2559,8 @@ TEST_F(MasterTest, OfferNotRescindedOnceDeclined)
   EXPECT_CALL(sched, resourceOffers(_, _))
     .WillRepeatedly(DeclineOffers()); // Decline all offers.
 
-  Future<LaunchTasksMessage> launchTasksMessage =
-    FUTURE_PROTOBUF(LaunchTasksMessage(), _, _);
+  Future<mesos::scheduler::Call> acceptCall = FUTURE_CALL(
+      mesos::scheduler::Call(), mesos::scheduler::Call::ACCEPT, _, _);
 
   EXPECT_CALL(sched, offerRescinded(&driver, _))
     .Times(0);
@@ -2571,7 +2569,7 @@ TEST_F(MasterTest, OfferNotRescindedOnceDeclined)
   AWAIT_READY(registered);
 
   // Wait for the framework to decline the offers.
-  AWAIT_READY(launchTasksMessage);
+  AWAIT_READY(acceptCall);
 
   // Now advance to the offer timeout, we need to settle the clock to
   // ensure that the offer rescind timeout would be processed

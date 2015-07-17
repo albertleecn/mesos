@@ -883,12 +883,19 @@ protected:
         VLOG(2) << "Sending ACK for status update " << update
             << " to " << master.get();
 
-        StatusUpdateAcknowledgementMessage message;
-        message.mutable_framework_id()->MergeFrom(framework.id());
-        message.mutable_slave_id()->MergeFrom(update.slave_id());
-        message.mutable_task_id()->MergeFrom(update.status().task_id());
-        message.set_uuid(update.uuid());
-        send(master.get(), message);
+        Call call;
+
+        CHECK(framework.has_id());
+        call.mutable_framework_id()->CopyFrom(framework.id());
+        call.set_type(Call::ACKNOWLEDGE);
+
+        Call::Acknowledge* acknowledge = call.mutable_acknowledge();
+        acknowledge->mutable_slave_id()->CopyFrom(update.slave_id());
+        acknowledge->mutable_task_id()->CopyFrom(update.status().task_id());
+        acknowledge->set_uuid(update.uuid());
+
+        CHECK_SOME(master);
+        send(master.get(), call);
       }
     }
   }
@@ -983,10 +990,14 @@ protected:
     terminate(self());
 
     if (connected && !failover) {
-      UnregisterFrameworkMessage message;
-      message.mutable_framework_id()->MergeFrom(framework.id());
+      Call call;
+
+      CHECK(framework.has_id());
+      call.mutable_framework_id()->CopyFrom(framework.id());
+      call.set_type(Call::TEARDOWN);
+
       CHECK_SOME(master);
-      send(master.get(), message);
+      send(master.get(), call);
     }
 
     synchronized (mutex) {
@@ -1027,11 +1038,17 @@ protected:
       return;
     }
 
-    KillTaskMessage message;
-    message.mutable_framework_id()->MergeFrom(framework.id());
-    message.mutable_task_id()->MergeFrom(taskId);
+    Call call;
+
+    CHECK(framework.has_id());
+    call.mutable_framework_id()->CopyFrom(framework.id());
+    call.set_type(Call::KILL);
+
+    Call::Kill* kill = call.mutable_kill();
+    kill->mutable_task_id()->CopyFrom(taskId);
+
     CHECK_SOME(master);
-    send(master.get(), message);
+    send(master.get(), call);
   }
 
   void requestResources(const vector<Request>& requests)
@@ -1054,65 +1071,15 @@ protected:
                    const vector<TaskInfo>& tasks,
                    const Filters& filters)
   {
-    if (!connected) {
-      VLOG(1) << "Ignoring launch tasks message as master is disconnected";
-      // NOTE: Reply to the framework with TASK_LOST messages for each
-      // task. This is a hack for now, to not let the scheduler
-      // believe the tasks are launched, when actually the master
-      // never received the launchTasks message. Also, realize that
-      // this hack doesn't capture the case when the scheduler process
-      // sends it but the master never receives it (message lost,
-      // master failover etc). The correct way for schedulers to deal
-      // with this situation is to use 'reconcileTasks()'.
-      foreach (const TaskInfo& task, tasks) {
-        StatusUpdate update = protobuf::createStatusUpdate(
-            framework.id(),
-            None(),
-            task.task_id(),
-            TASK_LOST,
-            TaskStatus::SOURCE_MASTER,
-            None(),
-            "Master disconnected",
-            TaskStatus::REASON_MASTER_DISCONNECTED);
+    Offer::Operation operation;
+    operation.set_type(Offer::Operation::LAUNCH);
 
-        statusUpdate(UPID(), update, UPID());
-      }
-      return;
-    }
-
-    LaunchTasksMessage message;
-    message.mutable_framework_id()->MergeFrom(framework.id());
-    message.mutable_filters()->MergeFrom(filters);
-
-    foreach (const OfferID& offerId, offerIds) {
-      message.add_offer_ids()->MergeFrom(offerId);
-
-      foreach (const TaskInfo& task, tasks) {
-        // Keep only the slave PIDs where we run tasks so we can send
-        // framework messages directly.
-        if (savedOffers.contains(offerId)) {
-          if (savedOffers[offerId].count(task.slave_id()) > 0) {
-            savedSlavePids[task.slave_id()] =
-              savedOffers[offerId][task.slave_id()];
-          } else {
-            LOG(WARNING) << "Attempting to launch task " << task.task_id()
-                         << " with the wrong slave id " << task.slave_id();
-          }
-        } else {
-          LOG(WARNING) << "Attempting to launch task " << task.task_id()
-                       << " with an unknown offer " << offerId;
-        }
-      }
-      // Remove the offer since we saved all the PIDs we might use.
-      savedOffers.erase(offerId);
-    }
-
+    Offer::Operation::Launch* launch = operation.mutable_launch();
     foreach (const TaskInfo& task, tasks) {
-      message.add_tasks()->MergeFrom(task);
+      launch->add_task_infos()->CopyFrom(task);
     }
 
-    CHECK_SOME(master);
-    send(master.get(), message);
+    acceptOffers(offerIds, {operation}, filters);
   }
 
   void acceptOffers(
@@ -1211,10 +1178,14 @@ protected:
       return;
     }
 
-    ReviveOffersMessage message;
-    message.mutable_framework_id()->MergeFrom(framework.id());
+    Call call;
+
+    CHECK(framework.has_id());
+    call.mutable_framework_id()->CopyFrom(framework.id());
+    call.set_type(Call::REVIVE);
+
     CHECK_SOME(master);
-    send(master.get(), message);
+    send(master.get(), call);
   }
 
   void acknowledgeStatusUpdate(
@@ -1231,8 +1202,6 @@ protected:
       return;
     }
 
-    CHECK_SOME(master);
-
     // NOTE: By ignoring the volatile 'running' here, we ensure that
     // all acknowledgements requested before the driver was stopped
     // or aborted are processed. Any acknowledgement that is requested
@@ -1244,17 +1213,25 @@ protected:
     // ensures that master-generated and driver-generated updates
     // will not have a 'uuid' set.
     if (status.has_uuid() && status.has_slave_id()) {
+      CHECK_SOME(master);
+
       VLOG(2) << "Sending ACK for status update " << status.uuid()
               << " of task " << status.task_id()
               << " on slave " << status.slave_id()
               << " to " << master.get();
 
-      StatusUpdateAcknowledgementMessage message;
-      message.mutable_framework_id()->CopyFrom(framework.id());
-      message.mutable_slave_id()->CopyFrom(status.slave_id());
-      message.mutable_task_id()->CopyFrom(status.task_id());
-      message.set_uuid(status.uuid());
-      send(master.get(), message);
+      Call call;
+
+      CHECK(framework.has_id());
+      call.mutable_framework_id()->CopyFrom(framework.id());
+      call.set_type(Call::ACKNOWLEDGE);
+
+      Call::Acknowledge* acknowledge = call.mutable_acknowledge();
+      acknowledge->mutable_slave_id()->CopyFrom(status.slave_id());
+      acknowledge->mutable_task_id()->CopyFrom(status.task_id());
+      acknowledge->set_uuid(status.uuid());
+
+      send(master.get(), call);
     } else {
       VLOG(2) << "Received ACK for status update"
               << (status.has_uuid() ? " " + status.uuid() : "")
@@ -1286,6 +1263,8 @@ protected:
       UPID slave = savedSlavePids[slaveId];
       CHECK(slave != UPID());
 
+      // TODO(vinod): Send a Call directly to the slave once that
+      // support is added.
       FrameworkToExecutorMessage message;
       message.mutable_slave_id()->MergeFrom(slaveId);
       message.mutable_framework_id()->MergeFrom(framework.id());
@@ -1296,13 +1275,19 @@ protected:
       VLOG(1) << "Cannot send directly to slave " << slaveId
               << "; sending through master";
 
-      FrameworkToExecutorMessage message;
-      message.mutable_slave_id()->MergeFrom(slaveId);
-      message.mutable_framework_id()->MergeFrom(framework.id());
-      message.mutable_executor_id()->MergeFrom(executorId);
-      message.set_data(data);
+      Call call;
+
+      CHECK(framework.has_id());
+      call.mutable_framework_id()->CopyFrom(framework.id());
+      call.set_type(Call::MESSAGE);
+
+      Call::Message* message = call.mutable_message();
+      message->mutable_slave_id()->CopyFrom(slaveId);
+      message->mutable_executor_id()->CopyFrom(executorId);
+      message->set_data(data);
+
       CHECK_SOME(master);
-      send(master.get(), message);
+      send(master.get(), call);
     }
   }
 
@@ -1313,15 +1298,24 @@ protected:
      return;
     }
 
-    ReconcileTasksMessage message;
-    message.mutable_framework_id()->MergeFrom(framework.id());
+    Call call;
+
+    CHECK(framework.has_id());
+    call.mutable_framework_id()->CopyFrom(framework.id());
+    call.set_type(Call::RECONCILE);
+
+    Call::Reconcile* reconcile = call.mutable_reconcile();
 
     foreach (const TaskStatus& status, statuses) {
-      message.add_statuses()->MergeFrom(status);
+      Call::Reconcile::Task* task = reconcile->add_tasks();
+      task->mutable_task_id()->CopyFrom(status.task_id());
+      if (status.has_slave_id()) {
+        task->mutable_slave_id()->CopyFrom(status.slave_id());
+      }
     }
 
     CHECK_SOME(master);
-    send(master.get(), message);
+    send(master.get(), call);
   }
 
 private:

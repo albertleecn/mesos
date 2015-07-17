@@ -27,6 +27,8 @@
 #include <mesos/resources.hpp>
 #include <mesos/scheduler.hpp>
 
+#include <mesos/scheduler/scheduler.hpp>
+
 #include <process/dispatch.hpp>
 #include <process/gmock.hpp>
 #include <process/owned.hpp>
@@ -211,8 +213,8 @@ TYPED_TEST(SlaveRecoveryTest, RecoverSlaveState)
   Future<StatusUpdateMessage> update =
     FUTURE_PROTOBUF(StatusUpdateMessage(), Eq(master.get()), _);
 
-  Future<StatusUpdateAcknowledgementMessage> ack =
-    FUTURE_PROTOBUF(StatusUpdateAcknowledgementMessage(), _, _);
+  Future<mesos::scheduler::Call> ack = FUTURE_CALL(
+      mesos::scheduler::Call(), mesos::scheduler::Call::ACKNOWLEDGE, _, _);
 
   Future<Nothing> _ack =
     FUTURE_DISPATCH(_, &Slave::_statusUpdateAcknowledgement);
@@ -308,12 +310,13 @@ TYPED_TEST(SlaveRecoveryTest, RecoverSlaveState)
         .tasks[task.task_id()]
         .updates.front().uuid());
 
+  const UUID& uuid = UUID::fromBytes(ack.get().acknowledge().uuid());
   ASSERT_TRUE(state
                 .frameworks[frameworkId]
                 .executors[executorId]
                 .runs[containerId.get()]
                 .tasks[task.task_id()]
-                .acks.contains(UUID::fromBytes(ack.get().uuid())));
+                .acks.contains(uuid));
 
   // Shut down the executor manually so that it doesn't hang around
   // after the test finishes.
@@ -2148,15 +2151,15 @@ TYPED_TEST(SlaveRecoveryTest, ReconcileShutdownFramework)
   this->Stop(slave.get());
   delete containerizer1.get();
 
-  Future<UnregisterFrameworkMessage> unregisterFrameworkMessage =
-    FUTURE_PROTOBUF(UnregisterFrameworkMessage(), _, _);
+  Future<mesos::scheduler::Call> teardownCall = FUTURE_CALL(
+      mesos::scheduler::Call(), mesos::scheduler::Call::TEARDOWN, _, _);
 
   // Now stop the framework.
   driver.stop();
   driver.join();
 
-  // Wait util the framework is removed.
-  AWAIT_READY(unregisterFrameworkMessage);
+  // Wait until the framework is removed.
+  AWAIT_READY(teardownCall);
 
   Future<ShutdownFrameworkMessage> shutdownFrameworkMessage =
     FUTURE_PROTOBUF(ShutdownFrameworkMessage(), _, _);
