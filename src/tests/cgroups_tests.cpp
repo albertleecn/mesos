@@ -369,11 +369,13 @@ TEST_F(CgroupsAnyHierarchyTest, ROOT_CGROUPS_Get)
   ASSERT_SOME(cgroups::create(hierarchy, "mesos_test1"));
   ASSERT_SOME(cgroups::create(hierarchy, "mesos_test2"));
 
-  Try<std::vector<std::string> > cgroups = cgroups::get(hierarchy);
+  Try<std::vector<std::string>> cgroups = cgroups::get(hierarchy);
   ASSERT_SOME(cgroups);
 
-  EXPECT_EQ(cgroups.get()[0], "mesos_test2");
-  EXPECT_EQ(cgroups.get()[1], "mesos_test1");
+  EXPECT_NE(cgroups.get().end(),
+            find(cgroups.get().begin(), cgroups.get().end(), "mesos_test2"));
+  EXPECT_NE(cgroups.get().end(),
+            find(cgroups.get().begin(), cgroups.get().end(), "mesos_test1"));
 
   ASSERT_SOME(cgroups::remove(hierarchy, "mesos_test1"));
   ASSERT_SOME(cgroups::remove(hierarchy, "mesos_test2"));
@@ -384,7 +386,10 @@ TEST_F(CgroupsAnyHierarchyTest, ROOT_CGROUPS_NestedCgroups)
 {
   std::string hierarchy = path::join(baseHierarchy, "cpu");
   ASSERT_SOME(cgroups::create(hierarchy, TEST_CGROUPS_ROOT));
-  ASSERT_SOME(cgroups::create(hierarchy, path::join(TEST_CGROUPS_ROOT, "1")))
+  std::string cgroup1 = path::join(TEST_CGROUPS_ROOT, "1");
+  std::string cgroup2 = path::join(TEST_CGROUPS_ROOT, "2");
+
+  ASSERT_SOME(cgroups::create(hierarchy, cgroup1))
     << "-------------------------------------------------------------\n"
     << "We cannot run this test because it appears you do not have\n"
     << "a modern enough version of the Linux kernel. You won't be\n"
@@ -392,19 +397,21 @@ TEST_F(CgroupsAnyHierarchyTest, ROOT_CGROUPS_NestedCgroups)
     << "this test.\n"
     << "-------------------------------------------------------------";
 
-  ASSERT_SOME(cgroups::create(hierarchy, path::join(TEST_CGROUPS_ROOT, "2")));
+  ASSERT_SOME(cgroups::create(hierarchy, cgroup2));
 
-  Try<std::vector<std::string> > cgroups =
+  Try<std::vector<std::string>> cgroups =
     cgroups::get(hierarchy, TEST_CGROUPS_ROOT);
-
   ASSERT_SOME(cgroups);
+
   ASSERT_EQ(2u, cgroups.get().size());
 
-  EXPECT_EQ(cgroups.get()[0], path::join(TEST_CGROUPS_ROOT, "2"));
-  EXPECT_EQ(cgroups.get()[1], path::join(TEST_CGROUPS_ROOT, "1"));
+  EXPECT_NE(cgroups.get().end(),
+            find(cgroups.get().begin(), cgroups.get().end(), cgroup2));
+  EXPECT_NE(cgroups.get().end(),
+            find(cgroups.get().begin(), cgroups.get().end(), cgroup1));
 
-  ASSERT_SOME(cgroups::remove(hierarchy, path::join(TEST_CGROUPS_ROOT, "1")));
-  ASSERT_SOME(cgroups::remove(hierarchy, path::join(TEST_CGROUPS_ROOT, "2")));
+  ASSERT_SOME(cgroups::remove(hierarchy, cgroup1));
+  ASSERT_SOME(cgroups::remove(hierarchy, cgroup2));
 }
 
 
@@ -954,7 +961,9 @@ TEST_F(CgroupsAnyHierarchyWithPerfEventTest, ROOT_CGROUPS_Perf)
     ASSERT_EQ((ssize_t) sizeof(dummy), len);
     ::close(pipes[0]);
 
-    while (true) { sleep(1); }
+    while (true) {
+      // Don't sleep so 'perf' can actually sample something.
+    }
 
     ABORT("Child should not reach here");
   }
@@ -977,12 +986,19 @@ TEST_F(CgroupsAnyHierarchyWithPerfEventTest, ROOT_CGROUPS_Perf)
   // Software event.
   events.insert("task-clock");
 
+  // NOTE: Wait at least 2 seconds as we've seen some variance in how
+  // well 'perf' does across Linux distributions (e.g., Ubuntu 14.04)
+  // and we want to make sure that we collect some non-zero values.
   Future<mesos::PerfStatistics> statistics =
-    perf::sample(events, TEST_CGROUPS_ROOT, Seconds(1));
+    perf::sample(events, TEST_CGROUPS_ROOT, Seconds(2));
   AWAIT_READY(statistics);
 
   ASSERT_TRUE(statistics.get().has_cycles());
-  EXPECT_LT(0u, statistics.get().cycles());
+
+  // TODO(benh): Some Linux distributions (Ubuntu 14.04) fail to
+  // properly sample 'cycles' with 'perf', so we don't explicitly
+  // check the value here. See MESOS-3082.
+  // EXPECT_LT(0u, statistics.get().cycles());
 
   ASSERT_TRUE(statistics.get().has_task_clock());
   EXPECT_LT(0.0, statistics.get().task_clock());
