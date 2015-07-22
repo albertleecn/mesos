@@ -23,6 +23,8 @@
 
 #include <mesos/resources.hpp>
 
+#include <mesos/slave/isolator.hpp> // For ExecutorRunState.
+
 #include <stout/hashmap.hpp>
 #include <stout/nothing.hpp>
 #include <stout/try.hpp>
@@ -33,9 +35,6 @@
 #include "slave/flags.hpp"
 
 #include "slave/containerizer/fetcher.hpp"
-
-// For ExecutorRunState.
-#include "mesos/slave/isolator.hpp"
 
 namespace mesos {
 namespace internal {
@@ -49,11 +48,11 @@ public:
   static Try<hashmap<ContainerInfo::Image::Type, process::Owned<Provisioner>>>
     create(const Flags& flags, Fetcher* fetcher);
 
-  // Recover containers from the run states and the orphan containers
-  // (known to the launcher but not known to the slave) detected by
-  // the launcher.
-  // Recover also is responsible for cleaning up any intermediate
-  // artifacts (e.g. directories) to not leak anything.
+  // Recover root filesystems for containers from the run states and
+  // the orphan containers (known to the launcher but not known to the
+  // slave) detected by the launcher. This function is also
+  // responsible for cleaning up any intermediate artifacts (e.g.
+  // directories) to not leak anything.
   virtual process::Future<Nothing> recover(
       const std::list<mesos::slave::ExecutorRunState>& states,
       const hashset<ContainerID>& orphans) = 0;

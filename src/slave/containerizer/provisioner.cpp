@@ -16,16 +16,9 @@
  * limitations under the License.
  */
 
-#include <stout/hashmap.hpp>
-#include <stout/strings.hpp>
-
 #include "slave/containerizer/provisioner.hpp"
 
-#include "slave/containerizer/provisioners/appc.hpp"
-
 using namespace process;
-
-using std::string;
 
 namespace mesos {
 namespace internal {

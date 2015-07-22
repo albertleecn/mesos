@@ -403,10 +403,12 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	slave/containerizer/external_containerizer.cpp			\
 	slave/containerizer/fetcher.cpp					\
 	slave/containerizer/isolator.cpp				\
+	slave/containerizer/isolators/filesystem/posix.cpp		\
 	slave/containerizer/isolators/posix/disk.cpp			\
 	slave/containerizer/launcher.cpp				\
 	slave/containerizer/mesos/containerizer.cpp			\
 	slave/containerizer/mesos/launch.cpp				\
+	slave/containerizer/provisioner.cpp				\
 	slave/resource_estimators/noop.cpp				\
 	usage/usage.cpp							\
 	watcher/whitelist_watcher.cpp					\
@@ -639,7 +641,9 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 	slave/containerizer/isolators/cgroups/mem.hpp			\
 	slave/containerizer/isolators/cgroups/perf_event.hpp		\
 	slave/containerizer/isolators/namespaces/pid.hpp		\
+	slave/containerizer/isolators/filesystem/posix.hpp		\
 	slave/containerizer/isolators/filesystem/shared.hpp		\
+	slave/containerizer/provisioner.hpp				\
 	slave/resource_estimators/noop.hpp				\
 	tests/cluster.hpp						\
 	tests/containerizer.hpp						\

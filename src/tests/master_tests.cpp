@@ -3061,17 +3061,9 @@ TEST_F(MasterTest, TaskLabels)
   // Add three labels to the task (two of which share the same key).
   Labels* labels = task.mutable_labels();
 
-  Label* label1 = labels->add_labels();
-  label1->set_key("foo");
-  label1->set_value("bar");
-
-  Label* label2 = labels->add_labels();
-  label2->set_key("bar");
-  label2->set_value("baz");
-
-  Label* label3 = labels->add_labels();
-  label3->set_key("bar");
-  label3->set_value("qux");
+  labels->add_labels()->CopyFrom(createLabel("foo", "bar"));
+  labels->add_labels()->CopyFrom(createLabel("bar", "baz"));
+  labels->add_labels()->CopyFrom(createLabel("bar", "qux"));
 
   vector<TaskInfo> tasks;
   tasks.push_back(task);
@@ -3117,38 +3109,115 @@ TEST_F(MasterTest, TaskLabels)
 
   JSON::Array labelsObject_ = labelsObject.get();
 
+  // Verify the contents of 'foo:bar', 'bar:baz', and 'bar:qux' pairs.
+  EXPECT_EQ(labelsObject_.values[0],
+            JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))));
+  EXPECT_EQ(labelsObject_.values[1],
+            JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))));
+  EXPECT_EQ(labelsObject_.values[2],
+            JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))));
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
+
+  Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
+}
+
+
+// This test verifies that TaskStatus label values are exposed over
+// the master state endpoint.
+TEST_F(MasterTest, TaskStatusLabels)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+
+  Try<PID<Slave>> slave = StartSlave(&exec);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .Times(1);
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers.get().size());
+
+  TaskInfo task = createTask(offers.get()[0], "sleep 100", DEFAULT_EXECUTOR_ID);
+
+  vector<TaskInfo> tasks;
+  tasks.push_back(task);
+
+  ExecutorDriver* execDriver;
+  EXPECT_CALL(exec, registered(_, _, _, _))
+    .WillOnce(SaveArg<0>(&execDriver));
+
+  Future<TaskInfo> execTask;
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(FutureArg<1>(&execTask));
+
+  Future<TaskStatus> status;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status));
+
+  driver.launchTasks(offers.get()[0].id(), tasks);
+
+  AWAIT_READY(execTask);
+
+  // Now send TASK_RUNNING update.
+  TaskStatus runningStatus;
+  runningStatus.mutable_task_id()->MergeFrom(execTask.get().task_id());
+  runningStatus.set_state(TASK_RUNNING);
+
+  // Add three labels to the task (two of which share the same key).
+  Labels* labels = runningStatus.mutable_labels();
+
+  labels->add_labels()->CopyFrom(createLabel("foo", "bar"));
+  labels->add_labels()->CopyFrom(createLabel("bar", "baz"));
+  labels->add_labels()->CopyFrom(createLabel("bar", "qux"));
+
+  execDriver->sendStatusUpdate(runningStatus);
+
+  AWAIT_READY(status);
+
+  // Verify label key and value in master state.json.
+  Future<process::http::Response> response =
+    process::http::get(master.get(), "state.json");
+  AWAIT_READY(response);
+
+  EXPECT_SOME_EQ(
+      "application/json",
+      response.get().headers.get("Content-Type"));
+
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+  ASSERT_SOME(parse);
+
+  Result<JSON::Array> labelsObject = parse.get().find<JSON::Array>(
+      "frameworks[0].tasks[0].statuses[0].labels");
+  EXPECT_SOME(labelsObject);
+
+  JSON::Array labelsObject_ = labelsObject.get();
+
   // Verify the content of 'foo:bar' pair.
-  Try<JSON::Value> expected = JSON::parse(
-      "{"
-      "  \"key\":\"foo\","
-      "  \"value\":\"bar\""
-      "}");
-
-  ASSERT_SOME(expected);
-  EXPECT_EQ(labelsObject_.values[0], expected.get());
-
-
-  // Verify the content of 'bar:baz' pair.
-  expected = JSON::parse(
-      "{"
-      "  \"key\":\"bar\","
-      "  \"value\":\"baz\""
-      "}");
-
-  ASSERT_SOME(expected);
-  EXPECT_EQ(labelsObject_.values[1], expected.get());
-
-
-  // Verify the content of 'bar:qux' pair.
-  expected = JSON::parse(
-      "{"
-      "  \"key\":\"bar\","
-      "  \"value\":\"qux\""
-      "}");
-
-  ASSERT_SOME(expected);
-  EXPECT_EQ(labelsObject_.values[2], expected.get());
-
+  EXPECT_EQ(labelsObject_.values[0],
+            JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))));
+  EXPECT_EQ(labelsObject_.values[1],
+            JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))));
+  EXPECT_EQ(labelsObject_.values[2],
+            JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))));
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -3273,12 +3342,8 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
 
   // Add two labels to the discovery info.
   Labels* labels = info->mutable_labels();
-  Label* label1 = labels->add_labels();
-  label1->set_key("clearance");
-  label1->set_value("high");
-  Label* label2 = labels->add_labels();
-  label2->set_key("RPC");
-  label2->set_value("yes");
+  labels->add_labels()->CopyFrom(createLabel("clearance", "high"));
+  labels->add_labels()->CopyFrom(createLabel("RPC", "yes"));
 
   vector<TaskInfo> tasks;
   tasks.push_back(task);
@@ -3387,22 +3452,12 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
   EXPECT_EQ(2u, labelsArray_.values.size());
 
   // Verify the content of 'clearance:high' pair.
-  expected = JSON::parse(
-      "{"
-      "  \"key\":\"clearance\","
-      "  \"value\":\"high\""
-      "}");
-  ASSERT_SOME(expected);
-  EXPECT_EQ(expected.get(), labelsArray_.values[0]);
+  EXPECT_EQ(labelsArray_.values[0],
+            JSON::Value(JSON::Protobuf(createLabel("clearance", "high"))));
 
   // Verify the content of 'RPC:yes' pair.
-  expected = JSON::parse(
-      "{"
-      "  \"key\":\"RPC\","
-      "  \"value\":\"yes\""
-      "}");
-  ASSERT_SOME(expected);
-  EXPECT_EQ(expected.get(), labelsArray_.values[1]);
+  EXPECT_EQ(labelsArray_.values[1],
+            JSON::Value(JSON::Protobuf(createLabel("RPC", "yes"))));
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));

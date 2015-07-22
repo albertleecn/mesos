@@ -44,14 +44,24 @@
 #endif // __linux__
 
 #include "slave/containerizer/isolators/posix.hpp"
+
 #include "slave/containerizer/isolators/posix/disk.hpp"
+
 #ifdef __linux__
 #include "slave/containerizer/isolators/cgroups/cpushare.hpp"
 #include "slave/containerizer/isolators/cgroups/mem.hpp"
 #include "slave/containerizer/isolators/cgroups/perf_event.hpp"
+#endif
+
+#include "slave/containerizer/isolators/filesystem/posix.hpp"
+#ifdef __linux__
 #include "slave/containerizer/isolators/filesystem/shared.hpp"
+#endif
+
+#ifdef __linux__
 #include "slave/containerizer/isolators/namespaces/pid.hpp"
-#endif // __linux__
+#endif
+
 #ifdef WITH_NETWORK_ISOLATOR
 #include "slave/containerizer/isolators/network/port_mapping.hpp"
 #endif
@@ -104,6 +114,12 @@ Try<MesosContainerizer*> MesosContainerizer::create(
     isolation = flags.isolation;
   }
 
+  // A filesystem isolator is required for persistent volumes; use the
+  // filesystem/posix isolator if necessary.
+  if (!strings::contains(isolation, "filesystem/")) {
+    isolation += ",filesystem/posix";
+  }
+
   // Modify the flags to include any changes to isolation.
   Flags flags_ = flags;
   flags_.isolation = isolation;
@@ -112,6 +128,7 @@ Try<MesosContainerizer*> MesosContainerizer::create(
 
   // Create a MesosContainerizerProcess using isolators and a launcher.
   static const hashmap<string, Try<Isolator*> (*)(const Flags&)> creators = {
+    {"filesystem/posix", &PosixFilesystemIsolatorProcess::create},
     {"posix/cpu", &PosixCpuIsolatorProcess::create},
     {"posix/mem", &PosixMemIsolatorProcess::create},
     {"posix/disk", &PosixDiskIsolatorProcess::create},
@@ -178,8 +195,20 @@ Try<MesosContainerizer*> MesosContainerizer::create(
     return Error("Failed to create launcher: " + launcher.error());
   }
 
+  Try<hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>> provisioners =
+    Provisioner::create(flags, fetcher);
+
+  if (provisioners.isError()) {
+    return Error("Failed to create provisioner(s): " + provisioners.error());
+  }
+
   return new MesosContainerizer(
-      flags_, local, fetcher, Owned<Launcher>(launcher.get()), isolators);
+      flags_,
+      local,
+      fetcher,
+      Owned<Launcher>(launcher.get()),
+      isolators,
+      provisioners.get());
 }
 
 
@@ -188,13 +217,15 @@ MesosContainerizer::MesosContainerizer(
     bool local,
     Fetcher* fetcher,
     const Owned<Launcher>& launcher,
-    const vector<Owned<Isolator>>& isolators)
+    const vector<Owned<Isolator>>& isolators,
+    const hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>& provisioners)
   : process(new MesosContainerizerProcess(
       flags,
       local,
       fetcher,
       launcher,
-      isolators))
+      isolators,
+      provisioners))
 {
   spawn(process.get());
 }
@@ -385,9 +416,11 @@ Future<Nothing> MesosContainerizerProcess::recover(
         CHECK(os::exists(directory));
 
         ExecutorRunState executorRunState(
+            executorInfo,
             run.get().id.get(),
             run.get().forkedPid.get(),
-            directory);
+            directory,
+            run.get().rootfs);
 
         recoverable.push_back(executorRunState);
       }
@@ -404,13 +437,19 @@ Future<Nothing> MesosContainerizerProcess::_recover(
     const list<ExecutorRunState>& recoverable,
     const hashset<ContainerID>& orphans)
 {
-  // Then recover the isolators.
   list<Future<Nothing>> futures;
+
+  // Then recover the provisioners.
+  foreachvalue (const Owned<Provisioner>& provisioner, provisioners) {
+    futures.push_back(provisioner->recover(recoverable, orphans));
+  }
+
+  // Then recover the isolators.
   foreach (const Owned<Isolator>& isolator, isolators) {
     futures.push_back(isolator->recover(recoverable, orphans));
   }
 
-  // If all isolators recover then continue.
+  // If all provisioners and isolators recover then continue.
   return collect(futures)
     .then(defer(self(), &Self::__recover, recoverable, orphans));
 }
@@ -431,10 +470,14 @@ Future<Nothing> MesosContainerizerProcess::__recover(
 
     container->directory = run.directory;
 
+    container->rootfs = run.rootfs;
+
     // We only checkpoint the containerizer pid after the container
     // successfully launched, therefore we can assume checkpointed
     // containers should be running after recover.
     container->state = RUNNING;
+
+    container->executorInfo = run.executorInfo;
 
     containers_[containerId] = Owned<Container>(container);
 
@@ -536,27 +579,20 @@ Future<bool> MesosContainerizerProcess::launch(
             << "' of framework '" << executorInfo.framework_id() << "'";
 
   Container* container = new Container();
+  container->executorInfo = executorInfo;
   container->directory = directory;
   container->state = PREPARING;
-  containers_[containerId] = Owned<Container>(container);
-
-  // Prepare volumes for the container.
-  // TODO(jieyu): Consider decoupling file system isolation from
-  // runtime isolation. The existing isolators are actually for
-  // runtime isolation. For file system isolation, the interface might
-  // be different and we always need a file system isolator. The
-  // following logic should be moved to the file system isolator.
-  Try<Nothing> update = updateVolumes(containerId, executorInfo.resources());
-  if (update.isError()) {
-    return Failure("Failed to prepare volumes: " + update.error());
-  }
-
-  // NOTE: We do not update 'container->resources' until volumes are
-  // prepared because 'updateVolumes' above depends on the current
-  // container resources.
   container->resources = executorInfo.resources();
 
-  return prepare(containerId, executorInfo, directory, user)
+  containers_.put(containerId, Owned<Container>(container));
+
+  return provision(containerId, executorInfo, slaveId, directory, checkpoint)
+    .then(defer(self(),
+                &Self::prepare,
+                containerId,
+                executorInfo,
+                directory,
+                user))
     .then(defer(self(),
                 &Self::_launch,
                 containerId,
@@ -567,6 +603,83 @@ Future<bool> MesosContainerizerProcess::launch(
                 slavePid,
                 checkpoint,
                 lambda::_1));
+}
+
+
+Future<Nothing> MesosContainerizerProcess::provision(
+    const ContainerID& containerId,
+    const ExecutorInfo& executorInfo,
+    const SlaveID& slaveId,
+    const string& directory,
+    bool checkpoint)
+{
+  if (!executorInfo.has_container()) {
+    // TODO(idownes): Consider refusing to run a container if the
+    // containerizer is configured with an image provisioner but the
+    // executor doesn't specify an image.
+    return Nothing();
+  }
+
+  if (executorInfo.container().type() != ContainerInfo::MESOS) {
+    return Failure("Mesos containerizer can only provision Mesos containers");
+  }
+
+  if (!executorInfo.container().mesos().has_image()) {
+    // No image to provision.
+    return Nothing();
+  }
+
+  ContainerInfo::Image image = executorInfo.container().mesos().image();
+
+  if (!provisioners.contains(image.type())) {
+    return Failure("ExecutorInfo specifies container image type '" +
+                    stringify(image.type()) +
+                    "' but no suitable provisioner available");
+  }
+
+  return provisioners[image.type()]->provision(containerId, image)
+    .then(defer(self(),
+                &Self::_provision,
+                containerId,
+                executorInfo,
+                slaveId,
+                checkpoint,
+                lambda::_1));
+}
+
+
+Future<Nothing> MesosContainerizerProcess::_provision(
+    const ContainerID& containerId,
+    const ExecutorInfo& executorInfo,
+    const SlaveID& slaveId,
+    bool checkpoint,
+    const string& rootfs)
+{
+  if (!containers_.contains(containerId)) {
+    return Failure("Container is already destroyed");
+  }
+
+  containers_[containerId]->rootfs = rootfs;
+
+  if (checkpoint) {
+    const string path = slave::paths::getContainerRootfsPath(
+        slave::paths::getMetaRootDir(flags.work_dir),
+        slaveId,
+        executorInfo.framework_id(),
+        executorInfo.executor_id(),
+        containerId);
+
+    LOG(INFO) << "Checkpointing container " << containerId << " rootfs path '"
+              << rootfs << "' to '" << path << "'";
+
+    Try<Nothing> checkpointed = slave::state::checkpoint(path, rootfs);
+    if (checkpointed.isError()) {
+      return Failure("Failed to checkpoint container rootfs path to '" +
+                     path + "': " + checkpointed.error());
+    }
+  }
+
+  return Nothing();
 }
 
 
@@ -694,7 +807,9 @@ Future<bool> MesosContainerizerProcess::_launch(
   // Prepare environment variables for the executor.
   map<string, string> environment = executorEnvironment(
       executorInfo,
-      directory,
+      containers_[containerId]->rootfs.isSome()
+        ? flags.sandbox_directory
+        : directory,
       slaveId,
       slavePid,
       checkpoint,
@@ -717,7 +832,12 @@ Future<bool> MesosContainerizerProcess::_launch(
   MesosContainerizerLaunch::Flags launchFlags;
 
   launchFlags.command = JSON::Protobuf(executorInfo.command());
-  launchFlags.directory = directory;
+
+  launchFlags.directory = containers_[containerId]->rootfs.isSome()
+    ? flags.sandbox_directory
+    : directory;
+
+  launchFlags.rootfs = containers_[containerId]->rootfs;
   launchFlags.user = user;
   launchFlags.pipe_read = pipes[0];
   launchFlags.pipe_write = pipes[1];
@@ -892,13 +1012,6 @@ Future<Nothing> MesosContainerizerProcess::update(
     LOG(WARNING) << "Ignoring update for currently being destroyed container: "
                  << containerId;
     return Nothing();
-  }
-
-  // Update volumes for the container.
-  // TODO(jieyu): See comments above 'updateVolumes' in 'launch'.
-  Try<Nothing> update = updateVolumes(containerId, resources);
-  if (update.isError()) {
-    return Failure("Failed to update volumes: " + update.error());
   }
 
   // NOTE: We update container's resources before isolators are updated
@@ -1131,9 +1244,9 @@ void MesosContainerizerProcess::____destroy(
   foreach (const Future<Nothing>& cleanup, cleanups.get()) {
     if (!cleanup.isReady()) {
       container->promise.fail(
-        "Failed to clean up an isolator when destroying container '" +
-        stringify(containerId) + "' :" +
-        (cleanup.isFailed() ? cleanup.failure() : "discarded future"));
+          "Failed to clean up an isolator when destroying container '" +
+          stringify(containerId) + "' :" +
+          (cleanup.isFailed() ? cleanup.failure() : "discarded future"));
 
       containers_.erase(containerId);
 
@@ -1141,6 +1254,61 @@ void MesosContainerizerProcess::____destroy(
 
       return;
     }
+  }
+
+  if (container->rootfs.isNone()) {
+    // No rootfs to clean up so continue.
+    _____destroy(containerId, status, message, killed, Nothing());
+    return;
+  }
+
+  ContainerInfo::Image::Type type =
+    container->executorInfo.container().mesos().image().type();
+
+  if (!provisioners.contains(type)) {
+    // We should have a provisioner to handle cleaning up the rootfs
+    // but continue clean up even if we don't.
+    LOG(WARNING) << "No provisioner to clean up rootfs for container "
+                 << containerId << " (type '" << type << "'), continuing";
+
+    _____destroy(containerId, status, message, killed, Nothing());
+    return;
+  }
+
+  provisioners[type]->destroy(containerId)
+    .onAny(defer(self(),
+                 &Self::_____destroy,
+                 containerId,
+                 status,
+                 message,
+                 killed,
+                 lambda::_1));
+
+  return;
+}
+
+
+void MesosContainerizerProcess::_____destroy(
+    const ContainerID& containerId,
+    const Future<Option<int>>& status,
+    Option<string> message,
+    bool killed,
+    const Future<Nothing>& future)
+{
+  CHECK(containers_.contains(containerId));
+
+  Container* container = containers_[containerId].get();
+
+  if (!future.isReady()) {
+    container->promise.fail(
+        "Failed to clean up the root filesystem when destroying container: " +
+        (future.isFailed() ? future.failure() : "discarded future"));
+
+    containers_.erase(containerId);
+
+    ++metrics.container_destroy_errors;
+
+    return;
   }
 
   // If any isolator limited the container then we mark it to killed.
@@ -1240,131 +1408,6 @@ MesosContainerizerProcess::Metrics::~Metrics()
 }
 
 
-Try<Nothing> MesosContainerizerProcess::updateVolumes(
-    const ContainerID& containerId,
-    const Resources& updated)
-{
-  CHECK(containers_.contains(containerId));
-  const Owned<Container>& container = containers_[containerId];
-
-  // TODO(jieyu): Currently, we only allow non-nested relative
-  // container paths for volumes. This is enforced by the master. For
-  // those volumes, we create symlinks in the executor directory. No
-  // need to proceed if the container change the file system root
-  // because the symlinks will become invalid if the file system root
-  // is changed. Consider moving this logic to the file system
-  // isolator and let the file system isolator decide how to mount
-  // those volumes (by either creating symlinks or doing bind mounts).
-  if (container->rootfs.isSome()) {
-    LOG(WARNING) << "Cannot update volumes for container " << containerId
-                 << " because it changes the file system root";
-    return Nothing();
-  }
-
-  Resources current = container->resources;
-
-  // We first remove unneeded persistent volumes.
-  foreach (const Resource& resource, current.persistentVolumes()) {
-    // This is enforced by the master.
-    CHECK(resource.disk().has_volume());
-
-    // Ignore absolute and nested paths.
-    const string& containerPath = resource.disk().volume().container_path();
-    if (strings::contains(containerPath, "/")) {
-      LOG(WARNING) << "Skipping updating symlink for persistent volume "
-                   << resource << " of container " << containerId
-                   << " because the container path '" << containerPath
-                   << "' contains slash";
-      continue;
-    }
-
-    if (updated.contains(resource)) {
-      continue;
-    }
-
-    string link = path::join(container->directory, containerPath);
-
-    LOG(INFO) << "Removing symlink '" << link << "' for persistent volume "
-              << resource << " of container " << containerId;
-
-    Try<Nothing> rm = os::rm(link);
-    if (rm.isError()) {
-      return Error(
-          "Failed to remove the symlink for the unneeded "
-          "persistent volume at '" + link + "'");
-    }
-  }
-
-  // We then link additional persistent volumes.
-  foreach (const Resource& resource, updated.persistentVolumes()) {
-    // This is enforced by the master.
-    CHECK(resource.disk().has_volume());
-
-    // Ignore absolute and nested paths.
-    const string& containerPath = resource.disk().volume().container_path();
-    if (strings::contains(containerPath, "/")) {
-      LOG(WARNING) << "Skipping updating symlink for persistent volume "
-                   << resource << " of container " << containerId
-                   << " because the container path '" << containerPath
-                   << "' contains slash";
-      continue;
-    }
-
-    if (current.contains(resource)) {
-      continue;
-    }
-
-    string link = path::join(container->directory, containerPath);
-
-    string original = paths::getPersistentVolumePath(
-        flags.work_dir,
-        resource.role(),
-        resource.disk().persistence().id());
-
-    LOG(INFO) << "Adding symlink from '" << original << "' to '"
-              << link << "' for persistent volume " << resource
-              << " of container " << containerId;
-
-    Try<Nothing> symlink = fs::symlink(original, link);
-    if (symlink.isError()) {
-      return Error(
-          "Failed to symlink persistent volume from '" +
-          original + "' to '" + link + "'");
-    }
-
-    // Set the ownership of persistent volume to match the sandbox
-    // directory. Currently, persistent volumes in mesos are
-    // exclusive. If one persistent volume is used by one
-    // task/executor, it cannot be concurrently used by other
-    // task/executor. But if we allow multiple executors use same
-    // persistent volume at the same time in the future, the ownership
-    // of persistent volume may conflict here.
-    // TODO(haosdent): We need to update this after we have a proposed
-    // plan to adding user/group to persistent volumes.
-    struct stat s;
-    if (::stat(container->directory.c_str(), &s) < 0) {
-      return Error("Failed to get permissions on '" + container->directory +
-                   "': " + strerror(errno));
-    }
-
-    Try<Nothing> chown = os::chown(s.st_uid, s.st_gid, original, true);
-    if (chown.isError()) {
-      return Error("Failed to chown persistent volume '" + original +
-                   "': " + chown.error());
-    }
-  }
-
-  return Nothing();
-}
-
-
-static list<Future<Nothing>> __cleanupIsolators(
-    const list<Future<Nothing>>& cleanups)
-{
-  return cleanups;
-}
-
-
 static Future<list<Future<Nothing>>> _cleanupIsolators(
     const Owned<Isolator>& isolator,
     const ContainerID& containerId,
@@ -1381,7 +1424,7 @@ static Future<list<Future<Nothing>>> _cleanupIsolators(
   cleanup_.push_back(cleanup);
 
   return await(cleanup_)
-    .then(lambda::bind(&__cleanupIsolators, cleanups));
+    .then([cleanups]() -> list<Future<Nothing>> { return cleanups; });
 }
 
 
