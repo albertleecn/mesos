@@ -48,6 +48,7 @@
 #include <stout/try.hpp>
 
 #include "common/build.hpp"
+#include "common/protobuf_utils.hpp"
 
 #include "master/flags.hpp"
 #include "master/master.hpp"
@@ -67,6 +68,8 @@
 using mesos::internal::master::Master;
 
 using mesos::internal::master::allocator::MesosAllocatorProcess;
+
+using mesos::internal::protobuf::createLabel;
 
 using mesos::internal::slave::GarbageCollectorProcess;
 using mesos::internal::slave::Slave;
@@ -2249,13 +2252,14 @@ TEST_F(MasterTest, OrphanTasks)
   Future<SlaveReregisteredMessage> slaveReregisteredMessage =
     FUTURE_PROTOBUF(SlaveReregisteredMessage(), master.get(), _);
 
-  // Drop the reregisterFrameworkMessage to delay the framework
-  // from re-registration.
-  Future<ReregisterFrameworkMessage> reregisterFrameworkMessage =
-    DROP_PROTOBUF(ReregisterFrameworkMessage(), _, master.get());
-
-  Future<FrameworkRegisteredMessage> frameworkRegisteredMessage =
-    FUTURE_PROTOBUF(FrameworkRegisteredMessage(), master.get(), _);
+  // Drop the subscribe call to delay the framework from
+  // re-registration.
+  // Grab the stuff we need to replay the subscribe call.
+  Future<mesos::scheduler::Call> subscribeCall = DROP_CALL(
+      mesos::scheduler::Call(),
+      mesos::scheduler::Call::SUBSCRIBE,
+      _,
+      _);
 
   Clock::pause();
 
@@ -2271,7 +2275,7 @@ TEST_F(MasterTest, OrphanTasks)
   detector.appoint(master.get());
 
   AWAIT_READY(slaveReregisteredMessage);
-  AWAIT_READY(reregisterFrameworkMessage);
+  AWAIT_READY(subscribeCall);
 
   // Get the master's state.
   response = process::http::get(master.get(), "state.json");
@@ -2297,6 +2301,9 @@ TEST_F(MasterTest, OrphanTasks)
   JSON::String unknownFrameworkId =
     unknownFrameworksArray.values.front().as<JSON::String>();
   EXPECT_EQ(activeFrameworkId, unknownFrameworkId);
+
+  Future<FrameworkRegisteredMessage> frameworkRegisteredMessage =
+    FUTURE_PROTOBUF(FrameworkRegisteredMessage(), _, _);
 
   // Advance the clock to let the framework re-register with the master.
   Clock::advance(Seconds(1));
@@ -2985,16 +2992,15 @@ TEST_F(MasterTest, FrameworkWebUIUrlandCapabilities)
     process::http::get(master.get(), "state.json");
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, masterState);
 
-  Try<JSON::Object> masterStateObject =
-    JSON::parse<JSON::Object>(masterState.get().body);
-  ASSERT_SOME(masterStateObject);
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(masterState.get().body);
+  ASSERT_SOME(parse);
 
-  // We need a mutable copy of masterStateObject to use [].
-  JSON::Object masterStateObject_ = masterStateObject.get();
+  // We need a mutable copy of parse to use [].
+  JSON::Object masterStateObject = parse.get();
 
-  EXPECT_EQ(1u, masterStateObject_.values.count("frameworks"));
+  EXPECT_EQ(1u, masterStateObject.values.count("frameworks"));
   JSON::Array frameworks =
-    masterStateObject_.values["frameworks"].as<JSON::Array>();
+    masterStateObject.values["frameworks"].as<JSON::Array>();
 
   EXPECT_EQ(1u, frameworks.values.size());
   JSON::Object framework_ = frameworks.values.front().as<JSON::Object>();
@@ -3103,19 +3109,22 @@ TEST_F(MasterTest, TaskLabels)
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
 
-  Result<JSON::Array> labelsObject = parse.get().find<JSON::Array>(
+  Result<JSON::Array> find = parse.get().find<JSON::Array>(
       "frameworks[0].tasks[0].labels");
-  EXPECT_SOME(labelsObject);
+  EXPECT_SOME(find);
 
-  JSON::Array labelsObject_ = labelsObject.get();
+  JSON::Array labelsObject = find.get();
 
   // Verify the contents of 'foo:bar', 'bar:baz', and 'bar:qux' pairs.
-  EXPECT_EQ(labelsObject_.values[0],
-            JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))));
-  EXPECT_EQ(labelsObject_.values[1],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))));
-  EXPECT_EQ(labelsObject_.values[2],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))));
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))),
+      labelsObject.values[0]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))),
+      labelsObject.values[1]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))),
+      labelsObject.values[2]);
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -3205,19 +3214,22 @@ TEST_F(MasterTest, TaskStatusLabels)
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
 
-  Result<JSON::Array> labelsObject = parse.get().find<JSON::Array>(
+  Result<JSON::Array> find = parse.get().find<JSON::Array>(
       "frameworks[0].tasks[0].statuses[0].labels");
-  EXPECT_SOME(labelsObject);
+  EXPECT_SOME(find);
 
-  JSON::Array labelsObject_ = labelsObject.get();
+  JSON::Array labelsObject = find.get();
 
   // Verify the content of 'foo:bar' pair.
-  EXPECT_EQ(labelsObject_.values[0],
-            JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))));
-  EXPECT_EQ(labelsObject_.values[1],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))));
-  EXPECT_EQ(labelsObject_.values[2],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))));
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))),
+      labelsObject.values[0]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))),
+      labelsObject.values[1]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))),
+      labelsObject.values[2]);
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -3416,12 +3428,12 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
   ASSERT_EQ("v0.1.1", version.get());
 
   // Verify content of two named ports.
-  Result<JSON::Array> portsArray = parse.get().find<JSON::Array>(
+  Result<JSON::Array> find1 = parse.get().find<JSON::Array>(
       "frameworks[0].tasks[0].discovery.ports.ports");
-  EXPECT_SOME(portsArray);
+  EXPECT_SOME(find1);
 
-  JSON::Array portsArray_ = portsArray.get();
-  EXPECT_EQ(2u, portsArray_.values.size());
+  JSON::Array portsArray = find1.get();
+  EXPECT_EQ(2u, portsArray.values.size());
 
   // Verify the content of '8888:myport1:tcp' port.
   Try<JSON::Value> expected = JSON::parse(
@@ -3431,7 +3443,7 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
       "  \"protocol\":\"tcp\""
       "}");
   ASSERT_SOME(expected);
-  EXPECT_EQ(expected.get(), portsArray_.values[0]);
+  EXPECT_EQ(expected.get(), portsArray.values[0]);
 
   // Verify the content of '9999:myport2:udp' port.
   expected = JSON::parse(
@@ -3441,23 +3453,25 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
       "  \"protocol\":\"udp\""
       "}");
   ASSERT_SOME(expected);
-  EXPECT_EQ(expected.get(), portsArray_.values[1]);
+  EXPECT_EQ(expected.get(), portsArray.values[1]);
 
   // Verify content of two labels.
-  Result<JSON::Array> labelsArray = parse.get().find<JSON::Array>(
+  Result<JSON::Array> find2 = parse.get().find<JSON::Array>(
       "frameworks[0].tasks[0].discovery.labels.labels");
-  EXPECT_SOME(labelsArray);
+  EXPECT_SOME(find2);
 
-  JSON::Array labelsArray_ = labelsArray.get();
-  EXPECT_EQ(2u, labelsArray_.values.size());
+  JSON::Array labelsArray = find2.get();
+  EXPECT_EQ(2u, labelsArray.values.size());
 
   // Verify the content of 'clearance:high' pair.
-  EXPECT_EQ(labelsArray_.values[0],
-            JSON::Value(JSON::Protobuf(createLabel("clearance", "high"))));
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("clearance", "high"))),
+      labelsArray.values[0]);
 
   // Verify the content of 'RPC:yes' pair.
-  EXPECT_EQ(labelsArray_.values[1],
-            JSON::Value(JSON::Protobuf(createLabel("RPC", "yes"))));
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("RPC", "yes"))),
+      labelsArray.values[1]);
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));

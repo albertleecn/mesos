@@ -43,6 +43,7 @@
 
 #include "common/build.hpp"
 #include "common/http.hpp"
+#include "common/protobuf_utils.hpp"
 
 #include "master/flags.hpp"
 #include "master/master.hpp"
@@ -64,6 +65,8 @@
 using namespace mesos::internal::slave;
 
 using mesos::internal::master::Master;
+
+using mesos::internal::protobuf::createLabel;
 
 using process::Clock;
 using process::Future;
@@ -2118,19 +2121,22 @@ TEST_F(SlaveTest, TaskLabels)
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
 
-  Result<JSON::Array> labelsObject = parse.get().find<JSON::Array>(
+  Result<JSON::Array> find = parse.get().find<JSON::Array>(
       "frameworks[0].executors[0].tasks[0].labels");
-  EXPECT_SOME(labelsObject);
+  EXPECT_SOME(find);
 
-  JSON::Array labelsObject_ = labelsObject.get();
+  JSON::Array labelsObject = find.get();
 
   // Verify the contents of 'foo:bar', 'bar:baz', and 'bar:qux' pairs.
-  EXPECT_EQ(labelsObject_.values[0],
-            JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))));
-  EXPECT_EQ(labelsObject_.values[1],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))));
-  EXPECT_EQ(labelsObject_.values[2],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))));
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))),
+      labelsObject.values[0]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))),
+      labelsObject.values[1]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))),
+      labelsObject.values[2]);
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -2220,19 +2226,22 @@ TEST_F(SlaveTest, TaskStatusLabels)
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
 
-  Result<JSON::Array> labelsObject = parse.get().find<JSON::Array>(
+  Result<JSON::Array> find = parse.get().find<JSON::Array>(
       "frameworks[0].executors[0].tasks[0].statuses[0].labels");
-  EXPECT_SOME(labelsObject);
+  EXPECT_SOME(find);
 
-  JSON::Array labelsObject_ = labelsObject.get();
+  JSON::Array labelsObject = find.get();
 
   // Verify the contents of 'foo:bar', 'bar:baz', and 'bar:qux' pairs.
-  EXPECT_EQ(labelsObject_.values[0],
-            JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))));
-  EXPECT_EQ(labelsObject_.values[1],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))));
-  EXPECT_EQ(labelsObject_.values[2],
-            JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))));
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))),
+      labelsObject.values[0]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))),
+      labelsObject.values[1]);
+  EXPECT_EQ(
+      JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))),
+      labelsObject.values[2]);
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
