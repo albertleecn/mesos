@@ -35,10 +35,10 @@ using namespace process;
 using std::list;
 using std::string;
 
+using mesos::slave::ExecutorLimitation;
 using mesos::slave::ExecutorRunState;
 using mesos::slave::Isolator;
 using mesos::slave::IsolatorProcess;
-using mesos::slave::Limitation;
 
 namespace mesos {
 namespace internal {
@@ -66,7 +66,7 @@ Future<Nothing> PosixFilesystemIsolatorProcess::recover(
     const hashset<ContainerID>& orphans)
 {
   foreach (const ExecutorRunState& state, states) {
-    infos.put(state.id, Owned<Info>(new Info(state.directory)));
+    infos.put(state.container_id(), Owned<Info>(new Info(state.directory())));
   }
 
   return Nothing();
@@ -106,11 +106,11 @@ Future<Nothing> PosixFilesystemIsolatorProcess::isolate(
 }
 
 
-Future<Limitation> PosixFilesystemIsolatorProcess::watch(
+Future<ExecutorLimitation> PosixFilesystemIsolatorProcess::watch(
     const ContainerID& containerId)
 {
   // No-op.
-  return Future<Limitation>();
+  return Future<ExecutorLimitation>();
 }
 
 
@@ -230,11 +230,22 @@ Future<Nothing> PosixFilesystemIsolatorProcess::update(
             (realpath.isError() ? realpath.error() : "No such directory"));
       }
 
-      // NOTE: A sanity check which we don't expect to happen.
-      if (realpath.get() != original) {
+      // A sanity check to make sure the target of the symlink does
+      // not change. In fact, this is not supposed to happen.
+      // NOTE: Here, we compare the realpaths because 'original' might
+      // contain symbolic links.
+      Result<string> _original = os::realpath(original);
+      if (!_original.isSome()) {
         return Failure(
-            "The existing symlink '" + link + "' points to '" + original +
-            "' and the new target is '" + realpath.get() + "'");
+            "Failed to get the realpath of volume '" + original + "': " +
+            (_original.isError() ? _original.error() : "No such directory"));
+      }
+
+      if (realpath.get() != _original.get()) {
+        return Failure(
+            "The existing symlink '" + link + "' points to '" +
+            _original.get() + "' and the new target is '" +
+            realpath.get() + "'");
       }
     } else {
       LOG(INFO) << "Adding symlink from '" << original << "' to '"
