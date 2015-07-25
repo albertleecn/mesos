@@ -46,6 +46,7 @@
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
 #include <process/id.hpp>
+#include <process/latch.hpp>
 #include <process/owned.hpp>
 #include <process/pid.hpp>
 #include <process/process.hpp>
@@ -96,6 +97,7 @@ using namespace mesos::scheduler;
 using process::Clock;
 using process::DispatchEvent;
 using process::Future;
+using process::Latch;
 using process::MessageEvent;
 using process::Process;
 using process::UPID;
@@ -128,8 +130,8 @@ public:
                    const string& schedulerId,
                    MasterDetector* _detector,
                    const internal::scheduler::Flags& _flags,
-                   pthread_mutex_t* _mutex,
-                   pthread_cond_t* _cond)
+                   std::recursive_mutex* _mutex,
+                   Latch* _latch)
       // We use a UUID here to ensure that the master can reliably
       // distinguish between scheduler runs. Otherwise the master may
       // receive a delayed ExitedEvent enqueued behind a
@@ -146,7 +148,7 @@ public:
       scheduler(_scheduler),
       framework(_framework),
       mutex(_mutex),
-      cond(_cond),
+      latch(_latch),
       failover(_framework.has_id() && !framework.id().value().empty()),
       connected(false),
       running(true),
@@ -888,10 +890,8 @@ protected:
     // update uuid check here, until then we must still check for
     // this being sent from the driver (from == UPID()) or from
     // the master (pid == UPID()).
-    //
-    // TODO(bmahler): For the HTTP API, we will have to update the
-    // master and slave to ensure the 'uuid' in TaskStatus is set
-    // correctly.
+    // TODO(vinod): Get rid of this logic in 0.25.0 because master
+    // and slave correctly set task status in 0.24.0.
     if (!update.has_uuid() || update.uuid() == "") {
       status.clear_uuid();
     } else if (from == UPID() || pid == UPID()) {
@@ -1047,7 +1047,7 @@ protected:
     }
 
     synchronized (mutex) {
-      pthread_cond_signal(cond);
+      CHECK_NOTNULL(latch)->trigger();
     }
   }
 
@@ -1073,7 +1073,7 @@ protected:
     }
 
     synchronized (mutex) {
-      pthread_cond_signal(cond);
+      CHECK_NOTNULL(latch)->trigger();
     }
   }
 
@@ -1410,8 +1410,8 @@ private:
   MesosSchedulerDriver* driver;
   Scheduler* scheduler;
   FrameworkInfo framework;
-  pthread_mutex_t* mutex;
-  pthread_cond_t* cond;
+  std::recursive_mutex* mutex;
+  Latch* latch;
 
   bool failover;
 
@@ -1500,15 +1500,8 @@ void MesosSchedulerDriver::initialize() {
     VLOG(1) << "Disabling initialization of GLOG logging";
   }
 
-  // Initialize mutex and condition variable. TODO(benh): Consider
-  // using a libprocess Latch rather than a pthread mutex and
-  // condition variable for signaling.
-  pthread_mutexattr_t attr;
-  pthread_mutexattr_init(&attr);
-  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
-  pthread_mutex_init(&mutex, &attr);
-  pthread_mutexattr_destroy(&attr);
-  pthread_cond_init(&cond, 0);
+  // Initialize Latch.
+  latch = new Latch();
 
   // TODO(benh): Check the user the framework wants to run tasks as,
   // see if the current user can switch to that user, or via an
@@ -1521,8 +1514,12 @@ void MesosSchedulerDriver::initialize() {
 
     framework.set_user(user.get());
   }
+
   if (framework.hostname().empty()) {
-    framework.set_hostname(net::hostname().get());
+    Try<string> hostname = net::hostname();
+    if (hostname.isSome()) {
+      framework.set_hostname(hostname.get());
+    }
   }
 
   // Launch a local cluster if necessary.
@@ -1653,8 +1650,7 @@ MesosSchedulerDriver::~MesosSchedulerDriver()
     delete process;
   }
 
-  pthread_mutex_destroy(&mutex);
-  pthread_cond_destroy(&cond);
+  delete latch;
 
   if (detector != NULL) {
     delete detector;
@@ -1723,7 +1719,7 @@ Status MesosSchedulerDriver::start()
           detector,
           flags,
           &mutex,
-          &cond);
+          latch);
     } else {
       const Credential& cred = *credential;
       process = new SchedulerProcess(
@@ -1736,7 +1732,7 @@ Status MesosSchedulerDriver::start()
           detector,
           flags,
           &mutex,
-          &cond);
+          latch);
     }
 
     spawn(process);
@@ -1806,15 +1802,20 @@ Status MesosSchedulerDriver::abort()
 
 Status MesosSchedulerDriver::join()
 {
+  // Exit early if the driver is not running.
   synchronized (mutex) {
     if (status != DRIVER_RUNNING) {
       return status;
     }
+  }
 
-    while (status == DRIVER_RUNNING) {
-      pthread_cond_wait(&cond, &mutex);
-    }
+  // If the driver was running, the latch will be triggered regardless
+  // of the current `status`. Wait for this to happen to signify
+  // termination.
+  CHECK_NOTNULL(latch)->await();
 
+  // Now return the current `status` of the driver.
+  synchronized (mutex) {
     CHECK(status == DRIVER_ABORTED || status == DRIVER_STOPPED);
 
     return status;

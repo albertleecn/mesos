@@ -811,26 +811,24 @@ public:
       const process::UPID& from,
       const FrameworkInfo& frameworkInfo,
       const FrameworkID& frameworkId,
-      const std::string& pid,
+      const process::UPID& pid,
       TaskInfo task));
 
   void unmocked_runTask(
       const process::UPID& from,
       const FrameworkInfo& frameworkInfo,
       const FrameworkID& frameworkId,
-      const std::string& pid,
+      const process::UPID& pid,
       TaskInfo task);
 
-  MOCK_METHOD4(_runTask, void(
+  MOCK_METHOD3(_runTask, void(
       const process::Future<bool>& future,
       const FrameworkInfo& frameworkInfo,
-      const std::string& pid,
       const TaskInfo& task));
 
   void unmocked__runTask(
       const process::Future<bool>& future,
       const FrameworkInfo& frameworkInfo,
-      const std::string& pid,
       const TaskInfo& task);
 
   MOCK_METHOD3(killTask, void(
@@ -1036,6 +1034,12 @@ ACTION_P(InvokeUpdateAllocation, allocator)
 }
 
 
+ACTION_P(InvokeUpdateResources, allocator)
+{
+  return allocator->real->updateAvailable(arg0, arg1);
+}
+
+
 ACTION_P(InvokeRecoverResources, allocator)
 {
   allocator->real->recoverResources(arg0, arg1, arg2, arg3);
@@ -1154,6 +1158,11 @@ public:
     EXPECT_CALL(*this, updateAllocation(_, _, _))
       .WillRepeatedly(DoDefault());
 
+    ON_CALL(*this, updateAvailable(_, _))
+      .WillByDefault(InvokeUpdateResources(this));
+    EXPECT_CALL(*this, updateAvailable(_, _))
+      .WillRepeatedly(DoDefault());
+
     ON_CALL(*this, recoverResources(_, _, _, _))
       .WillByDefault(InvokeRecoverResources(this));
     EXPECT_CALL(*this, recoverResources(_, _, _, _))
@@ -1220,6 +1229,10 @@ public:
 
   MOCK_METHOD3(updateAllocation, void(
       const FrameworkID&,
+      const SlaveID&,
+      const std::vector<Offer::Operation>&));
+
+  MOCK_METHOD2(updateAvailable, process::Future<Nothing>(
       const SlaveID&,
       const std::vector<Offer::Operation>&));
 
@@ -1290,7 +1303,6 @@ const ::testing::Matcher<const std::vector<Offer>& > OfferEq(int cpus, int mem)
 }
 
 
-// Definition of the SendStatusUpdateFromTask action to be used with gmock.
 ACTION_P(SendStatusUpdateFromTask, state)
 {
   TaskStatus status;
@@ -1300,13 +1312,18 @@ ACTION_P(SendStatusUpdateFromTask, state)
 }
 
 
-// Definition of the SendStatusUpdateFromTaskID action to be used with gmock.
 ACTION_P(SendStatusUpdateFromTaskID, state)
 {
   TaskStatus status;
   status.mutable_task_id()->MergeFrom(arg1);
   status.set_state(state);
   arg0->sendStatusUpdate(status);
+}
+
+
+ACTION_P(SendFrameworkMessage, data)
+{
+  arg0->sendFrameworkMessage(data);
 }
 
 

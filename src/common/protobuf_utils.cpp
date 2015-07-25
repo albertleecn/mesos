@@ -16,6 +16,8 @@
  * limitations under the License.
  */
 
+#include <mesos/scheduler/scheduler.hpp>
+
 #include <mesos/slave/isolator.hpp>
 
 #include <mesos/type_utils.hpp>
@@ -27,12 +29,18 @@
 #include <stout/stringify.hpp>
 #include <stout/uuid.hpp>
 
+#include "common/protobuf_utils.hpp"
+
 #include "messages/messages.hpp"
 
 using std::string;
 
+using mesos::scheduler::Event;
+
 using mesos::slave::ExecutorLimitation;
 using mesos::slave::ExecutorRunState;
+
+using process::UPID;
 
 namespace mesos {
 namespace internal {
@@ -55,11 +63,11 @@ StatusUpdate createStatusUpdate(
     const TaskState& state,
     const TaskStatus::Source& source,
     const Option<UUID>& uuid,
-    const string& message = "",
-    const Option<TaskStatus::Reason>& reason = None(),
-    const Option<ExecutorID>& executorId = None(),
-    const Option<bool>& healthy = None(),
-    const Option<Labels>& labels = None())
+    const string& message,
+    const Option<TaskStatus::Reason>& reason,
+    const Option<ExecutorID>& executorId,
+    const Option<bool>& healthy,
+    const Option<Labels>& labels)
 {
   StatusUpdate update;
 
@@ -175,21 +183,30 @@ Option<bool> getTaskHealth(const Task& task)
  * @return A fully formed `MasterInfo` with the IP/hostname information
  *    as derived from the `UPID`.
  */
-MasterInfo createMasterInfo(const process::UPID& pid)
+MasterInfo createMasterInfo(const UPID& pid)
 {
   MasterInfo info;
   info.set_id(stringify(pid) + "-" + UUID::random().toString());
 
   // NOTE: Currently, we store the ip in network order, which should
   // be fixed. See MESOS-1201 for more details.
+  // TODO(marco): `ip` and `port` are deprecated in favor of `address`;
+  //     remove them both after the deprecation cycle.
   info.set_ip(pid.address.ip.in().get().s_addr);
-
   info.set_port(pid.address.port);
+
+  info.mutable_address()->set_ip(stringify(pid.address.ip));
+  info.mutable_address()->set_port(pid.address.port);
+
   info.set_pid(pid);
 
   Try<string> hostname = net::getHostname(pid.address.ip);
   if (hostname.isSome()) {
+    // Hostname is deprecated; but we need to update it
+    // to maintain backward compatibility.
+    // TODO(marco): Remove once we deprecate it.
     info.set_hostname(hostname.get());
+    info.mutable_address()->set_hostname(hostname.get());
   }
 
   return info;
@@ -238,6 +255,151 @@ ExecutorRunState createExecutorRunState(
 }
 
 } // namespace slave {
+
+namespace scheduler {
+
+Event event(const FrameworkRegisteredMessage& message)
+{
+  Event event;
+  event.set_type(Event::SUBSCRIBED);
+
+  Event::Subscribed* subscribed = event.mutable_subscribed();
+  subscribed->mutable_framework_id()->CopyFrom(message.framework_id());
+
+  return event;
+}
+
+
+Event event(const FrameworkReregisteredMessage& message)
+{
+  Event event;
+  event.set_type(Event::SUBSCRIBED);
+
+  Event::Subscribed* subscribed = event.mutable_subscribed();
+  subscribed->mutable_framework_id()->CopyFrom(message.framework_id());
+
+  return event;
+}
+
+
+Event event(const ResourceOffersMessage& message)
+{
+  Event event;
+  event.set_type(Event::OFFERS);
+
+  Event::Offers* offers = event.mutable_offers();
+  offers->mutable_offers()->CopyFrom(message.offers());
+
+  return event;
+}
+
+
+Event event(const RescindResourceOfferMessage& message)
+{
+  Event event;
+  event.set_type(Event::RESCIND);
+
+  Event::Rescind* rescind = event.mutable_rescind();
+  rescind->mutable_offer_id()->CopyFrom(message.offer_id());
+
+  return event;
+}
+
+
+Event event(const StatusUpdateMessage& message)
+{
+  Event event;
+  event.set_type(Event::UPDATE);
+
+  Event::Update* update = event.mutable_update();
+
+  update->mutable_status()->CopyFrom(message.update().status());
+
+  if (message.update().has_slave_id()) {
+    update->mutable_status()->mutable_slave_id()->CopyFrom(
+        message.update().slave_id());
+  }
+
+  if (message.update().has_executor_id()) {
+    update->mutable_status()->mutable_executor_id()->CopyFrom(
+        message.update().executor_id());
+  }
+
+  update->mutable_status()->set_timestamp(message.update().timestamp());
+
+  // If the update does not have a 'uuid', it does not need
+  // acknowledging. However, prior to 0.23.0, the update uuid
+  // was required and always set. In 0.24.0, we can rely on the
+  // update uuid check here, until then we must still check for
+  // this being sent from the driver (from == UPID()) or from
+  // the master (pid == UPID()).
+  // TODO(vinod): Get rid of this logic in 0.25.0 because master
+  // and slave correctly set task status in 0.24.0.
+  if (!message.update().has_uuid() || message.update().uuid() == "") {
+    update->mutable_status()->clear_uuid();
+  } else if (UPID(message.pid()) == UPID()) {
+    update->mutable_status()->clear_uuid();
+  } else {
+    update->mutable_status()->set_uuid(message.update().uuid());
+  }
+
+  return event;
+}
+
+
+Event event(const LostSlaveMessage& message)
+{
+  Event event;
+  event.set_type(Event::FAILURE);
+
+  Event::Failure* failure = event.mutable_failure();
+  failure->mutable_slave_id()->CopyFrom(message.slave_id());
+
+  return event;
+}
+
+
+Event event(const ExitedExecutorMessage& message)
+{
+  Event event;
+  event.set_type(Event::FAILURE);
+
+  Event::Failure* failure = event.mutable_failure();
+  failure->mutable_slave_id()->CopyFrom(message.slave_id());
+  failure->mutable_executor_id()->CopyFrom(message.executor_id());
+  failure->set_status(message.status());
+
+  return event;
+}
+
+
+Event event(const ExecutorToFrameworkMessage& message)
+{
+  Event event;
+  event.set_type(Event::MESSAGE);
+
+  Event::Message* message_ = event.mutable_message();
+  message_->mutable_slave_id()->CopyFrom(message.slave_id());
+  message_->mutable_executor_id()->CopyFrom(message.executor_id());
+  message_->set_data(message.data());
+
+  return event;
+}
+
+
+Event event(const FrameworkErrorMessage& message)
+{
+  Event event;
+  event.set_type(Event::ERROR);
+
+  Event::Error* error = event.mutable_error();
+  error->set_message(message.message());
+
+  return event;
+}
+
+} // namespace scheduler {
+
 } // namespace protobuf {
 } // namespace internal {
 } // namespace mesos {

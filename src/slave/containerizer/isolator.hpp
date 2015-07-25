@@ -19,118 +19,88 @@
 #ifndef __ISOLATOR_HPP__
 #define __ISOLATOR_HPP__
 
-#include <list>
-#include <string>
+#include <mesos/slave/isolator.hpp>
 
-#include <mesos/resources.hpp>
-
-#include <process/dispatch.hpp>
-#include <process/future.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
 
-#include <stout/try.hpp>
-
-#include "slave/state.hpp"
+#include <stout/none.hpp>
 
 namespace mesos {
+namespace internal {
 namespace slave {
 
 // Forward declaration.
-class IsolatorProcess;
-
-// Information when an executor is impacted by a resource limitation
-// and should be terminated. Intended to support resources like memory
-// where the Linux kernel may invoke the OOM killer, killing some/all
-// of a container's processes.
-struct Limitation
-{
-  Limitation(
-      const Resources& _resources,
-      const std::string& _message)
-    : resources(_resources),
-      message(_message) {}
-
-  // Resources that triggered the limitation.
-  // NOTE: 'Resources' is used here because the resource may span
-  // multiple roles (e.g. `"mem(*):1;mem(role):2"`).
-  Resources resources;
-
-  // Description of the limitation.
-  std::string message;
-};
+class MesosIsolatorProcess;
 
 
-class Isolator
+// A wrapper class that implements the 'Isolator' interface which is
+// backed by an 'MesosIsolatorProcess'. This helper class is useful
+// for programmers to write asynchronous isolators.
+class MesosIsolator : public mesos::slave::Isolator
 {
 public:
-  explicit Isolator(process::Owned<IsolatorProcess> process);
-  ~Isolator();
+  explicit MesosIsolator(process::Owned<MesosIsolatorProcess> process);
+  virtual ~MesosIsolator();
 
-  // Recover containers from the run states.
-  process::Future<Nothing> recover(
-      const std::list<state::RunState>& states);
+  virtual process::Future<Option<int>> namespaces();
 
-  // Prepare for isolation of the executor. Any steps that require execution in
-  // the containerized context (e.g. inside a network namespace) can be
-  // returned in the optional CommandInfo and they will be run by the Launcher.
-  // TODO(idownes): Any URIs or Environment in the CommandInfo will be ignored;
-  // only the command value is used.
-  process::Future<Option<CommandInfo> > prepare(
+  virtual process::Future<Nothing> recover(
+      const std::list<mesos::slave::ExecutorRunState>& states,
+      const hashset<ContainerID>& orphans);
+
+  virtual process::Future<Option<CommandInfo>> prepare(
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
+      const Option<std::string>& rootfs,
       const Option<std::string>& user);
 
-  // Isolate the executor.
-  process::Future<Nothing> isolate(
+  virtual process::Future<Nothing> isolate(
       const ContainerID& containerId,
       pid_t pid);
 
-  // Watch the containerized executor and report if any resource constraint
-  // impacts the container, e.g., the kernel killing some processes.
-  process::Future<Limitation> watch(const ContainerID& containerId);
+  virtual process::Future<mesos::slave::ExecutorLimitation> watch(
+      const ContainerID& containerId);
 
-  // Update the resources allocated to the container.
-  process::Future<Nothing> update(
+  virtual process::Future<Nothing> update(
       const ContainerID& containerId,
       const Resources& resources);
 
-  // Gather resource usage statistics for the container.
-  process::Future<ResourceStatistics> usage(
-      const ContainerID& containerId) const;
+  virtual process::Future<ResourceStatistics> usage(
+      const ContainerID& containerId);
 
-  // Clean up a terminated container. This is called after the executor and all
-  // processes in the container have terminated.
-  process::Future<Nothing> cleanup(const ContainerID& containerId);
+  virtual process::Future<Nothing> cleanup(
+      const ContainerID& containerId);
 
 private:
-  Isolator(const Isolator&); // Not copyable.
-  Isolator& operator=(const Isolator&); // Not assignable.
-
-  process::Owned<IsolatorProcess> process;
+  process::Owned<MesosIsolatorProcess> process;
 };
 
 
-class IsolatorProcess : public process::Process<IsolatorProcess>
+class MesosIsolatorProcess : public process::Process<MesosIsolatorProcess>
 {
 public:
-  virtual ~IsolatorProcess() {}
+  virtual ~MesosIsolatorProcess() {}
+
+  virtual process::Future<Option<int>> namespaces() { return None(); }
 
   virtual process::Future<Nothing> recover(
-      const std::list<state::RunState>& state) = 0;
+      const std::list<mesos::slave::ExecutorRunState>& states,
+      const hashset<ContainerID>& orphans) = 0;
 
-  virtual process::Future<Option<CommandInfo> > prepare(
+  virtual process::Future<Option<CommandInfo>> prepare(
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
+      const Option<std::string>& rootfs,
       const Option<std::string>& user) = 0;
 
   virtual process::Future<Nothing> isolate(
       const ContainerID& containerId,
       pid_t pid) = 0;
 
-  virtual process::Future<Limitation> watch(
+  virtual process::Future<mesos::slave::ExecutorLimitation> watch(
       const ContainerID& containerId) = 0;
 
   virtual process::Future<Nothing> update(
@@ -140,11 +110,12 @@ public:
   virtual process::Future<ResourceStatistics> usage(
       const ContainerID& containerId) = 0;
 
-  virtual process::Future<Nothing> cleanup(const ContainerID& containerId) = 0;
+  virtual process::Future<Nothing> cleanup(
+      const ContainerID& containerId) = 0;
 };
 
-
 } // namespace slave {
+} // namespace internal {
 } // namespace mesos {
 
 #endif // __ISOLATOR_HPP__

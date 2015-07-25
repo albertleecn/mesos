@@ -19,15 +19,17 @@
 #ifndef __POSIX_FILESYSTEM_ISOLATOR_HPP__
 #define __POSIX_FILESYSTEM_ISOLATOR_HPP__
 
-#include <mesos/slave/isolator.hpp>
+#include <mesos/resources.hpp>
 
 #include "slave/flags.hpp"
+
+#include "slave/containerizer/isolator.hpp"
 
 namespace mesos {
 namespace internal {
 namespace slave {
 
-class PosixFilesystemIsolatorProcess : public mesos::slave::IsolatorProcess
+class PosixFilesystemIsolatorProcess : public MesosIsolatorProcess
 {
 public:
   static Try<mesos::slave::Isolator*> create(const Flags& flags);
