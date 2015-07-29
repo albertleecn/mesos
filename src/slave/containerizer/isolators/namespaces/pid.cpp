@@ -39,8 +39,9 @@ using std::list;
 using std::set;
 using std::string;
 
-using mesos::slave::ExecutorLimitation;
-using mesos::slave::ExecutorRunState;
+using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerPrepareInfo;
+using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
 namespace mesos {
@@ -127,11 +128,11 @@ process::Future<Option<int>> NamespacesPidIsolatorProcess::namespaces()
 
 
 Future<Nothing> NamespacesPidIsolatorProcess::recover(
-    const list<ExecutorRunState>& states,
+    const list<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   hashset<ContainerID> recovered;
-  foreach (const ExecutorRunState& state, states) {
+  foreach (const ContainerState& state, states) {
     recovered.insert(state.container_id());
   }
 
@@ -158,19 +159,19 @@ Future<Nothing> NamespacesPidIsolatorProcess::recover(
 }
 
 
-Future<Option<CommandInfo>> NamespacesPidIsolatorProcess::prepare(
+Future<Option<ContainerPrepareInfo>> NamespacesPidIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
     const Option<string>& rootfs,
     const Option<string>& user)
 {
-  list<string> commands;
+  ContainerPrepareInfo prepareInfo;
 
   // Mask the bind mount root directory in each container so
   // containers cannot see the namespace bind mount of other
   // containers.
-  commands.push_back(
+  prepareInfo.add_commands()->set_value(
       "mount -n --bind " + string(PID_NS_BIND_MOUNT_MASK_DIR) +
       " " + string(PID_NS_BIND_MOUNT_ROOT));
 
@@ -183,13 +184,12 @@ Future<Option<CommandInfo>> NamespacesPidIsolatorProcess::prepare(
   // taken from unshare.c in utils-linux for --mount-proc. We use the
   // -n flag so the mount is not added to the mtab where it will not
   // be correctly removed with the namespace terminates.
-  commands.push_back("mount none /proc --make-private -o rec");
-  commands.push_back("mount -n -t proc proc /proc -o nosuid,noexec,nodev");
+  prepareInfo.add_commands()->set_value(
+      "mount none /proc --make-private -o rec");
+  prepareInfo.add_commands()->set_value(
+      "mount -n -t proc proc /proc -o nosuid,noexec,nodev");
 
-  CommandInfo command;
-  command.set_value(strings::join(" && ", commands));
-
-  return command;
+  return prepareInfo;
 }
 
 
@@ -219,10 +219,10 @@ Future<Nothing> NamespacesPidIsolatorProcess::isolate(
 }
 
 
-Future<ExecutorLimitation> NamespacesPidIsolatorProcess::watch(
+Future<ContainerLimitation> NamespacesPidIsolatorProcess::watch(
     const ContainerID& containerId)
 {
-  return Future<ExecutorLimitation>();
+  return Future<ContainerLimitation>();
 }
 
 

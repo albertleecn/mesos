@@ -28,8 +28,9 @@ using std::list;
 using std::set;
 using std::string;
 
-using mesos::slave::ExecutorLimitation;
-using mesos::slave::ExecutorRunState;
+using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerPrepareInfo;
+using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
 namespace mesos {
@@ -70,7 +71,7 @@ process::Future<Option<int>> SharedFilesystemIsolatorProcess::namespaces()
 
 
 Future<Nothing> SharedFilesystemIsolatorProcess::recover(
-    const list<ExecutorRunState>& states,
+    const list<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
   // There is nothing to recover because we do not keep any state and
@@ -79,7 +80,7 @@ Future<Nothing> SharedFilesystemIsolatorProcess::recover(
 }
 
 
-Future<Option<CommandInfo>> SharedFilesystemIsolatorProcess::prepare(
+Future<Option<ContainerPrepareInfo>> SharedFilesystemIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
@@ -107,7 +108,7 @@ Future<Option<CommandInfo>> SharedFilesystemIsolatorProcess::prepare(
   set<string> containerPaths;
   containerPaths.insert(directory);
 
-  list<string> commands;
+  ContainerPrepareInfo prepareInfo;
 
   foreach (const Volume& volume, executorInfo.container().volumes()) {
     // Because the filesystem is shared we require the container path
@@ -212,16 +213,11 @@ Future<Option<CommandInfo>> SharedFilesystemIsolatorProcess::prepare(
       }
     }
 
-    commands.push_back("mount -n --bind " +
-                       hostPath +
-                       " " +
-                       volume.container_path());
+    prepareInfo.add_commands()->set_value(
+        "mount -n --bind " + hostPath + " " + volume.container_path());
   }
 
-  CommandInfo command;
-  command.set_value(strings::join(" && ", commands));
-
-  return command;
+  return prepareInfo;
 }
 
 
@@ -235,12 +231,12 @@ Future<Nothing> SharedFilesystemIsolatorProcess::isolate(
 }
 
 
-Future<ExecutorLimitation> SharedFilesystemIsolatorProcess::watch(
+Future<ContainerLimitation> SharedFilesystemIsolatorProcess::watch(
     const ContainerID& containerId)
 {
   // No-op, for now.
 
-  return Future<ExecutorLimitation>();
+  return Future<ContainerLimitation>();
 }
 
 

@@ -25,8 +25,9 @@ using namespace process;
 using std::string;
 using std::list;
 
-using mesos::slave::ExecutorLimitation;
-using mesos::slave::ExecutorRunState;
+using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerPrepareInfo;
+using mesos::slave::ContainerState;
 
 namespace mesos {
 namespace internal {
@@ -53,7 +54,7 @@ Future<Option<int>> MesosIsolator::namespaces()
 
 
 Future<Nothing> MesosIsolator::recover(
-    const list<ExecutorRunState>& state,
+    const list<ContainerState>& state,
     const hashset<ContainerID>& orphans)
 {
   return dispatch(process.get(),
@@ -63,7 +64,7 @@ Future<Nothing> MesosIsolator::recover(
 }
 
 
-Future<Option<CommandInfo>> MesosIsolator::prepare(
+Future<Option<ContainerPrepareInfo>> MesosIsolator::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
@@ -91,7 +92,7 @@ Future<Nothing> MesosIsolator::isolate(
 }
 
 
-Future<ExecutorLimitation> MesosIsolator::watch(
+Future<ContainerLimitation> MesosIsolator::watch(
     const ContainerID& containerId)
 {
   return dispatch(process.get(),

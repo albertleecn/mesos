@@ -31,10 +31,10 @@ class TestIsolatorProcess : public slave::MesosIsolatorProcess
 {
 public:
   static Try<mesos::slave::Isolator*> create(
-      const Option<CommandInfo>& commandInfo)
+      const Option<mesos::slave::ContainerPrepareInfo>& prepare)
   {
     process::Owned<MesosIsolatorProcess> process(
-        new TestIsolatorProcess(commandInfo));
+        new TestIsolatorProcess(prepare));
 
     return new slave::MesosIsolator(process);
   }
@@ -42,17 +42,17 @@ public:
   MOCK_METHOD2(
       recover,
       process::Future<Nothing>(
-          const std::list<mesos::slave::ExecutorRunState>&,
+          const std::list<mesos::slave::ContainerState>&,
           const hashset<ContainerID>&));
 
-  virtual process::Future<Option<CommandInfo>> prepare(
+  virtual process::Future<Option<mesos::slave::ContainerPrepareInfo>> prepare(
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& rootfs,
       const Option<std::string>& user)
   {
-    return commandInfo;
+    return prepareInfo;
   }
 
   MOCK_METHOD2(
@@ -61,7 +61,7 @@ public:
 
   MOCK_METHOD1(
       watch,
-      process::Future<mesos::slave::ExecutorLimitation>(const ContainerID&));
+      process::Future<mesos::slave::ContainerLimitation>(const ContainerID&));
 
   MOCK_METHOD2(
       update,
@@ -76,8 +76,8 @@ public:
       process::Future<Nothing>(const ContainerID&));
 
 private:
-  TestIsolatorProcess(const Option<CommandInfo>& _commandInfo)
-    : commandInfo(_commandInfo)
+  TestIsolatorProcess( const Option<mesos::slave::ContainerPrepareInfo>& info)
+    : prepareInfo(info)
   {
     EXPECT_CALL(*this, watch(testing::_))
       .WillRepeatedly(testing::Return(promise.future()));
@@ -89,9 +89,9 @@ private:
       .WillRepeatedly(testing::Return(Nothing()));
   }
 
-  const Option<CommandInfo> commandInfo;
+  const Option<mesos::slave::ContainerPrepareInfo> prepareInfo;
 
-  process::Promise<mesos::slave::ExecutorLimitation> promise;
+  process::Promise<mesos::slave::ContainerLimitation> promise;
 };
 
 } // namespace tests {

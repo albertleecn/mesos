@@ -176,11 +176,11 @@ public:
 
 private:
   process::Future<Nothing> _recover(
-      const std::list<mesos::slave::ExecutorRunState>& recoverable,
+      const std::list<mesos::slave::ContainerState>& recoverable,
       const hashset<ContainerID>& orphans);
 
   process::Future<Nothing> __recover(
-      const std::list<mesos::slave::ExecutorRunState>& recovered,
+      const std::list<mesos::slave::ContainerState>& recovered,
       const hashset<ContainerID>& orphans);
 
   process::Future<Nothing> provision(
@@ -197,11 +197,11 @@ private:
       bool checkpoint,
       const std::string& rootfs);
 
-  process::Future<std::list<Option<CommandInfo>>> prepare(
-      const ContainerID& containerId,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user);
+  process::Future<std::list<Option<mesos::slave::ContainerPrepareInfo>>>
+    prepare(const ContainerID& containerId,
+            const ExecutorInfo& executorInfo,
+            const std::string& directory,
+            const Option<std::string>& user);
 
   process::Future<Nothing> fetch(
       const ContainerID& containerId,
@@ -218,7 +218,7 @@ private:
       const SlaveID& slaveId,
       const process::PID<Slave>& slavePid,
       bool checkpoint,
-      const std::list<Option<CommandInfo>>& scripts);
+      const std::list<Option<mesos::slave::ContainerPrepareInfo>>& scripts);
 
   process::Future<bool> isolate(
       const ContainerID& containerId,
@@ -262,7 +262,7 @@ private:
   // processes. This will trigger container destruction.
   void limited(
       const ContainerID& containerId,
-      const process::Future<mesos::slave::ExecutorLimitation>& future);
+      const process::Future<mesos::slave::ContainerLimitation>& future);
 
   // Call back for when the executor exits. This will trigger container
   // destroy.
@@ -302,7 +302,8 @@ private:
     // We keep track of the future that is waiting for all the
     // isolators' prepare futures, so that destroy will only start
     // calling cleanup after all isolators has finished preparing.
-    process::Future<std::list<Option<CommandInfo>>> preparations;
+    process::Future<std::list<Option<mesos::slave::ContainerPrepareInfo>>>
+      prepareInfos;
 
     // We keep track of the future that is waiting for all the
     // isolators' isolate futures, so that destroy will only start
@@ -311,7 +312,7 @@ private:
 
     // We keep track of any limitations received from each isolator so we can
     // determine the cause of an executor termination.
-    std::vector<mesos::slave::ExecutorLimitation> limitations;
+    std::vector<mesos::slave::ContainerLimitation> limitations;
 
     // We keep track of the resources for each container so we can set the
     // ResourceStatistics limits in usage().

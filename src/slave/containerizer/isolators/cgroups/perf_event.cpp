@@ -53,8 +53,9 @@ using std::set;
 using std::string;
 using std::vector;
 
-using mesos::slave::ExecutorLimitation;
-using mesos::slave::ExecutorRunState;
+using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerPrepareInfo;
+using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
 namespace mesos {
@@ -138,10 +139,10 @@ void CgroupsPerfEventIsolatorProcess::initialize()
 
 
 Future<Nothing> CgroupsPerfEventIsolatorProcess::recover(
-    const list<ExecutorRunState>& states,
+    const list<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
-  foreach (const ExecutorRunState& state, states) {
+  foreach (const ContainerState& state, states) {
     const ContainerID& containerId = state.container_id();
     const string cgroup = path::join(flags.cgroups_root, containerId.value());
 
@@ -216,7 +217,7 @@ Future<Nothing> CgroupsPerfEventIsolatorProcess::recover(
 }
 
 
-Future<Option<CommandInfo>> CgroupsPerfEventIsolatorProcess::prepare(
+Future<Option<ContainerPrepareInfo>> CgroupsPerfEventIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
@@ -292,11 +293,11 @@ Future<Nothing> CgroupsPerfEventIsolatorProcess::isolate(
 }
 
 
-Future<ExecutorLimitation> CgroupsPerfEventIsolatorProcess::watch(
+Future<ContainerLimitation> CgroupsPerfEventIsolatorProcess::watch(
     const ContainerID& containerId)
 {
   // No resources are limited.
-  return Future<ExecutorLimitation>();
+  return Future<ContainerLimitation>();
 }
 
 

@@ -47,8 +47,9 @@ using std::set;
 using std::string;
 using std::vector;
 
-using mesos::slave::ExecutorLimitation;
-using mesos::slave::ExecutorRunState;
+using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerPrepareInfo;
+using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
 namespace mesos {
@@ -164,10 +165,10 @@ Try<Isolator*> CgroupsCpushareIsolatorProcess::create(const Flags& flags)
 
 
 Future<Nothing> CgroupsCpushareIsolatorProcess::recover(
-    const list<ExecutorRunState>& states,
+    const list<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
-  foreach (const ExecutorRunState& state, states) {
+  foreach (const ContainerState& state, states) {
     const ContainerID& containerId = state.container_id();
     const string cgroup = path::join(flags.cgroups_root, containerId.value());
 
@@ -244,7 +245,7 @@ Future<Nothing> CgroupsCpushareIsolatorProcess::recover(
 }
 
 
-Future<Option<CommandInfo>> CgroupsCpushareIsolatorProcess::prepare(
+Future<Option<ContainerPrepareInfo>> CgroupsCpushareIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
@@ -292,7 +293,7 @@ Future<Option<CommandInfo>> CgroupsCpushareIsolatorProcess::prepare(
   }
 
   return update(containerId, executorInfo.resources())
-    .then([]() -> Future<Option<CommandInfo>> {
+    .then([]() -> Future<Option<ContainerPrepareInfo>> {
       return None();
     });
 }
@@ -331,7 +332,7 @@ Future<Nothing> CgroupsCpushareIsolatorProcess::isolate(
 }
 
 
-Future<ExecutorLimitation> CgroupsCpushareIsolatorProcess::watch(
+Future<ContainerLimitation> CgroupsCpushareIsolatorProcess::watch(
     const ContainerID& containerId)
 {
   if (!infos.contains(containerId)) {

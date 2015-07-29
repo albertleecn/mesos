@@ -55,8 +55,9 @@ using std::list;
 using std::string;
 using std::vector;
 
-using mesos::slave::ExecutorLimitation;
-using mesos::slave::ExecutorRunState;
+using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerPrepareInfo;
+using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
 namespace mesos {
@@ -86,10 +87,10 @@ PosixDiskIsolatorProcess::~PosixDiskIsolatorProcess() {}
 
 
 Future<Nothing> PosixDiskIsolatorProcess::recover(
-    const list<ExecutorRunState>& states,
+    const list<ContainerState>& states,
     const hashset<ContainerID>& orphans)
 {
-  foreach (const ExecutorRunState& state, states) {
+  foreach (const ContainerState& state, states) {
     // Since we checkpoint the executor after we create its working
     // directory, the working directory should definitely exist.
     CHECK(os::exists(state.directory()))
@@ -102,7 +103,7 @@ Future<Nothing> PosixDiskIsolatorProcess::recover(
 }
 
 
-Future<Option<CommandInfo>> PosixDiskIsolatorProcess::prepare(
+Future<Option<ContainerPrepareInfo>> PosixDiskIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
@@ -131,7 +132,7 @@ Future<Nothing> PosixDiskIsolatorProcess::isolate(
 }
 
 
-Future<ExecutorLimitation> PosixDiskIsolatorProcess::watch(
+Future<ContainerLimitation> PosixDiskIsolatorProcess::watch(
     const ContainerID& containerId)
 {
   if (!infos.contains(containerId)) {
@@ -247,7 +248,7 @@ void PosixDiskIsolatorProcess::_collect(
       CHECK_SOME(quota);
 
       if (future.get() > quota.get()) {
-        info->limitation.set(protobuf::slave::createExecutorLimitation(
+        info->limitation.set(protobuf::slave::createContainerLimitation(
             Resources(info->paths[path].quota),
             "Disk usage (" + stringify(future.get()) +
             ") exceeds quota (" + stringify(quota.get()) + ")"));
