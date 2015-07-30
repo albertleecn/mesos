@@ -358,7 +358,6 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	common/protobuf_utils.cpp					\
 	common/resources.cpp						\
 	common/resources_utils.cpp					\
-	common/thread.cpp						\
 	common/type_utils.cpp						\
 	common/values.cpp						\
 	docker/docker.hpp						\
@@ -584,13 +583,11 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 	common/attributes.hpp						\
 	common/build.hpp						\
 	common/date_utils.hpp						\
-	common/factory.hpp						\
 	common/http.hpp							\
 	common/parse.hpp						\
 	common/protobuf_utils.hpp					\
 	common/resources_utils.hpp					\
 	common/status_utils.hpp						\
-	common/thread.hpp						\
 	credentials/credentials.hpp					\
 	examples/test_anonymous_module.hpp				\
 	examples/test_module.hpp					\

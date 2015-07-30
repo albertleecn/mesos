@@ -308,12 +308,14 @@ public:
 
   virtual void SetUp()
   {
+    MesosTest::SetUp();
     server->startNetwork();
   }
 
   virtual void TearDown()
   {
     server->shutdownNetwork();
+    MesosTest::TearDown();
   }
 
 protected:
