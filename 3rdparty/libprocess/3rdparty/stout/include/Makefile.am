@@ -13,6 +13,7 @@
 # Headers.
 nobase_include_HEADERS =		\
   stout/abort.hpp			\
+  stout/attributes.hpp			\
   stout/base64.hpp			\
   stout/bits.hpp			\
   stout/bytes.hpp			\
@@ -40,6 +41,9 @@ nobase_include_HEADERS =		\
   stout/json.hpp			\
   stout/lambda.hpp			\
   stout/linkedhashmap.hpp		\
+  stout/posix/gzip.hpp			\
+  stout/posix/net.hpp			\
+  stout/posix/os.hpp			\
   stout/list.hpp			\
   stout/mac.hpp				\
   stout/multihashmap.hpp		\
@@ -56,8 +60,24 @@ nobase_include_HEADERS =		\
   stout/os/fork.hpp			\
   stout/os/killtree.hpp			\
   stout/os/linux.hpp			\
+  stout/os/posix/close.hpp		\
+  stout/os/posix/exists.hpp		\
+  stout/os/posix/fcntl.hpp		\
+  stout/os/posix/fork.hpp		\
+  stout/os/posix/killtree.hpp		\
+  stout/os/posix/ls.hpp			\
+  stout/os/posix/open.hpp		\
+  stout/os/posix/permissions.hpp	\
+  stout/os/posix/process.hpp		\
+  stout/os/posix/pstree.hpp		\
+  stout/os/posix/read.hpp		\
+  stout/os/posix/sendfile.hpp		\
+  stout/os/posix/shell.hpp		\
+  stout/os/posix/signals.hpp		\
+  stout/os/posix/stat.hpp		\
   stout/os/ls.hpp			\
   stout/os/open.hpp			\
+  stout/os/os.hpp			\
   stout/os/osx.hpp			\
   stout/os/process.hpp			\
   stout/os/read.hpp			\
@@ -69,6 +89,21 @@ nobase_include_HEADERS =		\
   stout/os/permissions.hpp		\
   stout/os/pstree.hpp			\
   stout/os/sysctl.hpp			\
+  stout/os/windows/close.hpp		\
+  stout/os/windows/exists.hpp		\
+  stout/os/windows/fcntl.hpp		\
+  stout/os/windows/fork.hpp		\
+  stout/os/windows/killtree.hpp		\
+  stout/os/windows/ls.hpp		\
+  stout/os/windows/open.hpp		\
+  stout/os/windows/permissions.hpp	\
+  stout/os/windows/process.hpp		\
+  stout/os/windows/pstree.hpp		\
+  stout/os/windows/read.hpp		\
+  stout/os/windows/sendfile.hpp		\
+  stout/os/windows/shell.hpp		\
+  stout/os/windows/signals.hpp		\
+  stout/os/windows/stat.hpp		\
   stout/path.hpp			\
   stout/preprocessor.hpp		\
   stout/proc.hpp			\
@@ -89,4 +124,9 @@ nobase_include_HEADERS =		\
   stout/unreachable.hpp			\
   stout/utils.hpp			\
   stout/uuid.hpp			\
-  stout/version.hpp
+  stout/version.hpp			\
+  stout/windows.hpp			\
+  stout/windows/format.hpp		\
+  stout/windows/gzip.hpp		\
+  stout/windows/net.hpp			\
+  stout/windows/os.hpp
