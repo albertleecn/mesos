@@ -46,8 +46,8 @@ set(PROCESS_TARGET process-${PROCESS_PACKAGE_VERSION})
 
 # DEFINE DIRECTORY STRUCTURE FOR THIRD-PARTY LIBS.
 ##################################################
-set(PROCESS_3RD_SRC ${CMAKE_SOURCE_DIR}/3rdparty/libprocess/3rdparty/)
-set(PROCESS_3RD_BIN ${CMAKE_BINARY_DIR}/3rdparty/libprocess/3rdparty/)
+set(PROCESS_3RD_SRC ${CMAKE_SOURCE_DIR}/3rdparty/libprocess/3rdparty)
+set(PROCESS_3RD_BIN ${CMAKE_BINARY_DIR}/3rdparty/libprocess/3rdparty)
 
 set(STOUT ${PROCESS_3RD_SRC}/stout)
 
@@ -58,6 +58,12 @@ EXTERNAL("http_parser" "1c3624a" "${PROCESS_3RD_BIN}")
 EXTERNAL("libev"       "4.15"    "${PROCESS_3RD_BIN}")
 
 set(GLOG_LIB ${GLOG_ROOT}-lib/lib)
+
+# DIRECTORY STRUCTURE FOR WINDOWS-ONLY THIRD-PARTY LIBS.
+########################################################
+if (WIN32)
+  EXTERNAL("curl" "7.43.0" "${PROCESS_3RD_BIN}")
+endif (WIN32)
 
 # DEFINE PROCESS LIBRARY DEPENDENCIES. Tells the process library build targets
 # download/configure/build all third-party libraries before attempting to build.
