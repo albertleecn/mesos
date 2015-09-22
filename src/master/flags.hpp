@@ -26,6 +26,9 @@
 #include <stout/path.hpp>
 
 #include <mesos/mesos.hpp>
+
+#include <mesos/authorizer/authorizer.hpp>
+
 #include <mesos/module/module.hpp>
 
 #include "logging/flags.hpp"
@@ -75,6 +78,7 @@ public:
   Option<std::string> hooks;
   Duration slave_ping_timeout;
   size_t max_slave_ping_timeouts;
+  std::string authorizers;
 
 #ifdef WITH_NETWORK_ISOLATOR
   Option<size_t> max_executors_per_slave;

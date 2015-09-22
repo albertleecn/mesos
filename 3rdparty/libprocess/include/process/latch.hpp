@@ -15,6 +15,8 @@
 #ifndef __PROCESS_LATCH_HPP__
 #define __PROCESS_LATCH_HPP__
 
+#include <atomic>
+
 #include <process/pid.hpp>
 
 #include <stout/duration.hpp>
@@ -27,8 +29,8 @@ public:
   Latch();
   virtual ~Latch();
 
-  bool operator == (const Latch& that) const { return pid == that.pid; }
-  bool operator < (const Latch& that) const { return pid < that.pid; }
+  bool operator==(const Latch& that) const { return pid == that.pid; }
+  bool operator<(const Latch& that) const { return pid < that.pid; }
 
   // Returns true if the latch was triggered, false if the latch had
   // already been triggered.
@@ -41,9 +43,9 @@ public:
 private:
   // Not copyable, not assignable.
   Latch(const Latch& that);
-  Latch& operator = (const Latch& that);
+  Latch& operator=(const Latch& that);
 
-  bool triggered;
+  std::atomic_bool triggered;
   UPID pid;
 };
 

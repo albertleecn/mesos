@@ -228,13 +228,11 @@ Future<T> timeout(
 
 
 // Helper for failing a deque of operations.
-void fail(deque<Owned<Operation> >* operations, const string& message)
+void fail(deque<Owned<Operation>>* operations, const string& message)
 {
   while (!operations->empty()) {
-    Owned<Operation> operation = operations->front();
+    operations->front()->fail(message);
     operations->pop_front();
-
-    operation->fail(message);
   }
 }
 
@@ -256,8 +254,6 @@ string RegistrarProcess::registryHelp()
   return HELP(
       TLDR(
           "Returns the current contents of the Registry in JSON."),
-      USAGE(
-          "/registrar(1)/registry"),
       DESCRIPTION(
           "Example:"
           "",

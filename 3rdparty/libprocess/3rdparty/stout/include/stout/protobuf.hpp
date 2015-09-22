@@ -22,11 +22,8 @@
 #include <sys/types.h>
 
 #include <string>
+#include <type_traits>
 #include <vector>
-
-#include <boost/lexical_cast.hpp>
-
-#include <glog/logging.h>
 
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/message.h>
@@ -34,14 +31,15 @@
 
 #include <google/protobuf/io/zero_copy_stream_impl.h>
 
-#include "abort.hpp"
-#include "error.hpp"
-#include "json.hpp"
-#include "none.hpp"
-#include "os.hpp"
-#include "result.hpp"
-#include "stringify.hpp"
-#include "try.hpp"
+#include <stout/abort.hpp>
+#include <stout/base64.hpp>
+#include <stout/error.hpp>
+#include <stout/json.hpp>
+#include <stout/none.hpp>
+#include <stout/os.hpp>
+#include <stout/result.hpp>
+#include <stout/stringify.hpp>
+#include <stout/try.hpp>
 
 namespace protobuf {
 
@@ -154,7 +152,7 @@ namespace internal {
 template <typename T>
 struct Read
 {
-  Result<T> operator () (int fd, bool ignorePartial, bool undoFailed)
+  Result<T> operator()(int fd, bool ignorePartial, bool undoFailed)
   {
     off_t offset = 0;
 
@@ -245,7 +243,7 @@ struct Read
 template <typename T>
 struct Read<google::protobuf::RepeatedPtrField<T>>
 {
-  Result<google::protobuf::RepeatedPtrField<T>> operator () (
+  Result<google::protobuf::RepeatedPtrField<T>> operator()(
       int fd, bool ignorePartial, bool undoFailed)
   {
     google::protobuf::RepeatedPtrField<T> result;
@@ -324,7 +322,7 @@ struct Parser : boost::static_visitor<Try<Nothing> >
       reflection(message->GetReflection()),
       field(_field) {}
 
-  Try<Nothing> operator () (const JSON::Object& object) const
+  Try<Nothing> operator()(const JSON::Object& object) const
   {
     switch (field->type()) {
       case google::protobuf::FieldDescriptor::TYPE_MESSAGE:
@@ -341,17 +339,31 @@ struct Parser : boost::static_visitor<Try<Nothing> >
     return Nothing();
   }
 
-  Try<Nothing> operator () (const JSON::String& string) const
+  Try<Nothing> operator()(const JSON::String& string) const
   {
     switch (field->type()) {
       case google::protobuf::FieldDescriptor::TYPE_STRING:
-      case google::protobuf::FieldDescriptor::TYPE_BYTES:
         if (field->is_repeated()) {
           reflection->AddString(message, field, string.value);
         } else {
           reflection->SetString(message, field, string.value);
         }
         break;
+      case google::protobuf::FieldDescriptor::TYPE_BYTES: {
+        Try<std::string> decode = base64::decode(string.value);
+
+        if (decode.isError()) {
+          return Error("Failed to base64 decode bytes field"
+                       " '" + field->name() + "': " + decode.error());
+        }
+
+        if (field->is_repeated()) {
+          reflection->AddString(message, field, decode.get());
+        } else {
+          reflection->SetString(message, field, decode.get());
+        }
+        break;
+      }
       case google::protobuf::FieldDescriptor::TYPE_ENUM: {
         const google::protobuf::EnumValueDescriptor* descriptor =
           field->enum_type()->FindValueByName(string.value);
@@ -374,85 +386,55 @@ struct Parser : boost::static_visitor<Try<Nothing> >
     return Nothing();
   }
 
-  Try<Nothing> operator () (const JSON::Number& number) const
+  Try<Nothing> operator()(const JSON::Number& number) const
   {
     switch (field->type()) {
       case google::protobuf::FieldDescriptor::TYPE_DOUBLE:
         if (field->is_repeated()) {
-          reflection->AddDouble(message, field, number.value);
+          reflection->AddDouble(message, field, number.as<double>());
         } else {
-          reflection->SetDouble(message, field, number.value);
+          reflection->SetDouble(message, field, number.as<double>());
         }
         break;
       case google::protobuf::FieldDescriptor::TYPE_FLOAT:
         if (field->is_repeated()) {
-          reflection->AddFloat(
-              message,
-              field,
-              static_cast<float>(number.value));
+          reflection->AddFloat(message, field, number.as<float>());
         } else {
-          reflection->SetFloat(
-              message,
-              field,
-              static_cast<float>(number.value));
+          reflection->SetFloat(message, field, number.as<float>());
         }
         break;
       case google::protobuf::FieldDescriptor::TYPE_INT64:
       case google::protobuf::FieldDescriptor::TYPE_SINT64:
       case google::protobuf::FieldDescriptor::TYPE_SFIXED64:
         if (field->is_repeated()) {
-          reflection->AddInt64(
-              message,
-              field,
-              static_cast<int64_t>(number.value));
+          reflection->AddInt64(message, field, number.as<int64_t>());
         } else {
-          reflection->SetInt64(
-              message,
-              field,
-              static_cast<int64_t>(number.value));
+          reflection->SetInt64(message, field, number.as<int64_t>());
         }
         break;
       case google::protobuf::FieldDescriptor::TYPE_UINT64:
       case google::protobuf::FieldDescriptor::TYPE_FIXED64:
         if (field->is_repeated()) {
-          reflection->AddUInt64(
-              message,
-              field,
-              static_cast<uint64_t>(number.value));
+          reflection->AddUInt64(message, field, number.as<uint64_t>());
         } else {
-          reflection->SetUInt64(
-              message,
-              field,
-              static_cast<uint64_t>(number.value));
+          reflection->SetUInt64(message, field, number.as<uint64_t>());
         }
         break;
       case google::protobuf::FieldDescriptor::TYPE_INT32:
       case google::protobuf::FieldDescriptor::TYPE_SINT32:
       case google::protobuf::FieldDescriptor::TYPE_SFIXED32:
         if (field->is_repeated()) {
-          reflection->AddInt32(
-              message,
-              field,
-              static_cast<int32_t>(number.value));
+          reflection->AddInt32(message, field, number.as<int32_t>());
         } else {
-          reflection->SetInt32(
-              message,
-              field,
-              static_cast<int32_t>(number.value));
+          reflection->SetInt32(message, field, number.as<int32_t>());
         }
         break;
       case google::protobuf::FieldDescriptor::TYPE_UINT32:
       case google::protobuf::FieldDescriptor::TYPE_FIXED32:
         if (field->is_repeated()) {
-          reflection->AddUInt32(
-              message,
-              field,
-              static_cast<uint32_t>(number.value));
+          reflection->AddUInt32(message, field, number.as<uint32_t>());
         } else {
-          reflection->SetUInt32(
-              message,
-              field,
-              static_cast<uint32_t>(number.value));
+          reflection->SetUInt32(message, field, number.as<uint32_t>());
         }
         break;
       default:
@@ -462,7 +444,7 @@ struct Parser : boost::static_visitor<Try<Nothing> >
     return Nothing();
   }
 
-  Try<Nothing> operator () (const JSON::Array& array) const
+  Try<Nothing> operator()(const JSON::Array& array) const
   {
     if (!field->is_repeated()) {
       return Error("Not expecting a JSON array for field '" +
@@ -481,7 +463,7 @@ struct Parser : boost::static_visitor<Try<Nothing> >
     return Nothing();
   }
 
-  Try<Nothing> operator () (const JSON::Boolean& boolean) const
+  Try<Nothing> operator()(const JSON::Boolean& boolean) const
   {
     switch (field->type()) {
       case google::protobuf::FieldDescriptor::TYPE_BOOL:
@@ -498,7 +480,7 @@ struct Parser : boost::static_visitor<Try<Nothing> >
     return Nothing();
   }
 
-  Try<Nothing> operator () (const JSON::Null&) const
+  Try<Nothing> operator()(const JSON::Null&) const
   {
     return Error("Not expecting a JSON null");
   }
@@ -533,34 +515,90 @@ inline Try<Nothing> parse(
   return Nothing();
 }
 
+
+// Parses a single protobuf message of type T from a JSON::Object.
+// NOTE: This struct is used by the public parse<T>() function below. See
+// comments there for the reason why we opted for this design.
+template <typename T>
+struct Parse
+{
+  Try<T> operator()(const JSON::Value& value)
+  {
+    static_assert(std::is_convertible<T*, google::protobuf::Message*>::value,
+                  "T must be a protobuf message");
+
+    const JSON::Object* object = boost::get<JSON::Object>(&value);
+    if (object == NULL) {
+      return Error("Expecting a JSON object");
+    }
+
+    T message;
+
+    Try<Nothing> parse = internal::parse(&message, *object);
+    if (parse.isError()) {
+      return Error(parse.error());
+    }
+
+    if (!message.IsInitialized()) {
+      return Error("Missing required fields: " +
+                   message.InitializationErrorString());
+    }
+
+    return message;
+  }
+};
+
+
+// Partial specialization for RepeatedPtrField<T> to parse a sequence of
+// protobuf messages from a JSON::Array by repeatedly invoking Parse<T> to
+// facilitate conversions like JSON::Array -> Resources.
+// NOTE: This struct is used by the public parse<T>() function below. See
+// comments there for the reason why we opted for this design.
+template <typename T>
+struct Parse<google::protobuf::RepeatedPtrField<T>>
+{
+  Try<google::protobuf::RepeatedPtrField<T>> operator()(
+      const JSON::Value& value)
+  {
+    static_assert(std::is_convertible<T*, google::protobuf::Message*>::value,
+                  "T must be a protobuf message");
+
+    const JSON::Array* array = boost::get<JSON::Array>(&value);
+    if (array == NULL) {
+      return Error("Expecting a JSON array");
+    }
+
+    google::protobuf::RepeatedPtrField<T> collection;
+    collection.Reserve(static_cast<int>(array->values.size()));
+
+    // Parse messages one by one and propagate an error if it happens.
+    foreach (const JSON::Value& elem, array->values) {
+      Try<T> message = Parse<T>()(elem);
+      if (message.isError()) {
+        return Error(message.error());
+      }
+
+      collection.Add()->CopyFrom(message.get());
+    }
+
+    return collection;
+  }
+};
+
 } // namespace internal {
 
-
+// A dispatch wrapper which parses protobuf messages(s) from a given JSON value.
+// We use partial specialization of
+//   - internal::Parse<T> for JSON::Object
+//   - internal::Parse<google::protobuf::RepeatedPtrField<T>> for JSON::Array
+// to determine whether T is a single message or a sequence of messages.
+// We cannot partially specialize function templates and overloaded function
+// approach combined with std::enable_if is not that clean, hence we leverage
+// partial specialization of class templates.
 template <typename T>
 Try<T> parse(const JSON::Value& value)
 {
-  { google::protobuf::Message* message = (T*) NULL; (void) message; }
-
-  const JSON::Object* object = boost::get<JSON::Object>(&value);
-
-  if (object == NULL) {
-    return Error("Expecting a JSON object");
-  }
-
-  T message;
-
-  Try<Nothing> parse = internal::parse(&message, *object);
-
-  if (parse.isError()) {
-    return Error(parse.error());
-  }
-
-  if (!message.IsInitialized()) {
-    return Error("Missing required fields: " +
-                 message.InitializationErrorString());
-  }
-
-  return message;
+  return internal::Parse<T>()(value);
 }
 
 } // namespace protobuf {
@@ -638,9 +676,12 @@ struct Protobuf
               }
               break;
             case google::protobuf::FieldDescriptor::TYPE_STRING:
-            case google::protobuf::FieldDescriptor::TYPE_BYTES:
               array.values.push_back(JSON::String(
                   reflection->GetRepeatedString(message, field, i)));
+              break;
+            case google::protobuf::FieldDescriptor::TYPE_BYTES:
+              array.values.push_back(JSON::String(base64::encode(
+                  reflection->GetRepeatedString(message, field, i))));
               break;
             case google::protobuf::FieldDescriptor::TYPE_MESSAGE:
               array.values.push_back(Protobuf(
@@ -698,9 +739,12 @@ struct Protobuf
             }
             break;
           case google::protobuf::FieldDescriptor::TYPE_STRING:
-          case google::protobuf::FieldDescriptor::TYPE_BYTES:
             object.values[field->name()] =
                 JSON::String(reflection->GetString(message, field));
+            break;
+          case google::protobuf::FieldDescriptor::TYPE_BYTES:
+            object.values[field->name()] = JSON::String(
+                base64::encode(reflection->GetString(message, field)));
             break;
           case google::protobuf::FieldDescriptor::TYPE_MESSAGE:
             object.values[field->name()] =
@@ -720,7 +764,7 @@ struct Protobuf
     }
   }
 
-  operator Object () const { return object; }
+  operator Object() const { return object; }
 
 private:
   JSON::Object object;

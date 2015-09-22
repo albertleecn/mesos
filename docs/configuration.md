@@ -29,6 +29,7 @@ If you have special compilation requirements, please refer to `./configure --hel
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
 
   <tr>
@@ -57,7 +58,7 @@ If you have special compilation requirements, please refer to `./configure --hel
 <pre><code>{
   "disabled_endpoints" : {
     "paths" : [
-      "/files/browse.json",
+      "/files/browse",
       "/slave(0)/stats.json",
     ]
   }
@@ -155,6 +156,8 @@ If you have special compilation requirements, please refer to `./configure --hel
     </td>
     <td>
       Show version and exit. (default: false)
+    </td>
+  </tr>
 </table>
 
 ## Master Options
@@ -170,7 +173,27 @@ If you have special compilation requirements, please refer to `./configure --hel
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
+   <tr>
+     <td>
+      --advertise_ip=VALUE
+    </td>
+    <td>
+      IP address advertised to reach mesos master. Mesos master does not bind using this
+      IP address. However, this IP address may be used to access Mesos master.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --advertise_port=VALUE
+    </td>
+    <td>
+      Port advertised to reach mesos master (alongwith advertise_ip). Mesos master does not
+      bind using this port. However, this port (alongwith advertise_ip) may be used to
+      access Mesos master.
+    </td>
+  </tr>
   <tr>
     <td>
       --quorum=VALUE
@@ -220,6 +243,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
     <td>
@@ -304,6 +328,23 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       and/or slaves. Use the default <code>crammd5</code>, or
       load an alternate authenticator module using <code>--modules</code>.
       (default: crammd5)
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --authorizers=VALUE
+    </td>
+    <td>
+      Authorizer implementation to use when authorizating actions that
+      required it. Use the default <code>local</code>, or load an alternate
+      authorizer module using <code>--modules</code>.
+      <br/>
+      Note that if the flag <code>--authorizers</code> is provided with a
+      value different than the default <code>local</code>, the ACLs passed
+      through the <code>--acls</code> flag will be ignored.
+      <br/>
+      Currently there's no support for multiple authorizers.<br/>
+      (default: <code>local</code>)
     </td>
   </tr>
   <tr>
@@ -668,6 +709,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
   <tr>
@@ -699,6 +741,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
     <td>
@@ -739,6 +782,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
     <td>
@@ -1394,6 +1438,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
     <td>
@@ -1458,6 +1503,64 @@ file:///path/to/file (where file contains one of the above)</code></pre>
 </table>
 
 
+## Libprocess Options
+
+*The bundled libprocess library can be controlled with the following environment variables.*
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th width="30%">
+        Variable
+      </th>
+      <th>
+        Explanation
+      </th>
+    </tr>
+  </thead>
+  <tr>
+    <td>
+      LIBPROCESS_IP
+    </td>
+    <td>
+      Sets the IP address for communication to and from libprocess.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      LIBPROCESS_PORT
+    </td>
+    <td>
+      Sets the port for communication to and from libprocess.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      LIBPROCESS_ADVERTISE_IP
+    </td>
+    <td>
+      If set, this provides the IP address that will be advertised to
+      the outside world for communication to and from libprocess.
+      This is useful, for example, for containerized tasks in which
+      communication is bound locally to a non-public IP that will be
+      inaccessible to the master.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      LIBPROCESS_ADVERTISE_PORT
+    </td>
+    <td>
+      If set, this provides the port that will be advertised to the
+      outside world for communication to and from libprocess. Note that
+      this port will not actually be bound (the local LIBPROCESS_PORT
+      will be), so redirection to the local IP and port must be
+      provided separately.
+    </td>
+  </tr>
+</table>
+
+
 ## Mesos Build Configuration Options
 
 ###The configure script has the following flags for optional features:
@@ -1471,6 +1574,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
     <td>
@@ -1601,6 +1705,7 @@ file:///path/to/file (where file contains one of the above)</code></pre>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
     <td>
@@ -1728,11 +1833,12 @@ it to find libraries and programs with nonstandard names/locations.
   <thead>
     <tr>
       <th width="30%">
-        Flag
+        Variable
       </th>
       <th>
         Explanation
       </th>
+    </tr>
   </thead>
   <tr>
     <td>

@@ -134,6 +134,8 @@ FilesProcess::FilesProcess()
 
 void FilesProcess::initialize()
 {
+  // TODO(ijimenez): Remove these endpoints at the end of the
+  // deprecation cycle on 0.26.
   route("/browse.json",
         FilesProcess::BROWSE_HELP,
         &FilesProcess::browse);
@@ -144,6 +146,19 @@ void FilesProcess::initialize()
         FilesProcess::DOWNLOAD_HELP,
         &FilesProcess::download);
   route("/debug.json",
+        FilesProcess::DEBUG_HELP,
+        &FilesProcess::debug);
+
+  route("/browse",
+        FilesProcess::BROWSE_HELP,
+        &FilesProcess::browse);
+  route("/read",
+        FilesProcess::READ_HELP,
+        &FilesProcess::read);
+  route("/download",
+        FilesProcess::DOWNLOAD_HELP,
+        &FilesProcess::download);
+  route("/debug",
         FilesProcess::DEBUG_HELP,
         &FilesProcess::debug);
 }
@@ -188,8 +203,6 @@ void FilesProcess::detach(const string& name)
 const string FilesProcess::BROWSE_HELP = HELP(
     TLDR(
         "Returns a file listing for a directory."),
-    USAGE(
-        "/files/browse.json"),
     DESCRIPTION(
         "Lists files and directories contained in the path as",
         "a JSON object.",
@@ -234,7 +247,7 @@ Future<Response> FilesProcess::browse(const Request& request)
   }
 
   JSON::Array listing;
-  foreachvalue(const JSON::Object& file, files) {
+  foreachvalue (const JSON::Object& file, files) {
     listing.values.push_back(file);
   }
 
@@ -262,8 +275,6 @@ Future<Response> _read(int fd,
 const string FilesProcess::READ_HELP = HELP(
     TLDR(
         "Reads data from a file."),
-    USAGE(
-        "/files/read.json"),
     DESCRIPTION(
         "This endpoint reads data from a file at a given offset and for",
         "a given length."
@@ -392,8 +403,6 @@ Future<Response> FilesProcess::read(const Request& request)
 const string FilesProcess::DOWNLOAD_HELP = HELP(
     TLDR(
         "Returns the raw file contents for a given path."),
-    USAGE(
-        "/files/download.json"),
     DESCRIPTION(
         "This endpoint will return the raw file contents for the",
         "given path.",
@@ -449,8 +458,6 @@ Future<Response> FilesProcess::download(const Request& request)
 const string FilesProcess::DEBUG_HELP = HELP(
     TLDR(
         "Returns the internal virtual path mapping."),
-    USAGE(
-        "/files/debug.json"),
     DESCRIPTION(
         "This endpoint shows the internal virtual path map as a",
         "JSON object."));
@@ -459,7 +466,7 @@ const string FilesProcess::DEBUG_HELP = HELP(
 Future<Response> FilesProcess::debug(const Request& request)
 {
   JSON::Object object;
-  foreachpair(const string& name, const string& path, paths) {
+  foreachpair (const string& name, const string& path, paths) {
     object.values[name] = path;
   }
   return OK(object, request.query.get("jsonp"));

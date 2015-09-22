@@ -61,90 +61,7 @@ namespace perf {
 // Delimiter for fields in perf stat output.
 static const char PERF_DELIMITER[] = ",";
 
-// Use an empty string as the key for the parse output when sampling a
-// set of pids. No valid cgroup can be an empty string.
-static const char PIDS_KEY[] = "";
-
 namespace internal {
-
-vector<string> argv(
-    const set<string>& events,
-    const set<string>& cgroups,
-    const Duration& duration)
-{
-  vector<string> argv = {
-    "perf", "stat",
-
-    // System-wide collection from all CPUs.
-    "--all-cpus",
-
-    // Print counts using a CSV-style output to make it easy to import
-    // directly into spreadsheets. Columns are separated by the string
-    // specified in PERF_DELIMITER.
-    "--field-separator", PERF_DELIMITER,
-
-    // Ensure all output goes to stdout.
-    "--log-fd", "1"
-  };
-
-  // Nested loop to produce all pairings of event and cgroup.
-  foreach (const string& event, events) {
-    foreach (const string& cgroup, cgroups) {
-      argv.push_back("--event");
-      argv.push_back(event);
-      argv.push_back("--cgroup");
-      argv.push_back(cgroup);
-    }
-  }
-
-  argv.push_back("--");
-  argv.push_back("sleep");
-  argv.push_back(stringify(duration.secs()));
-
-  return argv;
-}
-
-
-vector<string> argv(
-    const set<string>& events,
-    const string& cgroup,
-    const Duration& duration)
-{
-  set<string> cgroups;
-  cgroups.insert(cgroup);
-
-  return argv(events, cgroups, duration);
-}
-
-
-vector<string> argv(
-    const set<string>& events,
-    const set<pid_t>& pids,
-    const Duration& duration)
-{
-  vector<string> argv = {
-    "perf", "stat",
-
-    // System-wide collection from all CPUs.
-    "--all-cpus",
-
-    // Print counts using a CSV-style output to make it easy to import
-    // directly into spreadsheets. Columns are separated by the string
-    // specified in PERF_DELIMITER.
-    "--field-separator", PERF_DELIMITER,
-
-    // Ensure all output goes to stdout.
-    "--log-fd", "1",
-
-    "--event", strings::join(",", events),
-    "--pid", strings::join(",", pids),
-    "--",
-    "sleep", stringify(duration.secs())
-  };
-
-  return argv;
-}
-
 
 // Normalize a perf event name. After normalization the event name
 // should match an event field in the PerfStatistics protobuf.
@@ -155,15 +72,28 @@ inline string normalize(const string& s)
 }
 
 
-class PerfSampler : public Process<PerfSampler>
+// Executes the 'perf' command using the supplied arguments, and
+// returns stdout as the value of the future or a failure if calling
+// the command fails or the command returns a non-zero exit code.
+//
+// TODO(bmahler): Add a process::os::shell to generalize this.
+class Perf : public Process<Perf>
 {
 public:
-  PerfSampler(const vector<string>& _argv, const Duration& _duration)
-    : argv(_argv), duration(_duration) {}
+  Perf(const vector<string>& _argv) : argv(_argv)
+  {
+    // The first argument should be 'perf'. Note that this is
+    // a bit hacky because this class is specialized to only
+    // execute the 'perf' binary. Ultimately, this should be
+    // generalized to something like process::os::shell.
+    if (argv.empty() || argv.front() != "perf") {
+      argv.insert(argv.begin(), "perf");
+    }
+  }
 
-  virtual ~PerfSampler() {}
+  virtual ~Perf() {}
 
-  Future<hashmap<string, mesos::PerfStatistics>> future()
+  Future<string> output()
   {
     return promise.future();
   }
@@ -173,25 +103,18 @@ protected:
   {
     // Stop when no one cares.
     promise.future().onDiscard(lambda::bind(
-          static_cast<void(*)(const UPID&, bool)>(terminate), self(), true));
+        static_cast<void(*)(const UPID&, bool)>(terminate), self(), true));
 
-    if (duration < Seconds(0)) {
-      promise.fail("Perf sample duration cannot be negative: '" +
-                   stringify(duration.secs()) + "'");
-      terminate(self());
-      return;
-    }
-
-    start = Clock::now();
-
-    sample();
+    execute();
   }
 
   virtual void finalize()
   {
-    // Kill the perf process if it's still running.
-    if (perf.isSome() && perf.get().status().isPending()) {
-      kill(perf.get().pid(), SIGTERM);
+    // Kill the perf process (if it's still running) by sending
+    // SIGTERM to the signal handler which will then SIGKILL the
+    // perf process group created by setupChild.
+    if (perf.isSome() && perf->status().isPending()) {
+      kill(perf->pid(), SIGTERM);
     }
 
     promise.discard();
@@ -273,7 +196,7 @@ private:
     }
   }
 
-  void sample()
+  void execute()
   {
     Try<Subprocess> _perf = subprocess(
         "perf",
@@ -293,9 +216,9 @@ private:
     perf = _perf.get();
 
     // Wait for the process to exit.
-    await(perf.get().status(),
-          io::read(perf.get().out().get()),
-          io::read(perf.get().err().get()))
+    await(perf->status(),
+          io::read(perf->out().get()),
+          io::read(perf->err().get()))
       .onReady(defer(self(), [this](const tuple<
           Future<Option<int>>,
           Future<string>,
@@ -308,103 +231,77 @@ private:
         if (!status.isReady()) {
           error = Error("Failed to execute perf: " +
                         (status.isFailed() ? status.failure() : "discarded"));
-        } else if (status.get().isNone()) {
+        } else if (status->isNone()) {
           error = Error("Failed to execute perf: failed to reap");
-        } else if (status.get().get() != 0) {
-          error = Error("Failed to collect perf statistics: " +
-                        WSTRINGIFY(status.get().get()));
+        } else if (status->get() != 0) {
+          error = Error("Failed to execute perf: " +
+                        WSTRINGIFY(status->get()));
         } else if (!output.isReady()) {
           error = Error("Failed to read perf output: " +
                         (output.isFailed() ? output.failure() : "discarded"));
         }
 
         if (error.isSome()) {
-          promise.fail(error.get().message);
+          promise.fail(error->message);
           terminate(self());
           return;
         }
 
-        // Parse output from stdout.
-        Try<hashmap<string, mesos::PerfStatistics>> parse =
-            perf::parse(output.get());
-
-        if (parse.isError()) {
-          promise.fail("Failed to parse perf output: " + parse.error());
-          terminate(self());
-          return;
-        }
-
-        // Create a non-const copy from the Try<> so we can set the
-        // timestamp and duration.
-        hashmap<string, mesos::PerfStatistics> statistics = parse.get();
-        foreachvalue (mesos::PerfStatistics& s, statistics) {
-          s.set_timestamp(start.secs());
-          s.set_duration(duration.secs());
-        }
-
-        promise.set(statistics);
+        promise.set(output.get());
         terminate(self());
         return;
     }));
-}
+  }
 
-  const vector<string> argv;
-  const Duration duration;
-  Time start;
+  vector<string> argv;
+  Promise<string> promise;
   Option<Subprocess> perf;
-  Promise<hashmap<string, mesos::PerfStatistics>> promise;
 };
-
-
-// Helper to select a single key from the hashmap of perf statistics.
-Future<mesos::PerfStatistics> select(
-    const string& key,
-    const hashmap<string, mesos::PerfStatistics>& statistics)
-{
-  return statistics.get(key).get();
-}
 
 } // namespace internal {
 
 
-Future<mesos::PerfStatistics> sample(
-    const set<string>& events,
-    pid_t pid,
-    const Duration& duration)
+Future<Version> version()
 {
-  set<pid_t> pids;
-  pids.insert(pid);
-  return sample(events, pids, duration);
+  internal::Perf* perf = new internal::Perf({"--version"});
+  Future<string> output = perf->output();
+  spawn(perf, true);
+
+  return output
+    .then([](const string& output) -> Future<Version> {
+      // Trim off the leading 'perf version ' text to convert.
+      return Version::parse(strings::remove(
+          output, "perf version ", strings::PREFIX));
+    });
+};
+
+
+bool supported(const Version& version)
+{
+  // Require perf version >= 2.6.39 to support cgroups and formatting.
+  return version >= Version(2, 6, 39);
 }
 
 
-Future<mesos::PerfStatistics> sample(
-    const set<string>& events,
-    const set<pid_t>& pids,
-    const Duration& duration)
+bool supported()
 {
-  if (!supported()) {
-    return Failure("Perf is not supported");
+  Future<Version> version = perf::version();
+
+  // If perf does not respond in a reasonable time, mark as unsupported.
+  version.await(Seconds(5));
+
+  if (!version.isReady()) {
+    if (version.isFailed()) {
+      LOG(ERROR) << "Failed to get perf version: " << version.failure();
+    } else {
+      LOG(ERROR) << "Failed to get perf version: timeout of 5secs exceeded";
+    }
+
+    version.discard();
+    return false;
   }
 
-  const vector<string> argv = internal::argv(events, pids, duration);
-  internal::PerfSampler* sampler = new internal::PerfSampler(argv, duration);
-  Future<hashmap<string, mesos::PerfStatistics>> future = sampler->future();
-  spawn(sampler, true);
-  return future
-    .then(lambda::bind(&internal::select, PIDS_KEY, lambda::_1));
-}
-
-
-Future<mesos::PerfStatistics> sample(
-    const set<string>& events,
-    const string& cgroup,
-    const Duration& duration)
-{
-  set<string> cgroups;
-  cgroups.insert(cgroup);
-  return sample(events, cgroups, duration)
-    .then(lambda::bind(&internal::select, cgroup, lambda::_1));
+  return supported(version.get());
 }
 
 
@@ -413,15 +310,75 @@ Future<hashmap<string, mesos::PerfStatistics>> sample(
     const set<string>& cgroups,
     const Duration& duration)
 {
-  if (!supported()) {
-    return Failure("Perf is not supported");
+  // Is this a no-op?
+  if (cgroups.empty()) {
+    return hashmap<string, mesos::PerfStatistics>();
   }
 
-  const vector<string> argv = internal::argv(events, cgroups, duration);
-  internal::PerfSampler* sampler = new internal::PerfSampler(argv, duration);
-  Future<hashmap<string, mesos::PerfStatistics>> future = sampler->future();
-  spawn(sampler, true);
-  return future;
+  vector<string> argv = {
+    "stat",
+
+    // System-wide collection from all CPUs.
+    "--all-cpus",
+
+    // Print counts using a CSV-style output to make it easy to import
+    // directly into spreadsheets. Columns are separated by the string
+    // specified in PERF_DELIMITER.
+    "--field-separator", PERF_DELIMITER,
+
+    // Ensure all output goes to stdout.
+    "--log-fd", "1"
+  };
+
+  // Add all pairwise combinations of event and cgroup.
+  foreach (const string& event, events) {
+    foreach (const string& cgroup, cgroups) {
+      argv.push_back("--event");
+      argv.push_back(event);
+      argv.push_back("--cgroup");
+      argv.push_back(cgroup);
+    }
+  }
+
+  argv.push_back("--");
+  argv.push_back("sleep");
+  argv.push_back(stringify(duration.secs()));
+
+  Time start = Clock::now();
+
+  internal::Perf* perf = new internal::Perf(argv);
+  Future<string> output = perf->output();
+  spawn(perf, true);
+
+  auto parse = [start, duration](
+      const tuple<Version, string> values) ->
+      Future<hashmap<string, mesos::PerfStatistics>> {
+    const Version& version = std::get<0>(values);
+    const string& output = std::get<1>(values);
+
+    // Check that the version is supported.
+    if (!supported(version)) {
+      return Failure("Perf " + stringify(version) + " is not supported");
+    }
+
+    Try<hashmap<string, mesos::PerfStatistics>> result =
+      perf::parse(output, version);
+
+    if (result.isError()) {
+      return Failure("Failed to parse perf sample: " + result.error());
+    }
+
+    foreachvalue (mesos::PerfStatistics& statistics, result.get()) {
+      statistics.set_timestamp(start.secs());
+      statistics.set_duration(duration.secs());
+    }
+
+    return result.get();
+  };
+
+  // TODO(pbrett): Don't wait for these forever!
+  return process::collect(perf::version(), output)
+    .then(parse);
 }
 
 
@@ -440,80 +397,108 @@ bool valid(const set<string>& events)
 }
 
 
-bool supported()
+struct Sample
 {
-  // Require Linux kernel version >= 2.6.38 for "-x" and >= 2.6.39 for
-  // "--cgroup"
-  Try<Version> release = os::release();
+  const string value;
+  const string event;
+  const string cgroup;
 
-  // This is not expected to ever be an Error.
-  CHECK_SOME(release);
+  // Convert a single line of perf output in CSV format (using
+  // PERF_DELIMITER as a separator) to a sample.
+  static Try<Sample> parse(const string& line, const Version& version)
+  {
+    // We use strings::split to separate the tokens
+    // because the unit field can be empty.
+    vector<string> tokens = strings::split(line, PERF_DELIMITER);
 
-  return release.get() >= Version(2, 6, 39);
-}
+    if (version >= Version(4, 0, 0)) {
+      // Optional running time and ratio were introduced in Linux v4.0,
+      // which make the format either:
+      //   value,unit,event,cgroup
+      //   value,unit,event,cgroup,running,ratio
+      if ((tokens.size() == 4) || (tokens.size() == 6)) {
+        return Sample({tokens[0], internal::normalize(tokens[2]), tokens[3]});
+      }
+    } else if (version >= Version(3, 13, 0)) {
+      // Unit was added in Linux v3.13, making the format:
+      //   value,unit,event,cgroup
+      if (tokens.size() == 4) {
+        return Sample({tokens[0], internal::normalize(tokens[2]), tokens[3]});
+      }
+    } else {
+      // Expected format for Linux kernel <= 3.12 is:
+      //   value,event,cgroup
+      if (tokens.size() == 3) {
+        return Sample({tokens[0], internal::normalize(tokens[1]), tokens[2]});
+      }
+    }
+
+    return Error("Unexpected number of fields");
+  }
+};
 
 
-Try<hashmap<string, mesos::PerfStatistics>> parse(const string& output)
+Try<hashmap<string, mesos::PerfStatistics>> parse(
+    const string& output,
+    const Version& version)
 {
   hashmap<string, mesos::PerfStatistics> statistics;
 
   foreach (const string& line, strings::tokenize(output, "\n")) {
-    vector<string> tokens = strings::tokenize(line, PERF_DELIMITER);
-    // Expected format for an output line is either:
-    // value,event          (when sampling pids)
-    // value,event,cgroup   (when sampling a cgroup)
-    // assuming PERF_DELIMITER = ",".
-    if (tokens.size() < 2 || tokens.size() > 3) {
-      return Error("Unexpected perf output at line: " + line);
+    Try<Sample> sample = Sample::parse(line, version);
+
+    if (sample.isError()) {
+      return Error("Failed to parse perf sample line '" + line + "': " +
+                   sample.error());
     }
 
-    const string value = tokens[0];
-    const string event = internal::normalize(tokens[1]);
-    // Use the special PIDS_KEY when sampling pids.
-    const string cgroup = (tokens.size() == 3 ? tokens[2] : PIDS_KEY);
-
-    if (!statistics.contains(cgroup)) {
-      statistics.put(cgroup, mesos::PerfStatistics());
+    if (!statistics.contains(sample->cgroup)) {
+      statistics.put(sample->cgroup, mesos::PerfStatistics());
     }
 
     const google::protobuf::Reflection* reflection =
-      statistics[cgroup].GetReflection();
+      statistics[sample->cgroup].GetReflection();
     const google::protobuf::FieldDescriptor* field =
-      statistics[cgroup].GetDescriptor()->FindFieldByName(event);
-    if (!field) {
-      return Error("Unexpected perf output at line: " + line);
+      statistics[sample->cgroup].GetDescriptor()->FindFieldByName(
+          sample->event);
+
+    if (field == NULL) {
+      return Error("Unexpected event '" + sample->event + "'"
+                   " in perf output at line: " + line);
     }
 
-    if (value == "<not supported>") {
+    if (sample->value == "<not supported>") {
       LOG(WARNING) << "Unsupported perf counter, ignoring: " << line;
       continue;
     }
 
     switch (field->type()) {
-      case google::protobuf::FieldDescriptor::TYPE_DOUBLE:
-        {
-          Try<double> number =
-            (value == "<not counted>") ?  0 : numify<double>(value);
+      case google::protobuf::FieldDescriptor::TYPE_DOUBLE: {
+        Try<double> number = (sample->value == "<not counted>")
+            ?  0
+            : numify<double>(sample->value);
 
-          if (number.isError()) {
-            return Error("Unable to parse perf value at line: " + line);
-          }
-
-          reflection->SetDouble(&(statistics[cgroup]), field, number.get());
-          break;
+        if (number.isError()) {
+          return Error("Unable to parse perf value at line: " + line);
         }
-      case google::protobuf::FieldDescriptor::TYPE_UINT64:
-        {
-          Try<uint64_t> number =
-            (value == "<not counted>") ?  0 : numify<uint64_t>(value);
 
-          if (number.isError()) {
-            return Error("Unable to parse perf value at line: " + line);
-          }
+        reflection->SetDouble(&(
+            statistics[sample->cgroup]), field, number.get());
+        break;
+      }
+      case google::protobuf::FieldDescriptor::TYPE_UINT64: {
+        Try<uint64_t> number = (sample->value == "<not counted>")
+            ?  0
+            : numify<uint64_t>(sample->value);
 
-          reflection->SetUInt64(&(statistics[cgroup]), field, number.get());
-          break;
+        if (number.isError()) {
+          return Error("Unable to parse perf value at line: " + line);
         }
+
+        reflection->SetUInt64(&(
+            statistics[sample->cgroup]), field, number.get());
+        break;
+      }
       default:
         return Error("Unsupported perf field type at line: " + line);
       }

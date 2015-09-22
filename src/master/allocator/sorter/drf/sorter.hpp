@@ -56,7 +56,7 @@ struct Client
 struct DRFComparator
 {
   virtual ~DRFComparator() {}
-  virtual bool operator () (const Client& client1, const Client& client2);
+  virtual bool operator()(const Client& client1, const Client& client2);
 };
 
 
@@ -91,6 +91,8 @@ public:
 
   virtual hashmap<SlaveID, Resources> allocation(const std::string& name);
 
+  virtual hashmap<std::string, Resources> allocation(const SlaveID& slaveId);
+
   virtual Resources allocation(const std::string& name, const SlaveID& slaveId);
 
   virtual void add(const SlaveID& slaveId, const Resources& resources);
@@ -117,7 +119,7 @@ private:
   // it exists in this Sorter.
   std::set<Client, DRFComparator>::iterator find(const std::string& name);
 
-  // If true, start() will recalculate all shares.
+  // If true, sort() will recalculate all shares.
   bool dirty;
 
   // A set of Clients (names and shares) sorted by share.

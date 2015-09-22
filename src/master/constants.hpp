@@ -54,6 +54,11 @@ extern const double MIN_CPUS;
 // Minimum amount of memory per offer.
 extern const Bytes MIN_MEM;
 
+
+// Default interval the master uses to send heartbeats to an HTTP
+// scheduler.
+extern const Duration DEFAULT_HEARTBEAT_INTERVAL;
+
 // Amount of time within which a slave PING should be received.
 // NOTE: The slave uses these PING constants to determine when
 // the master has stopped sending pings. If these are made
@@ -95,7 +100,7 @@ extern const uint32_t MAX_COMPLETED_TASKS_PER_FRAMEWORK;
 // Time interval to check for updated watchers list.
 extern const Duration WHITELIST_WATCH_INTERVAL;
 
-// Default number of tasks (limit) for /master/tasks.json endpoint.
+// Default number of tasks (limit) for /master/tasks endpoint.
 extern const uint32_t TASK_LIMIT;
 
 /**
@@ -121,6 +126,9 @@ extern const std::string DEFAULT_AUTHENTICATOR;
 
 // Name of the default, HierarchicalDRF authenticator.
 extern const std::string DEFAULT_ALLOCATOR;
+
+// Name of the default, local authorizer.
+extern const std::string DEFAULT_AUTHORIZER;
 
 } // namespace master {
 } // namespace internal {

@@ -52,7 +52,10 @@ class DockerTest : public MesosTest
 {
   virtual void TearDown()
   {
-    Try<Docker*> docker = Docker::create(tests::flags.docker, false);
+    Try<Docker*> docker =
+      Docker::create(tests::flags.docker, tests::flags.docker_socket,
+      false);
+
     ASSERT_SOME(docker);
 
     Future<list<Docker::Container>> containers =
@@ -75,7 +78,9 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
   const string containerName = NAME_PREFIX + "-test";
   Resources resources = Resources::parse("cpus:1;mem:512").get();
 
-  Owned<Docker> docker(Docker::create(tests::flags.docker, false).get());
+  Owned<Docker> docker(Docker::create(tests::flags.docker,
+                                      tests::flags.docker_socket,
+                                      false).get());
 
   // Verify that we do not see the container.
   Future<list<Docker::Container> > containers = docker->ps(true, containerName);
@@ -220,9 +225,37 @@ TEST_F(DockerTest, ROOT_DOCKER_interface)
 }
 
 
+// This test tests parsing docker version output.
+TEST_F(DockerTest, ROOT_DOCKER_parsing_version)
+{
+  Owned<Docker> docker1(Docker::create("echo Docker version 1.7.1, build",
+                                       tests::flags.docker_socket,
+                                       false).get());
+  Future<Version> version1 = docker1->version();
+  AWAIT_READY(version1);
+  EXPECT_EQ(version1.get(), Version::parse("1.7.1").get());
+
+  Owned<Docker> docker2(Docker::create("echo Docker version 1.7.1.fc22, build",
+                                       tests::flags.docker_socket,
+                                       false).get());
+  Future<Version> version2 = docker2->version();
+  AWAIT_READY(version2);
+  EXPECT_EQ(version2.get(), Version::parse("1.7.1").get());
+
+  Owned<Docker> docker3(Docker::create("echo Docker version 1.7.1-fc22, build",
+                                       tests::flags.docker_socket,
+                                       false).get());
+  Future<Version> version3 = docker3->version();
+  AWAIT_READY(version3);
+  EXPECT_EQ(version3.get(), Version::parse("1.7.1").get());
+}
+
+
 TEST_F(DockerTest, ROOT_DOCKER_CheckCommandWithShell)
 {
-  Owned<Docker> docker(Docker::create(tests::flags.docker, false).get());
+  Owned<Docker> docker(Docker::create(tests::flags.docker,
+                                     tests::flags.docker_socket,
+                                     false).get());
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
@@ -248,7 +281,9 @@ TEST_F(DockerTest, ROOT_DOCKER_CheckCommandWithShell)
 TEST_F(DockerTest, ROOT_DOCKER_CheckPortResource)
 {
   const string containerName = NAME_PREFIX + "-port-resource-test";
-  Owned<Docker> docker(Docker::create(tests::flags.docker, false).get());
+  Owned<Docker> docker(Docker::create(tests::flags.docker,
+                                     tests::flags.docker_socket,
+                                     false).get());
 
   // Make sure the container is removed.
   Future<Nothing> remove = docker->rm(containerName, true);
@@ -318,7 +353,9 @@ TEST_F(DockerTest, ROOT_DOCKER_CancelPull)
 
   AWAIT_READY_FOR(s.get().status(), Seconds(30));
 
-  Owned<Docker> docker(Docker::create(tests::flags.docker, false).get());
+  Owned<Docker> docker(Docker::create(tests::flags.docker,
+                                      tests::flags.docker_socket,
+                                      false).get());
 
   Try<string> directory = environment->mkdtemp();
 
@@ -340,7 +377,9 @@ TEST_F(DockerTest, ROOT_DOCKER_CancelPull)
 // docker container works.
 TEST_F(DockerTest, ROOT_DOCKER_MountRelative)
 {
-  Owned<Docker> docker(Docker::create(tests::flags.docker, false).get());
+  Owned<Docker> docker(Docker::create(tests::flags.docker,
+                                     tests::flags.docker_socket,
+                                     false).get());
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
@@ -380,7 +419,9 @@ TEST_F(DockerTest, ROOT_DOCKER_MountRelative)
 // docker container works.
 TEST_F(DockerTest, ROOT_DOCKER_MountAbsolute)
 {
-  Owned<Docker> docker(Docker::create(tests::flags.docker, false).get());
+  Owned<Docker> docker(Docker::create(tests::flags.docker,
+                                      tests::flags.docker_socket,
+                                      false).get());
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);

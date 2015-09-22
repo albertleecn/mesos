@@ -42,7 +42,10 @@ class Docker
 {
 public:
   // Create Docker abstraction and optionally validate docker.
-  static Try<Docker*> create(const std::string& path, bool validate = true);
+  static Try<Docker*> create(
+    const std::string& path,
+    const std::string& socket,
+    bool validate = true);
 
   virtual ~Docker() {}
 
@@ -149,9 +152,19 @@ public:
       const std::string& image,
       bool force = false) const;
 
+  // Validate current docker version is not less than minVersion.
+  virtual Try<Nothing> validateVersion(const Version& minVersion) const;
+
+  virtual std::string getPath()
+  {
+    return path;
+  }
+
 protected:
   // Uses the specified path to the Docker CLI tool.
-  Docker(const std::string& _path) : path(_path) {};
+  Docker(const std::string& _path,
+         const std::string& _socket)
+       : path(_path), socket("unix://" + _socket) {};
 
 private:
   static process::Future<Nothing> _run(
@@ -201,19 +214,33 @@ private:
       const Option<std::string>& prefix,
       const std::string& output);
 
+  static void inspectBatches(
+      process::Owned<std::list<Docker::Container>> containers,
+      process::Owned<std::vector<std::string>> lines,
+      process::Owned<process::Promise<std::list<Docker::Container>>> promise,
+      const Docker& docker,
+      const Option<std::string>& prefix);
+
+  static std::list<process::Future<Docker::Container>> createInspectBatch(
+      process::Owned<std::vector<std::string>> lines,
+      const Docker& docker,
+      const Option<std::string>& prefix);
+
   static process::Future<Image> _pull(
       const Docker& docker,
       const process::Subprocess& s,
       const std::string& directory,
       const std::string& image,
       const std::string& path,
+      const std::string& socket,
       process::Future<std::string> output);
 
   static process::Future<Image> __pull(
       const Docker& docker,
       const std::string& directory,
       const std::string& image,
-      const std::string& path);
+      const std::string& path,
+      const std::string& socket);
 
   static process::Future<Image> ___pull(
       const Docker& docker,
@@ -230,6 +257,7 @@ private:
       const std::string& cmd);
 
   const std::string path;
+  const std::string socket;
 };
 
 #endif // __DOCKER_HPP__

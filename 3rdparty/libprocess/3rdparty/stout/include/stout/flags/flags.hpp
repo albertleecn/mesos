@@ -238,7 +238,7 @@ private:
 
 
 // Need to declare/define some explicit subclasses of FlagsBase so
-// that we can overload the 'Flags::operator FlagsN () const'
+// that we can overload the 'Flags::operator FlagsN() const'
 // functions for each possible type.
 class _Flags1 : public virtual FlagsBase {};
 class _Flags2 : public virtual FlagsBase {};
@@ -555,13 +555,14 @@ inline Try<Nothing> FlagsBase::load(
     bool unknowns,
     bool duplicates)
 {
-  std::map<std::string, Option<std::string>> values;
+  std::map<std::string, Option<std::string>> envValues;
+  std::map<std::string, Option<std::string>> cmdValues;
 
   // Grab the program name from argv[0].
   programName_ = argc > 0 ? Path(argv[0]).basename() : "";
 
   if (prefix.isSome()) {
-    values = extract(prefix.get());
+    envValues = extract(prefix.get());
   }
 
   // Read flags from the command line.
@@ -594,16 +595,18 @@ inline Try<Nothing> FlagsBase::load(
     name = strings::lower(name);
 
     if (!duplicates) {
-      if (values.count(name) > 0 ||
-          (name.find("no-") == 0 && values.count(name.substr(3)) > 0)) {
+      if (cmdValues.count(name) > 0 ||
+          (name.find("no-") == 0 && cmdValues.count(name.substr(3)) > 0)) {
         return Error("Duplicate flag '" + name + "' on command line");
       }
     }
 
-    values[name] = value;
+    cmdValues[name] = value;
   }
 
-  return load(values, unknowns);
+  cmdValues.insert(envValues.begin(), envValues.end());
+
+  return load(cmdValues, unknowns);
 }
 
 
@@ -614,10 +617,11 @@ inline Try<Nothing> FlagsBase::load(
     bool unknowns,
     bool duplicates)
 {
-  std::map<std::string, Option<std::string>> values;
+  std::map<std::string, Option<std::string>> envValues;
+  std::map<std::string, Option<std::string>> cmdValues;
 
   if (prefix.isSome()) {
-    values = extract(prefix.get());
+    envValues = extract(prefix.get());
   }
 
   // Grab the program name from argv, without removing it.
@@ -661,16 +665,18 @@ inline Try<Nothing> FlagsBase::load(
     name = strings::lower(name);
 
     if (!duplicates) {
-      if (values.count(name) > 0 ||
-          (name.find("no-") == 0 && values.count(name.substr(3)) > 0)) {
+      if (cmdValues.count(name) > 0 ||
+          (name.find("no-") == 0 && cmdValues.count(name.substr(3)) > 0)) {
         return Error("Duplicate flag '" + name + "' on command line");
       }
     }
 
-    values[name] = value;
+    cmdValues[name] = value;
   }
 
-  Try<Nothing> result = load(values, unknowns);
+  cmdValues.insert(envValues.begin(), envValues.end());
+
+  Try<Nothing> result = load(cmdValues, unknowns);
 
   // Update 'argc' and 'argv' if we successfully loaded the flags.
   if (!result.isError()) {
@@ -833,7 +839,7 @@ inline std::string FlagsBase::usage( const Option<std::string>& message) const
 }
 
 
-inline std::ostream& operator << (std::ostream& stream, const FlagsBase& flags)
+inline std::ostream& operator<<(std::ostream& stream, const FlagsBase& flags)
 {
   std::vector<std::string> _flags;
 

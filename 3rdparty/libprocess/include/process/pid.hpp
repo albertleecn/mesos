@@ -21,6 +21,8 @@
 #include <sstream>
 #include <string>
 
+#include <boost/functional/hash.hpp>
+
 #include <process/address.hpp>
 
 #include <stout/ip.hpp>
@@ -62,19 +64,19 @@ struct UPID
 
   /*implicit*/ UPID(const ProcessBase& process);
 
-  operator std::string () const;
+  operator std::string() const;
 
-  operator bool () const
+  operator bool() const
   {
     return id != "" && !address.ip.isAny() && address.port != 0;
   }
 
-  bool operator ! () const // NOLINT(whitespace/operators)
+  bool operator!() const // NOLINT(whitespace/operators)
   {
     return id == "" && address.ip.isAny() && address.port == 0;
   }
 
-  bool operator < (const UPID& that) const
+  bool operator<(const UPID& that) const
   {
     if (address == that.address) {
       return id < that.id;
@@ -83,16 +85,15 @@ struct UPID
     }
   }
 
-  bool operator == (const UPID& that) const
+  bool operator==(const UPID& that) const
   {
     return (id == that.id && address == that.address);
   }
 
-  bool operator != (const UPID& that) const
+  bool operator!=(const UPID& that) const
   {
     return !(*this == that);
   }
-
   std::string id;
   network::Address address;
 };
@@ -133,12 +134,12 @@ struct PID : UPID
   /*implicit*/ PID(const T& t) : UPID(static_cast<const ProcessBase&>(t)) {}
 
   template <typename Base>
-  operator PID<Base> () const
+  operator PID<Base>() const
   {
     // Only allow upcasts!
     T* t = NULL;
     Base* base = t;
-    (void)base;  // Eliminate unused base warning.
+    (void)base; // Eliminate unused base warning.
     PID<Base> pid;
     pid.id = id;
     pid.address = address;
@@ -148,13 +149,30 @@ struct PID : UPID
 
 
 // Outputing UPIDs and generating UPIDs using streams.
-std::ostream& operator << (std::ostream&, const UPID&);
-std::istream& operator >> (std::istream&, UPID&);
+std::ostream& operator<<(std::ostream&, const UPID&);
+std::istream& operator>>(std::istream&, UPID&);
 
+} // namespace process {
 
-// UPID hash value (for example, to use in Boost's unordered maps).
-std::size_t hash_value(const UPID&);
+namespace std {
 
-}  // namespace process {
+template <>
+struct hash<process::UPID>
+{
+  typedef size_t result_type;
+
+  typedef process::UPID argument_type;
+
+  result_type operator()(const argument_type& upid) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, upid.id);
+    boost::hash_combine(seed, std::hash<net::IP>()(upid.address.ip));
+    boost::hash_combine(seed, upid.address.port);
+    return seed;
+  }
+};
+
+} // namespace std {
 
 #endif // __PROCESS_PID_HPP__

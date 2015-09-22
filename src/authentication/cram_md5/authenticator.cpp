@@ -339,7 +339,8 @@ private:
     }
   }
 
-  enum {
+  enum
+  {
     READY,
     STARTING,
     STEPPING,
@@ -453,7 +454,7 @@ void load(const std::map<string, string>& secrets)
 void load(const Credentials& credentials)
 {
   std::map<string, string> secrets;
-  foreach(const Credential& credential, credentials.credentials()) {
+  foreach (const Credential& credential, credentials.credentials()) {
     secrets[credential.principal()] = credential.secret();
   }
   load(secrets);
@@ -502,7 +503,7 @@ Try<Nothing> CRAMMD5Authenticator::initialize(
     secrets::load(credentials.get());
   } else {
     LOG(WARNING) << "No credentials provided, authentication requests will be "
-                 << "refused.";
+                 << "refused";
   }
 
   // Initialize SASL and add the auxiliary memory plugin. We must

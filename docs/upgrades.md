@@ -6,6 +6,44 @@ layout: documentation
 
 This document serves as a guide for users who wish to upgrade an existing mesos cluster. Some versions require particular upgrade techniques when upgrading a running cluster. Some upgrades will have incompatible changes.
 
+## Upgrading from 0.24.x to 0.25.x
+
+**NOTE** The following endpoints will be deprecated in favor of new endpoints. Both versions will be available in 0.25 but the deprecated endpoints will be removed in a subsequent release.
+
+For master endpoints:
+
+* /state.json becomes /state
+* /tasks.json becomes /tasks
+
+For slave endpoints:
+
+* /state.json becomes /state
+* /monitor/statistics.json becomes /monitor/statistics
+
+For both master and slave:
+
+* /files/browse.json becomes /files/browse
+* /files/debug.json becomes /files/debug
+* /files/download.json becomes /files/download
+* /files/read.json becomes /files/read
+
+
+## Upgrading from 0.23.x to 0.24.x
+
+**NOTE** Support for live upgrading a driver based scheduler to HTTP based (experimental) scheduler has been added.
+
+**NOTE** Master now publishes its information in ZooKeeper in JSON (instead of protobuf). Make sure schedulers are linked against >= 0.23.0 libmesos before upgrading the master.
+
+In order to upgrade a running cluster:
+
+* Rebuild and install any modules so that upgraded masters/slaves can use them.
+* Install the new master binaries and restart the masters.
+* Install the new slave binaries and restart the slaves.
+* Upgrade the schedulers by linking the latest native library / jar / egg (if necessary).
+* Restart the schedulers.
+* Upgrade the executors by linking the latest native library / jar / egg (if necessary).
+
+
 ## Upgrading from 0.22.x to 0.23.x
 
 **NOTE** The 'stats.json' endpoints for masters and slaves have been removed. Please use the 'metrics/snapshot' endpoints instead.

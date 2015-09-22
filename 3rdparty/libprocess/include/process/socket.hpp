@@ -44,7 +44,8 @@ public:
    * @see process::network::PollSocketImpl
    * @see process::network::LibeventSSLSocketImpl
    */
-  enum Kind {
+  enum Kind
+  {
     POLL,
 #ifdef USE_SSL_SOCKET
     SSL
@@ -220,12 +221,12 @@ public:
     int s;
   };
 
-  bool operator == (const Socket& that) const
+  bool operator==(const Socket& that) const
   {
     return impl == that.impl;
   }
 
-  operator int () const
+  operator int() const
   {
     return impl->get();
   }

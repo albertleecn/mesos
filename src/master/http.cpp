@@ -28,55 +28,74 @@
 
 #include <mesos/type_utils.hpp>
 
+#include <mesos/authorizer/authorizer.hpp>
+
+#include <mesos/maintenance/maintenance.hpp>
+
+#include <process/defer.hpp>
 #include <process/help.hpp>
 
 #include <process/metrics/metrics.hpp>
 
 #include <stout/base64.hpp>
 #include <stout/foreach.hpp>
+#include <stout/hashmap.hpp>
+#include <stout/hashset.hpp>
 #include <stout/json.hpp>
 #include <stout/lambda.hpp>
 #include <stout/net.hpp>
+#include <stout/nothing.hpp>
 #include <stout/numify.hpp>
 #include <stout/os.hpp>
+#include <stout/protobuf.hpp>
 #include <stout/result.hpp>
 #include <stout/strings.hpp>
-
-#include "authorizer/authorizer.hpp"
+#include <stout/try.hpp>
+#include <stout/utils.hpp>
 
 #include "common/attributes.hpp"
 #include "common/build.hpp"
 #include "common/http.hpp"
 #include "common/protobuf_utils.hpp"
 
+#include "internal/devolve.hpp"
+
 #include "logging/logging.hpp"
 
+#include "master/maintenance.hpp"
 #include "master/master.hpp"
 #include "master/validation.hpp"
 
 #include "mesos/mesos.hpp"
 #include "mesos/resources.hpp"
 
+using google::protobuf::RepeatedPtrField;
+
 using process::Clock;
 using process::DESCRIPTION;
 using process::Future;
 using process::HELP;
 using process::TLDR;
-using process::USAGE;
 
 using process::http::Accepted;
 using process::http::BadRequest;
+using process::http::Conflict;
+using process::http::Forbidden;
 using process::http::InternalServerError;
+using process::http::MethodNotAllowed;
 using process::http::NotFound;
 using process::http::NotImplemented;
+using process::http::NotAcceptable;
 using process::http::OK;
 using process::http::Pipe;
+using process::http::ServiceUnavailable;
 using process::http::TemporaryRedirect;
 using process::http::Unauthorized;
 using process::http::UnsupportedMediaType;
 
 using process::metrics::internal::MetricsProcess;
 
+using std::list;
 using std::map;
 using std::string;
 using std::vector;
@@ -92,6 +111,7 @@ using mesos::internal::model;
 // Pull in definitions from process.
 using process::http::Response;
 using process::http::Request;
+using process::Owned;
 
 
 // TODO(bmahler): Kill these in favor of automatic Proto->JSON Conversion (when
@@ -234,6 +254,18 @@ JSON::Object model(const Framework& framework)
     object.values["executors"] = std::move(executors);
   }
 
+  // Model all of the labels associated with a framework.
+  if (framework.info.has_labels()) {
+    JSON::Array array;
+    const mesos::Labels labels = framework.info.labels();
+    array.values.reserve(labels.labels_size());
+
+    foreach (const Label& label, labels.labels()) {
+      array.values.push_back(JSON::Protobuf(label));
+    }
+    object.values["labels"] = std::move(array);
+  }
+
   return object;
 }
 
@@ -311,20 +343,45 @@ void Master::Http::log(const Request& request)
 }
 
 
-// TODO(ijiminez): Add some information or pointers to help
+// TODO(ijimenez): Add some information or pointers to help
 // users understand the HTTP Event/Call API.
-const string Master::Http::CALL_HELP = HELP(
+const string Master::Http::SCHEDULER_HELP = HELP(
     TLDR(
         "Endpoint for schedulers to make Calls against the master."),
-    USAGE(
-        "/master/call"),
     DESCRIPTION(
         "Returns 202 Accepted iff the request is accepted."));
 
 
-Future<Response> Master::Http::call(const Request& request) const
+Future<Response> Master::Http::scheduler(const Request& request) const
 {
-  scheduler::Call call;
+  // TODO(vinod): Add metrics for rejected requests.
+
+  // TODO(vinod): Add support for rate limiting.
+
+  if (!master->elected()) {
+    // Note that this could happen if the scheduler realizes this is the
+    // leading master before master itself realizes it (e.g., ZK watch delay).
+    return ServiceUnavailable("Not the leading master");
+  }
+
+  CHECK_SOME(master->recovered);
+
+  if (!master->recovered.get().isReady()) {
+    return ServiceUnavailable("Master has not finished recovery");
+  }
+
+  if (master->flags.authenticate_frameworks) {
+    return Unauthorized(
+        "Mesos master",
+        "HTTP schedulers are not supported when authentication is required");
+  }
+
+  if (request.method != "POST") {
+    return MethodNotAllowed(
+        "Expecting a 'POST' request, received '" + request.method + "'");
+  }
+
+  v1::scheduler::Call v1Call;
 
   // TODO(anand): Content type values are case-insensitive.
   Option<string> contentType = request.headers.get("Content-Type");
@@ -334,7 +391,7 @@ Future<Response> Master::Http::call(const Request& request) const
   }
 
   if (contentType.get() == APPLICATION_PROTOBUF) {
-    if (!call.ParseFromString(request.body)) {
+    if (!v1Call.ParseFromString(request.body)) {
       return BadRequest("Failed to parse body into Call protobuf");
     }
   } else if (contentType.get() == APPLICATION_JSON) {
@@ -344,20 +401,22 @@ Future<Response> Master::Http::call(const Request& request) const
       return BadRequest("Failed to parse body into JSON: " + value.error());
     }
 
-    Try<scheduler::Call> parse =
-      ::protobuf::parse<scheduler::Call>(value.get());
+    Try<v1::scheduler::Call> parse =
+      ::protobuf::parse<v1::scheduler::Call>(value.get());
 
     if (parse.isError()) {
       return BadRequest("Failed to convert JSON into Call protobuf: " +
                         parse.error());
     }
 
-    call = parse.get();
+    v1Call = parse.get();
   } else {
     return UnsupportedMediaType(
         string("Expecting 'Content-Type' of ") +
         APPLICATION_JSON + " or " + APPLICATION_PROTOBUF);
   }
+
+  scheduler::Call call = devolve(v1Call);
 
   Option<Error> error = validation::scheduler::call::validate(call);
 
@@ -366,33 +425,94 @@ Future<Response> Master::Http::call(const Request& request) const
                       error.get().message);
   }
 
-  // Default to sending back JSON.
-  ContentType responseContentType = ContentType::JSON;
+  if (call.type() == scheduler::Call::SUBSCRIBE) {
+    // We default to JSON since an empty 'Accept' header
+    // results in all media types considered acceptable.
+    ContentType responseContentType;
 
-  // TODO(anand): Use request.acceptsMediaType() once available.
-  Option<string> acceptType = request.headers.get("Accept");
+    if (request.acceptsMediaType(APPLICATION_JSON)) {
+      responseContentType = ContentType::JSON;
+    } else if (request.acceptsMediaType(APPLICATION_PROTOBUF)) {
+      responseContentType = ContentType::PROTOBUF;
+    } else {
+      return NotAcceptable(
+          string("Expecting 'Accept' to allow ") +
+          "'" + APPLICATION_PROTOBUF + "' or '" + APPLICATION_JSON + "'");
+    }
 
-  if (acceptType.get() == APPLICATION_PROTOBUF) {
-    responseContentType = ContentType::PROTOBUF;
+    Pipe pipe;
+    OK ok;
+    ok.headers["Content-Type"] = stringify(responseContentType);
+
+    ok.type = Response::PIPE;
+    ok.reader = pipe.reader();
+
+    HttpConnection http {pipe.writer(), responseContentType};
+    master->subscribe(http, call.subscribe());
+
+    return ok;
+  }
+
+  // We consolidate the framework lookup logic here because it is
+  // common for all the call handlers.
+  Framework* framework = master->getFramework(call.framework_id());
+
+  if (framework == NULL) {
+    return BadRequest("Framework cannot be found");
+  }
+
+  if (!framework->connected) {
+    return Forbidden("Framework is not subscribed");
   }
 
   switch (call.type()) {
-    case scheduler::Call::SUBSCRIBE: {
-      Pipe pipe;
-      OK ok;
+    case scheduler::Call::TEARDOWN:
+      master->removeFramework(framework);
+      return Accepted();
 
-      ok.type = Response::PIPE;
-      ok.reader = pipe.reader();
+    case scheduler::Call::ACCEPT:
+      master->accept(framework, call.accept());
+      return Accepted();
 
-      HttpConnection http {pipe.writer(), responseContentType};
-      master->subscribe(http, call.subscribe());
+    case scheduler::Call::DECLINE:
+      master->decline(framework, call.decline());
+      return Accepted();
 
-      return ok;
-    }
+    case scheduler::Call::REVIVE:
+      master->revive(framework);
+      return Accepted();
+
+    case scheduler::Call::SUPPRESS:
+      master->suppress(framework);
+      return Accepted();
+
+    case scheduler::Call::KILL:
+      master->kill(framework, call.kill());
+      return Accepted();
+
+    case scheduler::Call::SHUTDOWN:
+      master->shutdown(framework, call.shutdown());
+      return Accepted();
+
+    case scheduler::Call::ACKNOWLEDGE:
+      master->acknowledge(framework, call.acknowledge());
+      return Accepted();
+
+    case scheduler::Call::RECONCILE:
+      master->reconcile(framework, call.reconcile());
+      return Accepted();
+
+    case scheduler::Call::MESSAGE:
+      master->message(framework, call.message());
+      return Accepted();
+
+    case scheduler::Call::REQUEST:
+      master->request(framework, call.request());
+      return Accepted();
+
     default:
-      // TODO(bmahler): Log fatally here once all calls are
-      // implemented, since validation should catch this.
-      break;
+      // Should be caught during call validation above.
+      LOG(FATAL) << "Unexpected " << call.type() << " call";
   }
 
   return NotImplemented();
@@ -402,8 +522,6 @@ Future<Response> Master::Http::call(const Request& request) const
 const string Master::Http::HEALTH_HELP = HELP(
     TLDR(
         "Health check of the Master."),
-    USAGE(
-        "/master/health"),
     DESCRIPTION(
         "Returns 200 OK iff the Master is healthy.",
         "Delayed responses are also indicative of poor health."));
@@ -421,8 +539,6 @@ const static string MONITOR_KEY = "monitor";
 const string Master::Http::OBSERVE_HELP = HELP(
     TLDR(
         "Observe a monitor health state for host(s)."),
-    USAGE(
-        "/master/observe"),
     DESCRIPTION(
         "This endpoint receives information indicating host(s) ",
         "health."
@@ -513,8 +629,6 @@ Future<Response> Master::Http::observe(const Request& request) const
 const string Master::Http::REDIRECT_HELP = HELP(
     TLDR(
         "Redirects to the leading Master."),
-    USAGE(
-        "/master/redirect"),
     DESCRIPTION(
         "This returns a 307 Temporary Redirect to the leading Master.",
         "If no Master is leading (according to this Master), then the",
@@ -524,7 +638,8 @@ const string Master::Http::REDIRECT_HELP = HELP(
         "1. This is the recommended way to bookmark the WebUI when",
         "running multiple Masters.",
         "2. This is broken currently \"on the cloud\" (e.g. EC2) as",
-        "this will attempt to redirect to the private IP address."));
+        "this will attempt to redirect to the private IP address, unless",
+        "advertise_ip points to an externally accessible IP"));
 
 
 Future<Response> Master::Http::redirect(const Request& request) const
@@ -555,11 +670,94 @@ Future<Response> Master::Http::redirect(const Request& request) const
 }
 
 
+const string Master::Http::RESERVE_HELP = HELP(
+    TLDR(
+        "Reserve resources dynamically on a specific slave."),
+    DESCRIPTION(
+        "Returns 200 OK if resource reservation was successful.",
+        "Please provide \"slaveId\" and \"resources\" values designating ",
+        "the resources to be reserved."));
+
+
+Future<Response> Master::Http::reserve(const Request& request) const
+{
+  if (request.method != "POST") {
+    return BadRequest("Expecting POST");
+  }
+
+  // Parse the query string in the request body.
+  Try<hashmap<string, string>> decode =
+    process::http::query::decode(request.body);
+
+  if (decode.isError()) {
+    return BadRequest("Unable to decode query string: " + decode.error());
+  }
+
+  const hashmap<string, string>& values = decode.get();
+
+  if (values.get("slaveId").isNone()) {
+    return BadRequest("Missing 'slaveId' query parameter");
+  }
+
+  SlaveID slaveId;
+  slaveId.set_value(values.get("slaveId").get());
+
+  Slave* slave = master->slaves.registered.get(slaveId);
+  if (slave == NULL) {
+    return BadRequest("No slave found with specified ID");
+  }
+
+  if (values.get("resources").isNone()) {
+    return BadRequest("Missing 'resources' query parameter");
+  }
+
+  Try<JSON::Array> parse =
+    JSON::parse<JSON::Array>(values.get("resources").get());
+
+  if (parse.isError()) {
+    return BadRequest(
+        "Error in parsing 'resources' query parameter: " + parse.error());
+  }
+
+  Resources resources;
+  foreach (const JSON::Value& value, parse.get().values) {
+    Try<Resource> resource = ::protobuf::parse<Resource>(value);
+    if (resource.isError()) {
+      return BadRequest(
+          "Error in parsing 'resources' query parameter: " + resource.error());
+    }
+    resources += resource.get();
+  }
+
+  Result<Credential> credential = authenticate(request);
+  if (credential.isError()) {
+    return Unauthorized("Mesos master", credential.error());
+  }
+
+  // Create an offer operation.
+  Offer::Operation operation;
+  operation.set_type(Offer::Operation::RESERVE);
+  operation.mutable_reserve()->mutable_resources()->CopyFrom(resources);
+
+  Option<string> principal =
+    credential.isSome() ? credential.get().principal() : Option<string>::none();
+
+  Option<Error> validate =
+    validation::operation::validate(operation.reserve(), None(), principal);
+
+  if (validate.isSome()) {
+    return BadRequest("Invalid RESERVE operation: " + validate.get().message);
+  }
+
+  // TODO(mpark): Add a reserve ACL for authorization.
+
+  return _operation(slaveId, resources.flatten(), operation);
+}
+
+
 const string Master::Http::SLAVES_HELP = HELP(
     TLDR(
         "Information about registered slaves."),
-    USAGE(
-        "/master/slaves"),
     DESCRIPTION(
         "This endpoint shows information about the slaves registered in",
         "this master formatted as a JSON object."));
@@ -588,8 +786,6 @@ Future<Response> Master::Http::slaves(const Request& request) const
 const string Master::Http::STATE_HELP = HELP(
     TLDR(
         "Information about state of master."),
-    USAGE(
-        "/master/state"),
     DESCRIPTION(
         "This endpoint shows information about the frameworks, tasks,",
         "executors and slaves running in the cluster as a JSON object."));
@@ -882,8 +1078,6 @@ private:
 const string Master::Http::STATESUMMARY_HELP = HELP(
     TLDR(
         "Summary of state of all tasks and registered frameworks in cluster."),
-    USAGE(
-        "/master/state-summary"),
     DESCRIPTION(
         "This endpoint gives a summary of the state of all tasks and",
         "registered frameworks in the cluster as a JSON object."));
@@ -1000,8 +1194,6 @@ Future<Response> Master::Http::stateSummary(const Request& request) const
 const string Master::Http::ROLES_HELP = HELP(
     TLDR(
         "Information about roles that the master is configured with."),
-    USAGE(
-        "/master/roles"),
     DESCRIPTION(
         "This endpoint gives information about the roles that are assigned",
         "to frameworks and resources as a JSON object."));
@@ -1029,8 +1221,6 @@ const string Master::Http::TEARDOWN_HELP = HELP(
     TLDR(
         "Tears down a running framework by shutting down all tasks/executors "
         "and removing the framework."),
-    USAGE(
-        "/master/teardown"),
     DESCRIPTION(
         "Please provide a \"frameworkId\" value designating the running "
         "framework to tear down.",
@@ -1125,8 +1315,6 @@ Future<Response> Master::Http::_teardown(
 const string Master::Http::TASKS_HELP = HELP(
     TLDR(
       "Lists tasks from all active frameworks."),
-    USAGE(
-      "/master/tasks.json"),
     DESCRIPTION(
       "Lists known tasks.",
       "",
@@ -1244,6 +1432,439 @@ Future<Response> Master::Http::tasks(const Request& request) const
 }
 
 
+// /master/maintenance/schedule endpoint help.
+const string Master::Http::MAINTENANCE_SCHEDULE_HELP = HELP(
+    TLDR(
+        "Returns or updates the cluster's maintenance schedule."),
+    DESCRIPTION(
+        "GET: Returns the current maintenance schedule as JSON.",
+        "POST: Validates the request body as JSON",
+        "  and updates the maintenance schedule."));
+
+
+// /master/maintenance/schedule endpoint handler.
+Future<Response> Master::Http::maintenanceSchedule(const Request& request) const
+{
+  if (request.method != "GET" && request.method != "POST") {
+    return BadRequest("Expecting GET or POST, got '" + request.method + "'");
+  }
+
+  // JSON-ify and return the current maintenance schedule.
+  if (request.method == "GET") {
+    // TODO(josephw): Return more than one schedule.
+    const mesos::maintenance::Schedule schedule =
+      master->maintenance.schedules.empty() ?
+        mesos::maintenance::Schedule() :
+        master->maintenance.schedules.front();
+
+    return OK(JSON::Protobuf(schedule), request.query.get("jsonp"));
+  }
+
+  // Parse the POST body as JSON.
+  Try<JSON::Object> jsonSchedule = JSON::parse<JSON::Object>(request.body);
+  if (jsonSchedule.isError()) {
+    return BadRequest(jsonSchedule.error());
+  }
+
+  // Convert the schedule to a protobuf.
+  Try<mesos::maintenance::Schedule> protoSchedule =
+    ::protobuf::parse<mesos::maintenance::Schedule>(jsonSchedule.get());
+
+  if (protoSchedule.isError()) {
+    return BadRequest(protoSchedule.error());
+  }
+
+  // Validate that the schedule only transitions machines between
+  // `UP` and `DRAINING` modes.
+  mesos::maintenance::Schedule schedule = protoSchedule.get();
+  Try<Nothing> isValid = maintenance::validation::schedule(
+      schedule,
+      master->machines);
+
+  if (isValid.isError()) {
+    return BadRequest(isValid.error());
+  }
+
+  return master->registrar->apply(Owned<Operation>(
+      new maintenance::UpdateSchedule(schedule)))
+    .then(defer(master->self(), [=](bool result) -> Future<Response> {
+      // See the top comment in "master/maintenance.hpp" for why this check
+      // is here, and is appropriate.
+      CHECK(result);
+
+      // Update the master's local state with the new schedule.
+      // NOTE: We only add or remove differences between the current schedule
+      // and the new schedule.  This is because the `MachineInfo` struct
+      // holds more information than a maintenance schedule.
+      // For example, the `mode` field is not part of a maintenance schedule.
+
+      // TODO(josephw): allow more than one schedule.
+
+      // Put the machines in the updated schedule into a set.
+      // Save the unavailability, to help with updating some machines.
+      hashmap<MachineID, Unavailability> updated;
+      foreach (const mesos::maintenance::Window& window, schedule.windows()) {
+        foreach (const MachineID& id, window.machine_ids()) {
+          updated[id] = window.unavailability();
+        }
+      }
+
+      // NOTE: Copies are needed because `updateUnavailability()` in this loop
+      // modifies the container.
+      foreachkey (const MachineID& id, utils::copy(master->machines)) {
+        // Update the entry for each updated machine.
+        if (updated.contains(id)) {
+          master->updateUnavailability(id, updated[id]);
+          continue;
+        }
+
+        // Transition each removed machine back to the `UP` mode and remove the
+        // unavailability.
+        master->machines[id].info.set_mode(MachineInfo::UP);
+        master->updateUnavailability(id, None());
+      }
+
+      // Save each new machine, with the unavailability
+      // and starting in `DRAINING` mode.
+      foreach (const mesos::maintenance::Window& window, schedule.windows()) {
+        foreach (const MachineID& id, window.machine_ids()) {
+          MachineInfo info;
+          info.mutable_id()->CopyFrom(id);
+          info.set_mode(MachineInfo::DRAINING);
+
+          master->machines[id].info.CopyFrom(info);
+
+          master->updateUnavailability(id, window.unavailability());
+        }
+      }
+
+      // Replace the old schedule(s) with the new schedule.
+      master->maintenance.schedules.clear();
+      master->maintenance.schedules.push_back(schedule);
+
+      return OK();
+    }));
+}
+
+
+// /master/machine/down endpoint help.
+const string Master::Http::MACHINE_DOWN_HELP = HELP(
+    TLDR(
+        "Brings a set of machines down."),
+    DESCRIPTION(
+        "POST: Validates the request body as JSON and transitions",
+        "  the list of machines into DOWN mode.  Currently, only",
+        "  machines in DRAINING mode are allowed to be brought down."));
+
+
+// /master/machine/down endpoint handler.
+Future<Response> Master::Http::machineDown(const Request& request) const
+{
+  if (request.method != "POST") {
+    return BadRequest("Expecting POST, got '" + request.method + "'");
+  }
+
+  // Parse the POST body as JSON.
+  Try<JSON::Array> jsonIds = JSON::parse<JSON::Array>(request.body);
+  if (jsonIds.isError()) {
+    return BadRequest(jsonIds.error());
+  }
+
+  // Convert the machines to a protobuf.
+  auto ids = ::protobuf::parse<RepeatedPtrField<MachineID>>(jsonIds.get());
+  if (ids.isError()) {
+    return BadRequest(ids.error());
+  }
+
+  // Validate every machine in the list.
+  Try<Nothing> isValid = maintenance::validation::machines(ids.get());
+  if (isValid.isError()) {
+    return BadRequest(isValid.error());
+  }
+
+  // Check that all machines are part of a maintenance schedule.
+  // TODO(josephw): Allow a transition from `UP` to `DOWN`.
+  foreach (const MachineID& id, ids.get()) {
+    if (!master->machines.contains(id)) {
+      return BadRequest(
+          "Machine '" + stringify(JSON::Protobuf(id)) +
+            "' is not part of a maintenance schedule");
+    }
+
+    if (master->machines[id].info.mode() != MachineInfo::DRAINING) {
+      return BadRequest(
+          "Machine '" + stringify(JSON::Protobuf(id)) +
+            "' is not in DRAINING mode and cannot be brought down");
+    }
+  }
+
+  return master->registrar->apply(Owned<Operation>(
+      new maintenance::StartMaintenance(ids.get())))
+    .then(defer(master->self(), [=](bool result) -> Future<Response> {
+      // See the top comment in "master/maintenance.hpp" for why this check
+      // is here, and is appropriate.
+      CHECK(result);
+
+      // We currently send a `ShutdownMessage` to each slave. This terminates
+      // all the executors for all the frameworks running on that slave.
+      // We also manually remove the slave to force sending TASK_LOST updates
+      // for all the tasks that were running on the slave and `LostSlaveMessage`
+      // messages to the framework. This guards against the slave having dropped
+      // the `ShutdownMessage`.
+      foreach (const MachineID& machineId, ids.get()) {
+        // The machine may not be in machines. This means no slaves are
+        // currently registered on that machine so this is a no-op.
+        if (master->machines.contains(machineId)) {
+          // NOTE: Copies are needed because removeSlave modifies
+          // master->machines.
+          foreach (
+              const SlaveID& slaveId,
+              utils::copy(master->machines[machineId].slaves)) {
+            Slave* slave = master->slaves.registered.get(slaveId);
+            CHECK_NOTNULL(slave);
+
+            // Tell the slave to shut down.
+            ShutdownMessage shutdownMessage;
+            shutdownMessage.set_message("Operator initiated 'Machine DOWN'");
+            master->send(slave->pid, shutdownMessage);
+
+            // Immediately remove the slave to force sending `TASK_LOST` status
+            // updates as well as `LostSlaveMessage` messages to the frameworks.
+            // See comment above.
+            master->removeSlave(slave, "Operator initiated 'Machine DOWN'");
+          }
+        }
+      }
+
+      // Update the master's local state with the downed machines.
+      foreach (const MachineID& id, ids.get()) {
+        master->machines[id].info.set_mode(MachineInfo::DOWN);
+      }
+
+      return OK();
+    }));
+}
+
+
+// /master/maintenance/start endpoint help.
+const string Master::Http::MACHINE_UP_HELP = HELP(
+    TLDR(
+        "Brings a set of machines back up."),
+    DESCRIPTION(
+        "POST: Validates the request body as JSON and transitions",
+        "  the list of machines into UP mode.  This also removes",
+        "  the list of machines from the maintenance schedule."));
+
+
+// /master/machine/up endpoint handler.
+Future<Response> Master::Http::machineUp(const Request& request) const
+{
+  if (request.method != "POST") {
+    return BadRequest("Expecting POST, got '" + request.method + "'");
+  }
+
+  // Parse the POST body as JSON.
+  Try<JSON::Array> jsonIds = JSON::parse<JSON::Array>(request.body);
+  if (jsonIds.isError()) {
+    return BadRequest(jsonIds.error());
+  }
+
+  // Convert the machines to a protobuf.
+  auto ids = ::protobuf::parse<RepeatedPtrField<MachineID>>(jsonIds.get());
+  if (ids.isError()) {
+    return BadRequest(ids.error());
+  }
+
+  // Validate every machine in the list.
+  Try<Nothing> isValid = maintenance::validation::machines(ids.get());
+  if (isValid.isError()) {
+    return BadRequest(isValid.error());
+  }
+
+  // Check that all machines are part of a maintenance schedule.
+  foreach (const MachineID& id, ids.get()) {
+    if (!master->machines.contains(id)) {
+      return BadRequest(
+          "Machine '" + stringify(JSON::Protobuf(id)) +
+            "' is not part of a maintenance schedule");
+    }
+
+    if (master->machines[id].info.mode() != MachineInfo::DOWN) {
+      return BadRequest(
+          "Machine '" + stringify(JSON::Protobuf(id)) +
+            "' is not in DOWN mode and cannot be brought up");
+    }
+  }
+
+  return master->registrar->apply(Owned<Operation>(
+      new maintenance::StopMaintenance(ids.get())))
+    .then(defer(master->self(), [=](bool result) -> Future<Response> {
+      // See the top comment in "master/maintenance.hpp" for why this check
+      // is here, and is appropriate.
+      CHECK(result);
+
+      // Update the master's local state with the reactivated machines.
+      hashset<MachineID> updated;
+      foreach (const MachineID& id, ids.get()) {
+        master->machines[id].info.set_mode(MachineInfo::UP);
+        master->machines[id].info.clear_unavailability();
+        updated.insert(id);
+      }
+
+      // Delete the machines from the schedule.
+      for (list<mesos::maintenance::Schedule>::iterator schedule =
+          master->maintenance.schedules.begin();
+          schedule != master->maintenance.schedules.end();) {
+        for (int j = schedule->windows().size() - 1; j >= 0; j--) {
+          mesos::maintenance::Window* window = schedule->mutable_windows(j);
+
+          // Delete individual machines.
+          for (int k = window->machine_ids().size() - 1; k >= 0; k--) {
+            if (updated.contains(window->machine_ids(k))) {
+              window->mutable_machine_ids()->DeleteSubrange(k, 1);
+            }
+          }
+
+          // If the resulting window is empty, delete it.
+          if (window->machine_ids().size() == 0) {
+            schedule->mutable_windows()->DeleteSubrange(j, 1);
+          }
+        }
+
+        // If the resulting schedule is empty, delete it.
+        if (schedule->windows().size() == 0) {
+          schedule = master->maintenance.schedules.erase(schedule);
+        } else {
+          ++schedule;
+        }
+      }
+
+      return OK();
+    }));
+}
+
+
+// /master/maintenance/status endpoint help.
+const string Master::Http::MAINTENANCE_STATUS_HELP = HELP(
+    TLDR(
+        "Retrieves the maintenance status of the cluster."),
+    DESCRIPTION(
+        "Returns an object with one list of machines per machine mode."));
+
+
+// /master/maintenance/status endpoint handler.
+Future<Response> Master::Http::maintenanceStatus(const Request& request) const
+{
+  if (request.method != "GET") {
+    return BadRequest("Expecting GET, got '" + request.method + "'");
+  }
+
+  // Unwrap the master's machine information into two arrays of machines.
+  mesos::maintenance::ClusterStatus status;
+  foreachkey (const MachineID& id, master->machines) {
+    switch (master->machines[id].info.mode()) {
+      case MachineInfo::DRAINING: {
+        status.add_draining_machines()->CopyFrom(id);
+        break;
+      }
+      case MachineInfo::DOWN: {
+        status.add_down_machines()->CopyFrom(id);
+        break;
+      }
+      // Currently, `UP` machines are not specifically tracked in the master.
+      case MachineInfo::UP: {}
+      default: {
+        break;
+      }
+    }
+  }
+
+  return OK(JSON::Protobuf(status), request.query.get("jsonp"));
+}
+
+
+const string Master::Http::UNRESERVE_HELP = HELP(
+    TLDR(
+        "Unreserve resources dynamically on a specific slave."),
+    DESCRIPTION(
+        "Returns 200 OK if resource unreservation was successful.",
+        "Please provide \"slaveId\" and \"resources\" values designating ",
+        "the resources to be unreserved."));
+
+
+Future<Response> Master::Http::unreserve(const Request& request) const
+{
+  if (request.method != "POST") {
+    return BadRequest("Expecting POST");
+  }
+
+  // Parse the query string in the request body.
+  Try<hashmap<string, string>> decode =
+    process::http::query::decode(request.body);
+
+  if (decode.isError()) {
+    return BadRequest("Unable to decode query string: " + decode.error());
+  }
+
+  const hashmap<string, string>& values = decode.get();
+
+  if (values.get("slaveId").isNone()) {
+    return BadRequest("Missing 'slaveId' query parameter");
+  }
+
+  SlaveID slaveId;
+  slaveId.set_value(values.get("slaveId").get());
+
+  Slave* slave = master->slaves.registered.get(slaveId);
+  if (slave == NULL) {
+    return BadRequest("No slave found with specified ID");
+  }
+
+  if (values.get("resources").isNone()) {
+    return BadRequest("Missing 'resources' query parameter");
+  }
+
+  Try<JSON::Array> parse =
+    JSON::parse<JSON::Array>(values.get("resources").get());
+
+  if (parse.isError()) {
+    return BadRequest(
+        "Error in parsing 'resources' query parameter: " + parse.error());
+  }
+
+  Resources resources;
+  foreach (const JSON::Value& value, parse.get().values) {
+    Try<Resource> resource = ::protobuf::parse<Resource>(value);
+    if (resource.isError()) {
+      return BadRequest(
+          "Error in parsing 'resources' query parameter: " + resource.error());
+    }
+    resources += resource.get();
+  }
+
+  Result<Credential> credential = authenticate(request);
+  if (credential.isError()) {
+    return Unauthorized("Mesos master", credential.error());
+  }
+
+  // Create an offer operation.
+  Offer::Operation operation;
+  operation.set_type(Offer::Operation::UNRESERVE);
+  operation.mutable_unreserve()->mutable_resources()->CopyFrom(resources);
+
+  Option<Error> validate =
+    validation::operation::validate(operation.unreserve(), credential.isSome());
+
+  if (validate.isSome()) {
+    return BadRequest("Invalid UNRESERVE operation: " + validate.get().message);
+  }
+
+  // TODO(mpark): Add a unreserve ACL for authorization.
+
+  return _operation(slaveId, resources, operation);
+}
+
+
 Result<Credential> Master::Http::authenticate(const Request& request) const
 {
   // By default, assume everyone is authenticated if no credentials
@@ -1258,10 +1879,14 @@ Result<Credential> Master::Http::authenticate(const Request& request) const
     return Error("Missing 'Authorization' request header");
   }
 
-  const string& decoded =
+  Try<string> decode =
     base64::decode(strings::split(authorization.get(), " ", 2)[1]);
 
-  const vector<string>& pairs = strings::split(decoded, ":", 2);
+  if (decode.isError()) {
+    return Error("Failed to decode 'Authorization' header: " + decode.error());
+  }
+
+  vector<string> pairs = strings::split(decode.get(), ":", 2);
 
   if (pairs.size() != 2) {
     return Error("Malformed 'Authorization' request header");
@@ -1281,6 +1906,63 @@ Result<Credential> Master::Http::authenticate(const Request& request) const
   return Error("Could not authenticate '" + username + "'");
 }
 
+
+Future<Response> Master::Http::_operation(
+    const SlaveID& slaveId,
+    Resources remaining,
+    const Offer::Operation& operation) const
+{
+  Slave* slave = master->slaves.registered.get(slaveId);
+  if (slave == NULL) {
+    return BadRequest("No slave found with specified ID");
+  }
+
+  // The resources recovered by rescinding outstanding offers.
+  Resources recovered;
+
+  // We pessimistically assume that what seems like "available"
+  // resources in the allocator will be gone. This can happen due to
+  // the race between the allocator scheduling an 'allocate' call to
+  // itself vs master's request to schedule 'updateAvailable'.
+  // We greedily rescind one offer at time until we've rescinded
+  // enough offers to cover for 'resources'.
+  foreach (Offer* offer, utils::copy(slave->offers)) {
+    // If rescinding the offer would not contribute to satisfying
+    // the remaining resources, skip it.
+    if (remaining == remaining - offer->resources()) {
+      continue;
+    }
+
+    recovered += offer->resources();
+    remaining -= offer->resources();
+
+    // We explicitly pass 'Filters()' which has a default 'refuse_sec'
+    // of 5 seconds rather than 'None()' here, so that we can
+    // virtually always win the race against 'allocate'.
+    master->allocator->recoverResources(
+        offer->framework_id(),
+        offer->slave_id(),
+        offer->resources(),
+        Filters());
+
+    master->removeOffer(offer, true); // Rescind!
+
+    // If we've rescinded enough offers to cover for 'resources',
+    // we're done.
+    Try<Resources> updatedRecovered = recovered.apply(operation);
+    if (updatedRecovered.isSome()) {
+      break;
+    }
+  }
+
+  // Propogate the 'Future<Nothing>' as 'Future<Response>' where
+  // 'Nothing' -> 'OK' and Failed -> 'Conflict'.
+  return master->apply(slave, operation)
+    .then([]() -> Response { return OK(); })
+    .repair([](const Future<Response>& result) {
+       return Conflict(result.failure());
+    });
+}
 
 } // namespace master {
 } // namespace internal {

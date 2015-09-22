@@ -42,10 +42,6 @@ using std::vector;
 namespace mesos {
 namespace internal {
 
-const char APPLICATION_JSON[] = "application/json";
-const char APPLICATION_PROTOBUF[] = "application/x-protobuf";
-
-
 string serialize(
     ContentType contentType,
     const google::protobuf::Message& message)
@@ -143,6 +139,59 @@ JSON::Object model(const Attributes& attributes)
 }
 
 
+JSON::Array model(const Labels& labels)
+{
+  JSON::Array array;
+  array.values.reserve(labels.labels().size()); // MESOS-2353.
+  foreach (const Label& label, labels.labels()) {
+    array.values.push_back(JSON::Protobuf(label));
+  }
+  return array;
+}
+
+
+JSON::Object model(const NetworkInfo& info)
+{
+  JSON::Object object;
+
+  if (info.has_ip_address()) {
+    object.values["ip_address"] = info.ip_address();
+  }
+
+  if (info.groups().size() > 0) {
+    JSON::Array array;
+    array.values.reserve(info.groups().size()); // MESOS-2353.
+    foreach (const string& group, info.groups()) {
+      array.values.push_back(group);
+    }
+    object.values["groups"] = std::move(array);
+  }
+
+  if (info.has_labels()) {
+    object.values["labels"] = std::move(model(info.labels()));
+  }
+
+  return object;
+}
+
+
+JSON::Object model(const ContainerStatus& status)
+{
+  JSON::Object object;
+
+  if (status.network_infos().size() > 0) {
+    JSON::Array array;
+    array.values.reserve(status.network_infos().size()); // MESOS-2353.
+    foreach (const NetworkInfo& info, status.network_infos()) {
+      array.values.push_back(model(info));
+    }
+    object.values["network_infos"] = std::move(array);
+  }
+
+  return object;
+}
+
+
 // Returns a JSON object modeled on a TaskStatus.
 JSON::Object model(const TaskStatus& status)
 {
@@ -151,13 +200,11 @@ JSON::Object model(const TaskStatus& status)
   object.values["timestamp"] = status.timestamp();
 
   if (status.has_labels()) {
-    JSON::Array array;
-    array.values.reserve(status.labels().labels().size()); // MESOS-2353.
+    object.values["labels"] = std::move(model(status.labels()));
+  }
 
-    foreach (const Label& label, status.labels().labels()) {
-      array.values.push_back(JSON::Protobuf(label));
-    }
-    object.values["labels"] = std::move(array);
+  if (status.has_container_status()) {
+    object.values["container_status"] = model(status.container_status());
   }
 
   return object;
@@ -192,16 +239,8 @@ JSON::Object model(const Task& task)
     object.values["statuses"] = std::move(array);
   }
 
-  {
-    JSON::Array array;
-    if (task.has_labels()) {
-      array.values.reserve(task.labels().labels().size()); // MESOS-2353.
-
-      foreach (const Label& label, task.labels().labels()) {
-        array.values.push_back(JSON::Protobuf(label));
-      }
-    }
-    object.values["labels"] = std::move(array);
+  if (task.has_labels()) {
+    object.values["labels"] = std::move(model(task.labels()));
   }
 
   if (task.has_discovery()) {
@@ -233,8 +272,8 @@ JSON::Object model(const CommandInfo& command)
   if (command.has_environment()) {
     JSON::Object environment;
     JSON::Array variables;
-    foreach(const Environment_Variable& variable,
-            command.environment().variables()) {
+    foreach (const Environment_Variable& variable,
+             command.environment().variables()) {
       JSON::Object variableObject;
       variableObject.values["name"] = variable.name();
       variableObject.values["value"] = variable.value();
@@ -245,7 +284,7 @@ JSON::Object model(const CommandInfo& command)
   }
 
   JSON::Array uris;
-  foreach(const CommandInfo_URI& uri, command.uris()) {
+  foreach (const CommandInfo_URI& uri, command.uris()) {
     JSON::Object uriObject;
     uriObject.values["value"] = uri.value();
     uriObject.values["executable"] = uri.executable();
@@ -303,16 +342,8 @@ JSON::Object model(
     object.values["statuses"] = std::move(array);
   }
 
-  {
-    JSON::Array array;
-    if (task.has_labels()) {
-      array.values.reserve(task.labels().labels().size()); // MESOS-2353.
-
-      foreach (const Label& label, task.labels().labels()) {
-        array.values.push_back(JSON::Protobuf(label));
-      }
-    }
-    object.values["labels"] = std::move(array);
+  if (task.has_labels()) {
+    object.values["labels"] = std::move(model(task.labels()));
   }
 
   if (task.has_discovery()) {

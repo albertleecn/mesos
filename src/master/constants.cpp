@@ -31,6 +31,7 @@ namespace master {
 const int MAX_OFFERS_PER_FRAMEWORK = 50;
 const double MIN_CPUS = 0.01;
 const Bytes MIN_MEM = Megabytes(32);
+const Duration DEFAULT_HEARTBEAT_INTERVAL = Seconds(15);
 const Duration DEFAULT_SLAVE_PING_TIMEOUT = Seconds(15);
 const size_t DEFAULT_MAX_SLAVE_PING_TIMEOUTS = 5;
 const Duration MIN_SLAVE_REREGISTER_TIMEOUT = Minutes(10);
@@ -46,6 +47,7 @@ const std::string MASTER_INFO_JSON_LABEL = "json.info";
 const Duration ZOOKEEPER_SESSION_TIMEOUT = Seconds(10);
 const std::string DEFAULT_AUTHENTICATOR = "crammd5";
 const std::string DEFAULT_ALLOCATOR = "HierarchicalDRF";
+const std::string DEFAULT_AUTHORIZER = "local";
 
 } // namespace master {
 } // namespace internal {

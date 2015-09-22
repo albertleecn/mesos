@@ -31,7 +31,7 @@ namespace mesos {
 namespace internal {
 namespace log {
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const Action::Type& type)
 {
@@ -39,7 +39,7 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const Metadata::Status& status)
 {
@@ -49,5 +49,23 @@ inline std::ostream& operator << (
 } // namespace log {
 } // namespace internal {
 } // namespace mesos {
+
+namespace std {
+
+template <>
+struct hash<mesos::internal::log::Metadata_Status>
+{
+  typedef size_t result_type;
+
+  typedef mesos::internal::log::Metadata_Status argument_type;
+
+  result_type operator()(const argument_type& status) const
+  {
+    // Use the underlying type of the enum as hash value.
+    return static_cast<size_t>(status);
+  }
+};
+
+} // namespace std {
 
 #endif // __MESSAGES_LOG_HPP__

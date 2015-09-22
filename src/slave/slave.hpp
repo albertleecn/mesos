@@ -260,7 +260,8 @@ public:
   // Made public for testing purposes.
   void detected(const process::Future<Option<MasterInfo>>& pid);
 
-  enum State {
+  enum State
+  {
     RECOVERING,   // Slave is doing recovery.
     DISCONNECTED, // Slave is not connected to the master.
     RUNNING,      // Slave has (re-)registered.
@@ -398,14 +399,19 @@ private:
     // desired request handler to get consistent request logging.
     static void log(const process::http::Request& request);
 
+    // /slave/api/v1/executor
+    process::Future<process::http::Response> executor(
+        const process::http::Request& request) const;
+
     // /slave/health
     process::Future<process::http::Response> health(
         const process::http::Request& request) const;
 
-    // /slave/state.json
+    // /slave/state
     process::Future<process::http::Response> state(
         const process::http::Request& request) const;
 
+    static const std::string EXECUTOR_HELP;
     static const std::string HEALTH_HELP;
     static const std::string STATE_HELP;
 
@@ -418,7 +424,7 @@ private:
   friend struct Metrics;
 
   Slave(const Slave&);              // No copying.
-  Slave& operator = (const Slave&); // No assigning.
+  Slave& operator=(const Slave&); // No assigning.
 
   // Gauge methods.
   double _frameworks_active()
@@ -571,7 +577,8 @@ struct Executor
   // Returns true if this is a command executor.
   bool isCommandExecutor() const;
 
-  enum State {
+  enum State
+  {
     REGISTERING,  // Executor is launched but not (re-)registered yet.
     RUNNING,      // Executor has (re-)registered.
     TERMINATING,  // Executor is being shutdown/killed.
@@ -623,7 +630,7 @@ struct Executor
 
 private:
   Executor(const Executor&);              // No copying.
-  Executor& operator = (const Executor&); // No assigning.
+  Executor& operator=(const Executor&); // No assigning.
 
   bool commandExecutor;
 };
@@ -649,7 +656,8 @@ struct Framework
 
   const FrameworkID id() const { return info.id(); }
 
-  enum State {
+  enum State
+  {
     RUNNING,      // First state of a newly created framework.
     TERMINATING,  // Framework is shutting down in the cluster.
   } state;
@@ -678,13 +686,13 @@ struct Framework
   boost::circular_buffer<process::Owned<Executor>> completedExecutors;
 private:
   Framework(const Framework&);              // No copying.
-  Framework& operator = (const Framework&); // No assigning.
+  Framework& operator=(const Framework&); // No assigning.
 };
 
 
-std::ostream& operator << (std::ostream& stream, Slave::State state);
-std::ostream& operator << (std::ostream& stream, Framework::State state);
-std::ostream& operator << (std::ostream& stream, Executor::State state);
+std::ostream& operator<<(std::ostream& stream, Slave::State state);
+std::ostream& operator<<(std::ostream& stream, Framework::State state);
+std::ostream& operator<<(std::ostream& stream, Executor::State state);
 
 } // namespace slave {
 } // namespace internal {

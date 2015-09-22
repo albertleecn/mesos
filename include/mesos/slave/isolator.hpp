@@ -39,23 +39,10 @@
 namespace mesos {
 namespace slave {
 
-// Forward declaration.
-class IsolatorProcess;
-
-
 class Isolator
 {
 public:
   virtual ~Isolator() {}
-
-  // Returns the namespaces required by the isolator. The namespaces
-  // are created while launching the executor. Isolators may return
-  // a None() to indicate that they don't require any namespaces
-  // (e.g., Isolators for OS X).
-  // TODO(karya): Since namespaces are Linux-only, create a separate
-  // LinuxIsolator (and corresponding LinuxIsolatorProcess) class
-  // for Linux-specific isolators.
-  virtual process::Future<Option<int>> namespaces() { return None(); }
 
   // Recover containers from the run states and the orphan containers
   // (known to the launcher but not known to the slave) detected by
@@ -74,7 +61,6 @@ public:
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
-      const Option<std::string>& rootfs,
       const Option<std::string>& user) = 0;
 
   // Isolate the executor.

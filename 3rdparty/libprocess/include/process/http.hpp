@@ -64,7 +64,7 @@ void initialize();
 
 struct CaseInsensitiveHash
 {
-  size_t operator () (const std::string& key) const
+  size_t operator()(const std::string& key) const
   {
     size_t seed = 0;
     foreach (char c, key) {
@@ -77,7 +77,7 @@ struct CaseInsensitiveHash
 
 struct CaseInsensitiveEqual
 {
-  bool operator () (const std::string& left, const std::string& right) const
+  bool operator()(const std::string& left, const std::string& right) const
   {
     if (left.size() != right.size()) {
       return false;
@@ -108,7 +108,10 @@ struct Request
 
   // TODO(benh): Replace 'url', 'path', 'query', and 'fragment' with URL.
   std::string url; // (path?query#fragment)
+
+  // TODO(vinod): Make this a 'Path' instead of 'string'.
   std::string path;
+
   hashmap<std::string, std::string> query;
   std::string fragment;
 
@@ -116,10 +119,17 @@ struct Request
 
   bool keepAlive;
 
-  // Returns whether the encoding is considered acceptable in the request.
-  // TODO(bmahler): Consider this logic being in decoder.hpp, and having the
-  // Request contain a member variable for each popular HTTP 1.0/1.1 header.
+  /**
+   * Returns whether the encoding is considered acceptable in the
+   * response. See RFC 2616 section 14.3 for details.
+   */
   bool acceptsEncoding(const std::string& encoding) const;
+
+  /**
+   * Returns whether the media type is considered acceptable in the
+   * response. See RFC 2616, section 14.1 for the details.
+   */
+  bool acceptsMediaType(const std::string& mediaType) const;
 };
 
 
@@ -143,11 +153,11 @@ struct Request
 // reader must "keep up" with the writer in order to avoid
 // unbounded memory growth.
 //
-// TODO(bmahler): The writer needs to be able to induce a failure
-// on the reader to signal an error has occurred. For example, if
-// we are receiving a response but a disconnection occurs before
-// the response is completed, we want the reader to detect that a
-// disconnection occurred!
+// The writer can induce a failure on the reader in order to signal
+// that an error has occurred. For example, if we are receiving a
+// response but a disconnection occurs before the response is
+// completed, we want the reader to detect that a disconnection
+// occurred!
 //
 // TODO(bmahler): Consider aggregating writes into larger reads to
 // help the reader keep up (a process::Stream abstraction with
@@ -180,8 +190,8 @@ public:
     bool close();
 
     // Comparison operators useful for checking connection equality.
-    bool operator == (const Reader& other) const { return data == other.data; }
-    bool operator != (const Reader& other) const { return !(*this == other); }
+    bool operator==(const Reader& other) const { return data == other.data; }
+    bool operator!=(const Reader& other) const { return !(*this == other); }
 
   private:
     friend class Pipe;
@@ -221,9 +231,8 @@ public:
     Future<Nothing> readerClosed() const;
 
     // Comparison operators useful for checking connection equality.
-    bool operator == (const Writer& other) const { return data == other.data; }
-    bool operator != (const Writer& other) const { return !(*this == other); }
-
+    bool operator==(const Writer& other) const { return data == other.data; }
+    bool operator!=(const Writer& other) const { return !(*this == other); }
   private:
     friend class Pipe;
 
@@ -245,9 +254,8 @@ public:
   Writer writer() const;
 
   // Comparison operators useful for checking connection equality.
-  bool operator == (const Pipe& other) const { return data == other.data; }
-  bool operator != (const Pipe& other) const { return !(*this == other); }
-
+  bool operator==(const Pipe& other) const { return data == other.data; }
+  bool operator!=(const Pipe& other) const { return !(*this == other); }
 private:
   struct Data
   {
@@ -322,7 +330,8 @@ struct Response
   // In all cases (BODY, PATH, PIPE), you are expected to properly
   // specify the 'Content-Type' header, but the 'Content-Length' and
   // or 'Transfer-Encoding' headers will be filled in for you.
-  enum {
+  enum
+  {
     NONE,
     BODY,
     PATH,
@@ -695,14 +704,13 @@ struct URL
 };
 
 
-std::ostream& operator << (
-    std::ostream& stream,
-    const URL& url);
+std::ostream& operator<<(std::ostream& stream, const URL& url);
 
 
 // TODO(bmahler): Consolidate these functions into a single
 // http::request function that takes a 'Request' object.
 
+// TODO(joerg84): Make names consistent (see Mesos-3256).
 
 // Asynchronously sends an HTTP GET request to the specified URL
 // and returns the HTTP response of type 'BODY' once the entire
@@ -741,6 +749,35 @@ Future<Response> post(
     const Option<hashmap<std::string, std::string>>& headers = None(),
     const Option<std::string>& body = None(),
     const Option<std::string>& contentType = None());
+
+
+/**
+ * Asynchronously sends an HTTP DELETE request to the process with the
+ * given UPID and returns the HTTP response.
+ *
+ * @param url The target url for the request.
+ * @param headers Optional header for the request.
+ * @return A future with the HTTP response.
+ */
+Future<Response> requestDelete(
+    const URL& url,
+    const Option<hashmap<std::string, std::string>>& headers = None());
+
+
+/**
+ * Asynchronously sends an HTTP DELETE request to the process with the
+ * given UPID and returns the HTTP response.
+ *
+ * @param upid The target process's assigned untyped PID.
+ * @param path The optional path to be be deleted. If not send the
+     request is send to the process directly.
+ * @param headers Optional headers for the request.
+ * @return A future with the HTTP response.
+ */
+Future<Response> requestDelete(
+    const UPID& upid,
+    const Option<std::string>& path = None(),
+    const Option<hashmap<std::string, std::string>>& headers = None());
 
 
 namespace streaming {

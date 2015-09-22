@@ -48,7 +48,8 @@ enum ModuleID
   TestHook,
   TestAnonymous,
   TestDRFAllocator,
-  TestNoopResourceEstimator
+  TestNoopResourceEstimator,
+  TestLocalAuthorizer
 };
 
 
@@ -81,5 +82,23 @@ public:
 } // namespace tests {
 } // namespace internal {
 } // namespace mesos {
+
+namespace std {
+
+template <>
+struct hash<mesos::internal::tests::ModuleID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::internal::tests::ModuleID argument_type;
+
+  result_type operator()(const argument_type& moduleId) const
+  {
+    // Use the underlying type of the enum as hash value.
+    return static_cast<size_t>(moduleId);
+  }
+};
+
+} // namespace std {
 
 #endif // __TESTS_MODULE_HPP__

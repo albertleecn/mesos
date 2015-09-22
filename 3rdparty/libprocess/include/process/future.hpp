@@ -113,12 +113,12 @@ public:
   // Futures are assignable (and copyable). This results in the
   // reference to the previous future data being decremented and a
   // reference to 'that' being incremented.
-  Future<T>& operator = (const Future<T>& that);
+  Future<T>& operator=(const Future<T>& that);
 
   // Comparision operators useful for using futures in collections.
-  bool operator == (const Future<T>& that) const;
-  bool operator != (const Future<T>& that) const;
-  bool operator < (const Future<T>& that) const;
+  bool operator==(const Future<T>& that) const;
+  bool operator!=(const Future<T>& that) const;
+  bool operator<(const Future<T>& that) const;
 
   // Helpers to get the current state of this future.
   bool isPending() const;
@@ -148,6 +148,7 @@ public:
   // Return the value associated with this future, waits indefinitely
   // until a value gets associated or until the future is discarded.
   const T& get() const;
+  const T* operator->() const;
 
   // Returns the failure message associated with this future.
   const std::string& failure() const;
@@ -527,7 +528,7 @@ private:
 
   // Not copyable, not assignable.
   Promise(const Promise<T>&);
-  Promise<T>& operator = (const Promise<T>&);
+  Promise<T>& operator=(const Promise<T>&);
 
   // Helper for doing the work of actually discarding a future (called
   // from Promise::discard as well as internal::discarded).
@@ -894,7 +895,7 @@ Future<T>::Future(const Try<T>& t)
 
 
 template <typename T>
-Future<T>& Future<T>::operator = (const Future<T>& that)
+Future<T>& Future<T>::operator=(const Future<T>& that)
 {
   if (this != &that) {
     data = that.data;
@@ -904,21 +905,21 @@ Future<T>& Future<T>::operator = (const Future<T>& that)
 
 
 template <typename T>
-bool Future<T>::operator == (const Future<T>& that) const
+bool Future<T>::operator==(const Future<T>& that) const
 {
   return data == that.data;
 }
 
 
 template <typename T>
-bool Future<T>::operator != (const Future<T>& that) const
+bool Future<T>::operator!=(const Future<T>& that) const
 {
   return !(*this == that);
 }
 
 
 template <typename T>
-bool Future<T>::operator < (const Future<T>& that) const
+bool Future<T>::operator<(const Future<T>& that) const
 {
   return data < that.data;
 }
@@ -1054,6 +1055,13 @@ const T& Future<T>::get() const
 
   assert(data->result.isSome());
   return data->result.get();
+}
+
+
+template <typename T>
+const T* Future<T>::operator->() const
+{
+  return &get();
 }
 
 

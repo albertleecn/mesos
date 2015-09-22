@@ -14,7 +14,7 @@
   // Invokes the pailer for the specified host and path using the
   // specified window_title.
   function pailer(host, path, window_title) {
-    var url = '//' + host + '/files/read.json?path=' + path;
+    var url = '//' + host + '/files/read?path=' + path;
     var pailer =
       window.open('/static/pailer.html', url, 'width=580px, height=700px');
 
@@ -206,6 +206,12 @@
     return true; // Continue polling.
   }
 
+  // Add a filter to convert small float number to decimal string
+  mesosApp.filter('decimalFloat', function() {
+    return function(num) {
+      return parseFloat(num.toFixed(4)).toString();
+    }
+  });
 
   // Main controller that can be used to handle "global" events. E.g.,:
   //     $scope.$on('$afterRouteChange', function() { ...; });
@@ -276,7 +282,7 @@
     });
 
     var poll = function() {
-      $http.get('master/state.json',
+      $http.get('master/state',
                 {transformResponse: function(data) { return data; }})
         .success(function(data) {
           if (update($scope, $timeout, data)) {
@@ -421,7 +427,7 @@
         $top.start(host, $scope);
       }
 
-      $http.jsonp('//' + host + '/' + id + '/state.json?jsonp=JSON_CALLBACK')
+      $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
         .success(function (response) {
           $scope.state = response;
 
@@ -499,7 +505,7 @@
         $top.start(host, $scope);
       }
 
-      $http.jsonp('//' + host + '/' + id + '/state.json?jsonp=JSON_CALLBACK')
+      $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
         .success(function (response) {
           $scope.state = response;
 
@@ -572,7 +578,7 @@
         $top.start(host, $scope);
       }
 
-      $http.jsonp('//' + host + '/' + id + '/state.json?jsonp=JSON_CALLBACK')
+      $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
         .success(function (response) {
           $scope.state = response;
 
@@ -631,8 +637,8 @@
   // directory to browse is known by the slave but not by the master. Request
   // the directory from the slave, and then redirect to it.
   //
-  // TODO(ssorallen): Add `executor.directory` to the state.json output so this
-  // controller of rerouting is no longer necessary.
+  // TODO(ssorallen): Add `executor.directory` to the master's state endpoint
+  // output so this controller of rerouting is no longer necessary.
   mesosApp.controller('SlaveExecutorRerouterCtrl',
       function($alert, $http, $location, $routeParams, $scope, $window) {
 
@@ -677,7 +683,7 @@
 
     // Request slave details to get access to the route executor's "directory"
     // to navigate directly to the executor's sandbox.
-    $http.jsonp('//' + host + '/' + id + '/state.json?jsonp=JSON_CALLBACK')
+    $http.jsonp('//' + host + '/' + id + '/state?jsonp=JSON_CALLBACK')
       .success(function(response) {
 
         function matchFramework(framework) {
@@ -747,7 +753,7 @@
         var hostname = $scope.slaves[$routeParams.slave_id].hostname;
         var id = pid.substring(0, pid.indexOf('@'));
         var host = hostname + ":" + pid.substring(pid.lastIndexOf(':') + 1);
-        var url = '//' + host + '/files/browse.json?jsonp=JSON_CALLBACK';
+        var url = '//' + host + '/files/browse?jsonp=JSON_CALLBACK';
 
         $scope.slave_host = host;
 

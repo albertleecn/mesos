@@ -34,6 +34,9 @@
 
 using namespace mesos;
 
+using std::map;
+using std::string;
+
 using process::Future;
 
 // Must be kept in sync with variables of the same name in
@@ -86,6 +89,7 @@ public:
   // interference.
   virtual Result<Labels> slaveRunTaskLabelDecorator(
       const TaskInfo& taskInfo,
+      const ExecutorInfo& executorInfo,
       const FrameworkInfo& frameworkInfo,
       const SlaveInfo& slaveInfo)
   {
@@ -128,6 +132,23 @@ public:
     return environment;
   }
 
+
+  virtual Try<Nothing> slavePreLaunchDockerHook(
+      const ContainerInfo& containerInfo,
+      const CommandInfo& commandInfo,
+      const Option<TaskInfo>& taskInfo,
+      const ExecutorInfo& executorInfo,
+      const string& name,
+      const string& sandboxDirectory,
+      const string& mappedDirectory,
+      const Option<Resources>& resources,
+      const Option<map<string, string>>& env)
+  {
+    LOG(INFO) << "Executing 'slavePreLaunchDockerHook'";
+    return os::touch(sandboxDirectory + "/foo");
+  }
+
+
   // This hook locates the file created by environment decorator hook
   // and deletes it.
   virtual Try<Nothing> slaveRemoveExecutorHook(
@@ -150,11 +171,11 @@ public:
   }
 
 
-  virtual Result<Labels> slaveTaskStatusLabelDecorator(
+  virtual Result<TaskStatus> slaveTaskStatusDecorator(
       const FrameworkID& frameworkId,
       const TaskStatus& status)
   {
-    LOG(INFO) << "Executing 'slaveTaskStatusLabelDecorator' hook";
+    LOG(INFO) << "Executing 'slaveTaskStatusDecorator' hook";
 
     Labels labels;
 
@@ -170,7 +191,22 @@ public:
       }
     }
 
-    return labels;
+    TaskStatus result;
+    result.mutable_labels()->CopyFrom(labels);
+
+    // Set an IP address, a network isolation group, and a known label
+    // in network info. This data is later validated by the
+    // 'HookTest.VerifySlaveTaskStatusDecorator' test.
+    NetworkInfo* networkInfo =
+      result.mutable_container_status()->add_network_infos();
+    networkInfo->set_ip_address("4.3.2.1");
+    networkInfo->add_groups("public");
+
+    Label* networkInfoLabel = networkInfo->mutable_labels()->add_labels();
+    networkInfoLabel->set_key("net_foo");
+    networkInfoLabel->set_value("net_bar");
+
+    return result;
   }
 };
 

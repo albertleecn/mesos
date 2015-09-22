@@ -35,6 +35,8 @@
 
 #include "common/status_utils.hpp"
 
+#include "hook/manager.hpp"
+
 #ifdef __linux__
 #include "linux/cgroups.hpp"
 #endif // __linux__
@@ -121,7 +123,7 @@ Try<DockerContainerizer*> DockerContainerizer::create(
     const Flags& flags,
     Fetcher* fetcher)
 {
-  Try<Docker*> create = Docker::create(flags.docker);
+  Try<Docker*> create = Docker::create(flags.docker, flags.docker_socket, true);
   if (create.isError()) {
     return Error("Failed to create docker: " + create.error());
   }
@@ -129,18 +131,10 @@ Try<DockerContainerizer*> DockerContainerizer::create(
   Shared<Docker> docker(create.get());
 
   if (flags.docker_mesos_image.isSome()) {
-    Future<Version> version = docker->version();
-    if (!version.await(DOCKER_VERSION_WAIT_TIMEOUT)) {
-      return Error("Timed out waiting for docker version");
-    }
-
-    if (version.isFailed()) {
-      return Error(version.failure());
-    }
-
-    if (version.get() < Version(1, 5, 0)) {
-      string message = "Docker with mesos images requires docker 1.5+, found ";
-      message += stringify(version.get());
+    Try<Nothing> validateResult = docker->validateVersion(Version(1, 5, 0));
+    if (validateResult.isError()) {
+      string message = "Docker with mesos images requires docker 1.5+";
+      message += validateResult.error();
       return Error(message);
     }
   }
@@ -185,6 +179,7 @@ docker::Flags dockerFlags(
   dockerFlags.sandbox_directory = directory;
   dockerFlags.mapped_directory = flags.sandbox_directory;
   dockerFlags.stop_timeout = flags.docker_stop_timeout;
+  dockerFlags.docker_socket = flags.docker_socket;
   return dockerFlags;
 }
 
@@ -773,6 +768,19 @@ Future<bool> DockerContainerizerProcess::launch(
               << "' and framework '" << executorInfo.framework_id() << "'";
   }
 
+  if (HookManager::hooksAvailable()) {
+    HookManager::slavePreLaunchDockerHook(
+        container.get()->container,
+        container.get()->command,
+        taskInfo,
+        executorInfo,
+        container.get()->name(),
+        container.get()->directory,
+        flags.sandbox_directory,
+        container.get()->resources,
+        container.get()->environment);
+  }
+
   if (taskInfo.isSome() && flags.docker_mesos_image.isNone()) {
     // Launching task by forking a subprocess to run docker executor.
     return container.get()->launch = fetch(containerId, slaveId)
@@ -826,15 +834,15 @@ Future<Docker::Container> DockerContainerizerProcess::launchExecutorContainer(
   // This executor could either be a custom executor specified by an
   // ExecutorInfo, or the docker executor.
   Future<Nothing> run = docker->run(
-    container->container,
-    container->command,
-    containerName,
-    container->directory,
-    flags.sandbox_directory,
-    container->resources,
-    container->environment,
-    path::join(container->directory, "stdout"),
-    path::join(container->directory, "stderr"));
+      container->container,
+      container->command,
+      containerName,
+      container->directory,
+      flags.sandbox_directory,
+      container->resources,
+      container->environment,
+      path::join(container->directory, "stdout"),
+      path::join(container->directory, "stderr"));
 
   Owned<Promise<Docker::Container>> promise(new Promise<Docker::Container>());
   // We like to propogate the run failure when run fails so slave can

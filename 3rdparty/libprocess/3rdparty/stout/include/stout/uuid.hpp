@@ -23,12 +23,20 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 
+#include <stout/thread_local.hpp>
+
 struct UUID : boost::uuids::uuid
 {
 public:
   static UUID random()
   {
-    return UUID(boost::uuids::random_generator()());
+    static THREAD_LOCAL boost::uuids::random_generator* generator = NULL;
+
+    if (generator == NULL) {
+      generator = new boost::uuids::random_generator();
+    }
+
+    return UUID((*generator)());
   }
 
   static UUID fromBytes(const std::string& s)
@@ -63,5 +71,22 @@ private:
   explicit UUID(const boost::uuids::uuid& uuid)
     : boost::uuids::uuid(uuid) {}
 };
+
+namespace std {
+
+template <>
+struct hash<UUID>
+{
+  typedef size_t result_type;
+
+  typedef UUID argument_type;
+
+  result_type operator()(const argument_type& uuid) const
+  {
+    return boost::uuids::hash_value(uuid);
+  }
+};
+
+} // namespace std {
 
 #endif // __STOUT_UUID_HPP__

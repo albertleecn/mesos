@@ -26,9 +26,12 @@
 
 #include <mesos/mesos.hpp>
 
+#include <mesos/authorizer/authorizer.hpp>
+
 #include <mesos/master/allocator.hpp>
 
 #include <mesos/module/anonymous.hpp>
+#include <mesos/module/authorizer.hpp>
 
 #include <process/limiter.hpp>
 #include <process/owned.hpp>
@@ -45,8 +48,6 @@
 #include <stout/stringify.hpp>
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
-
-#include "authorizer/authorizer.hpp"
 
 #include "common/build.hpp"
 #include "common/protobuf_utils.hpp"
@@ -79,6 +80,7 @@ using namespace mesos::internal::log;
 using namespace mesos::internal::master;
 using namespace zookeeper;
 
+using mesos::Authorizer;
 using mesos::MasterInfo;
 
 using mesos::master::allocator::Allocator;
@@ -124,6 +126,21 @@ int main(int argc, char** argv)
 
   uint16_t port;
   flags.add(&port, "port", "Port to listen on", MasterInfo().port());
+
+  Option<string> advertise_ip;
+  flags.add(&advertise_ip,
+            "advertise_ip",
+            "IP address advertised to reach mesos master.\n"
+            "Mesos master does not bind using this IP address.\n"
+            "However, this IP address may be used to access Mesos master.");
+
+  Option<string> advertise_port;
+  flags.add(&advertise_port,
+            "advertise_port",
+            "Port advertised to reach mesos master (alongwith advertise_ip).\n"
+            "Mesos master does not bind using this port.\n"
+            "However, this port (alongwith advertise_ip) may be used to\n"
+            "access Mesos master.");
 
   Option<string> zk;
   flags.add(&zk,
@@ -183,41 +200,26 @@ int main(int argc, char** argv)
   }
 
   if (ip_discovery_command.isSome()) {
-    ostringstream out;
+    Try<string> ipAddress = os::shell(ip_discovery_command.get());
 
-    // TODO(marco): Modify os::shell to be used in a less verbose
-    // fashion, see MESOS-3142.
-    Try<int> status = os::shell(&out, ip_discovery_command.get());
-
-    if (status.isError()) {
-      EXIT(EXIT_FAILURE)
-          << "Could not execute '" << ip_discovery_command.get()
-          << "': " << status.error();
-    } else if (WIFSIGNALED(status.get())) {
-      EXIT(EXIT_FAILURE)
-          << "Running '" << ip_discovery_command.get()
-          << "' was interruped by signal '"
-          << strsignal(WTERMSIG(status.get())) << "'";
-    } else if (WEXITSTATUS(status.get()) != EXIT_SUCCESS) {
-      EXIT(EXIT_FAILURE)
-          << "Failed to discover Master IP using '"
-          << ip_discovery_command.get() << "'; the script was either not found "
-          << "or exited with an error code.\n"
-          << "Error code (127 typically indicates command not found): "
-          << stringify(WEXITSTATUS(status.get()));
+    if (ipAddress.isError()) {
+      EXIT(EXIT_FAILURE) << ipAddress.error();
     }
 
-    const string ipAddress = strings::trim(out.str());
-
-    LOG(INFO) << "Configuring Mesos master to listen on IP '"
-              << ipAddress << "'";
-
-    os::setenv("LIBPROCESS_IP", ipAddress);
+    os::setenv("LIBPROCESS_IP", strings::trim(ipAddress.get()));
   } else if (ip.isSome()) {
     os::setenv("LIBPROCESS_IP", ip.get());
   }
 
   os::setenv("LIBPROCESS_PORT", stringify(port));
+
+  if (advertise_ip.isSome()) {
+    os::setenv("LIBPROCESS_ADVERTISE_IP", advertise_ip.get());
+  }
+
+  if (advertise_port.isSome()) {
+    os::setenv("LIBPROCESS_ADVERTISE_PORT", advertise_port.get());
+  }
 
   // Initialize libprocess.
   process::initialize("master");
@@ -341,18 +343,52 @@ int main(int argc, char** argv)
   detector = detector_.get();
 
   Option<Authorizer*> authorizer = None();
-  if (flags.acls.isSome()) {
-    Try<Owned<Authorizer>> create = Authorizer::create(flags.acls.get());
+
+  auto authorizerNames = strings::split(flags.authorizers, ",");
+  if (authorizerNames.empty()) {
+    EXIT(EXIT_FAILURE) << "No authorizer specified";
+  }
+  if (authorizerNames.size() > 1) {
+    EXIT(EXIT_FAILURE) << "Multiple authorizers not supported";
+  }
+  std::string authorizerName = authorizerNames[0];
+
+  // NOTE: The flag --authorizers overrides the flag --acls, i.e. if
+  // a non default authorizer is requested, it will be used and
+  // the contents of --acls will be ignored.
+  // TODO(arojas): Add support for multiple authorizers.
+  if (authorizerName != master::DEFAULT_AUTHORIZER ||
+      flags.acls.isSome()) {
+    Try<Authorizer*> create = Authorizer::create(authorizerName);
 
     if (create.isError()) {
-      EXIT(EXIT_FAILURE)
-        << "Failed to initialize the authorizer: "
-        << create.error() << " (see --acls flag)";
+      EXIT(EXIT_FAILURE) << "Could not create '" << authorizerName
+                         << "' authorizer: " << create.error();
     }
 
-    // Now pull out the authorizer but need to make a copy since we
-    // get a 'const &' from 'Try::get'.
-    authorizer = Owned<Authorizer>(create.get()).release();
+    authorizer = create.get();
+
+    LOG(INFO) << "Using '" << authorizerName << "' authorizer";
+
+    if (authorizerName == master::DEFAULT_AUTHORIZER) {
+      Try<Nothing> initialize = authorizer.get()->initialize(flags.acls.get());
+
+      if (initialize.isError()) {
+        // Failing to initialize the authorizer leads to undefined
+        // behavior, therefore we default to skip authorization
+        // altogether.
+        LOG(WARNING) << "Authorization disabled: Failed to initialize '"
+                     << authorizerName << "' authorizer: "
+                     << initialize.error();
+
+        delete authorizer.get();
+        authorizer = None();
+      }
+    } else if (flags.acls.isSome()) {
+      LOG(WARNING) << "Ignoring contents of --acls flag, because '"
+                   << authorizerName << "' authorizer will be used instead "
+                   << " of the default.";
+    }
   }
 
   Option<shared_ptr<RateLimiter>> slaveRemovalLimiter = None();

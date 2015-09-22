@@ -76,10 +76,11 @@ TEST_F(PartitionTest, PartitionedSlave)
 
   // Set these expectations up before we spawn the slave so that we
   // don't miss the first PING.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   // Drop all the PONGs to simulate slave partition.
-  DROP_MESSAGES(Eq("PONG"), _, _);
+  DROP_MESSAGES(Eq(PongSlaveMessage().GetTypeName()), _, _);
 
   Try<PID<Slave>> slave = StartSlave();
   ASSERT_SOME(slave);
@@ -118,7 +119,7 @@ TEST_F(PartitionTest, PartitionedSlave)
     if (pings == masterFlags.max_slave_ping_timeouts) {
      break;
     }
-    ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+    ping = FUTURE_MESSAGE(Eq(PingSlaveMessage().GetTypeName()), _, _);
     Clock::advance(masterFlags.slave_ping_timeout);
   }
 
@@ -160,8 +161,10 @@ TEST_F(PartitionTest, PartitionedSlaveReregistration)
   // from the slave. Note that we don't match on the master / slave
   // PIDs because it's actually the SlaveObserver Process that sends
   // the pings.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
-  DROP_MESSAGES(Eq("PONG"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
+
+  DROP_MESSAGES(Eq(PongSlaveMessage().GetTypeName()), _, _);
 
   MockExecutor exec(DEFAULT_EXECUTOR_ID);
 
@@ -245,7 +248,7 @@ TEST_F(PartitionTest, PartitionedSlaveReregistration)
     if (pings == masterFlags.max_slave_ping_timeouts) {
      break;
     }
-    ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+    ping = FUTURE_MESSAGE(Eq(PingSlaveMessage().GetTypeName()), _, _);
     Clock::advance(masterFlags.slave_ping_timeout);
     Clock::settle();
   }
@@ -309,8 +312,10 @@ TEST_F(PartitionTest, PartitionedSlaveStatusUpdates)
   // from the slave. Note that we don't match on the master / slave
   // PIDs because it's actually the SlaveObserver Process that sends
   // the pings.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
-  DROP_MESSAGES(Eq("PONG"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
+
+  DROP_MESSAGES(Eq(PongSlaveMessage().GetTypeName()), _, _);
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
@@ -362,7 +367,7 @@ TEST_F(PartitionTest, PartitionedSlaveStatusUpdates)
     if (pings == masterFlags.max_slave_ping_timeouts) {
      break;
     }
-    ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+    ping = FUTURE_MESSAGE(Eq(PingSlaveMessage().GetTypeName()), _, _);
     Clock::advance(masterFlags.slave_ping_timeout);
     Clock::settle();
   }
@@ -427,8 +432,10 @@ TEST_F(PartitionTest, PartitionedSlaveExitedExecutor)
   // from the slave. Note that we don't match on the master / slave
   // PIDs because it's actually the SlaveObserver Process that sends
   // the pings.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
-  DROP_MESSAGES(Eq("PONG"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
+
+  DROP_MESSAGES(Eq(PongSlaveMessage().GetTypeName()), _, _);
 
   MockExecutor exec(DEFAULT_EXECUTOR_ID);
   TestContainerizer containerizer(&exec);
@@ -506,7 +513,7 @@ TEST_F(PartitionTest, PartitionedSlaveExitedExecutor)
     if (pings == masterFlags.max_slave_ping_timeouts) {
      break;
     }
-    ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+    ping = FUTURE_MESSAGE(Eq(PingSlaveMessage().GetTypeName()), _, _);
     Clock::advance(masterFlags.slave_ping_timeout);
     Clock::settle();
   }
@@ -556,7 +563,8 @@ TEST_F(PartitionTest, OneWayPartitionMasterToSlave)
     FUTURE_MESSAGE(Eq(SlaveRegisteredMessage().GetTypeName()), _, _);
 
   // Ensure a ping reaches the slave.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   Try<PID<Slave>> slave = StartSlave();
   ASSERT_SOME(slave);

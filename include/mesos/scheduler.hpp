@@ -19,16 +19,11 @@
 #ifndef __MESOS_SCHEDULER_HPP__
 #define __MESOS_SCHEDULER_HPP__
 
-#include <functional>
 #include <mutex>
-#include <queue>
 #include <string>
 #include <vector>
 
 #include <mesos/mesos.hpp>
-
-#include <mesos/scheduler/scheduler.hpp>
-
 
 // Mesos scheduler interface and scheduler driver. A scheduler is used
 // to interact with Mesos in order run distributed computations.
@@ -273,6 +268,10 @@ public:
   // those filtered slaves.
   virtual Status reviveOffers() = 0;
 
+  // Inform Mesos master to stop sending offers to the framework. The
+  // scheduler should call reviveOffers() to resume getting offers.
+  virtual Status suppressOffers() = 0;
+
   // Acknowledges the status update. This should only be called
   // once the status update is processed durably by the scheduler.
   // Not that explicit acknowledgements must be requested via the
@@ -421,6 +420,8 @@ public:
 
   virtual Status reviveOffers();
 
+  virtual Status suppressOffers();
+
   virtual Status acknowledgeStatusUpdate(
       const TaskStatus& status);
 
@@ -466,54 +467,6 @@ private:
   std::string schedulerId;
 };
 
-
-namespace scheduler {
-
-// Interface to Mesos for a scheduler. Abstracts master detection
-// (connection and disconnection) and authentication if some
-// credentials are provided.
-//
-// Expects three callbacks, 'connected', 'disconnected', and
-// 'received' which will get invoked _serially_ when it's determined
-// that we've connected, disconnected, or received events from the
-// master. Note that we drop events while disconnected but it's
-// possible to receive a batch of events across a
-// disconnected/connected transition before getting the disconnected
-// and then connected callback.
-//
-// TODO(benh): Don't include events in 'received' that occured after a
-// disconnected/connected transition.
-class Mesos
-{
-public:
-  Mesos(const std::string& master,
-        const std::function<void(void)>& connected,
-        const std::function<void(void)>& disconnected,
-        const std::function<void(const std::queue<Event>&)>& received);
-
-  // Same as the above constructor but takes 'credential' as argument.
-  // The credential will be used for authenticating with the master.
-  Mesos(const std::string& master,
-        const Credential& credential,
-        const std::function<void(void)>& connected,
-        const std::function<void(void)>& disconnected,
-        const std::function<void(const std::queue<Event>&)>& received);
-
-  virtual ~Mesos();
-
-  // Attempts to send a call to the master.
-  //
-  // Some local validation of calls is performed which may generate
-  // events without ever being sent to the master. This includes when
-  // calls are sent but no master is currently detected (i.e., we're
-  // disconnected).
-  virtual void send(const Call& call);
-
-private:
-  MesosProcess* process;
-};
-
-} // namespace scheduler {
 } // namespace mesos {
 
 #endif // __MESOS_SCHEDULER_HPP__

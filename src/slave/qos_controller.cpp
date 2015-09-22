@@ -26,7 +26,7 @@
 
 #include "module/manager.hpp"
 
-#include "slave/qos_controller.hpp"
+#include "slave/qos_controllers/noop.hpp"
 
 using namespace process;
 
@@ -56,50 +56,4 @@ Try<QoSController*> QoSController::create(const Option<string>& type)
 }
 
 } // namespace slave {
-} // namespace mesos {
-
-
-namespace mesos {
-namespace internal {
-namespace slave {
-
-class NoopQoSControllerProcess : public Process<NoopQoSControllerProcess>
-{
-public:
-  virtual ~NoopQoSControllerProcess() {}
-
-  NoopQoSControllerProcess() {}
-};
-
-
-NoopQoSController::~NoopQoSController()
-{
-  if (process.get() != NULL) {
-    terminate(process.get());
-    wait(process.get());
-  }
-}
-
-
-Try<Nothing> NoopQoSController::initialize(
-    const lambda::function<Future<ResourceUsage>()>& usage)
-{
-  if (process.get() != NULL) {
-    return Error("Noop QoS Controller has already been initialized");
-  }
-
-  process.reset(new NoopQoSControllerProcess());
-  spawn(process.get());
-
-  return Nothing();
-}
-
-
-Future<list<mesos::slave::QoSCorrection>> NoopQoSController::corrections()
-{
-  return Future<list<mesos::slave::QoSCorrection>>();
-}
-
-} // namespace slave {
-} // namespace internal {
 } // namespace mesos {

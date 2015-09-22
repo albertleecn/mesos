@@ -43,8 +43,6 @@ public:
   explicit MesosIsolator(process::Owned<MesosIsolatorProcess> process);
   virtual ~MesosIsolator();
 
-  virtual process::Future<Option<int>> namespaces();
-
   virtual process::Future<Nothing> recover(
       const std::list<mesos::slave::ContainerState>& states,
       const hashset<ContainerID>& orphans);
@@ -53,7 +51,6 @@ public:
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
-      const Option<std::string>& rootfs,
       const Option<std::string>& user);
 
   virtual process::Future<Nothing> isolate(
@@ -83,8 +80,6 @@ class MesosIsolatorProcess : public process::Process<MesosIsolatorProcess>
 public:
   virtual ~MesosIsolatorProcess() {}
 
-  virtual process::Future<Option<int>> namespaces() { return None(); }
-
   virtual process::Future<Nothing> recover(
       const std::list<mesos::slave::ContainerState>& states,
       const hashset<ContainerID>& orphans) = 0;
@@ -93,7 +88,6 @@ public:
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
-      const Option<std::string>& rootfs,
       const Option<std::string>& user) = 0;
 
   virtual process::Future<Nothing> isolate(

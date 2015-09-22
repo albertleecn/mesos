@@ -235,7 +235,6 @@ Future<Option<ContainerPrepareInfo>> CgroupsMemIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
-    const Option<string>& rootfs,
     const Option<string>& user)
 {
   if (infos.contains(containerId)) {
@@ -475,6 +474,11 @@ Future<ResourceStatistics> CgroupsMemIsolatorProcess::usage(
   Option<uint64_t> total_swap = stat.get().get("total_swap");
   if (total_swap.isSome()) {
     result.set_mem_swap_bytes(total_swap.get());
+  }
+
+  Option<uint64_t> total_unevictable = stat.get().get("total_unevictable");
+  if (total_unevictable.isSome()) {
+    result.set_mem_unevictable_bytes(total_unevictable.get());
   }
 
   // Get pressure counter readings.

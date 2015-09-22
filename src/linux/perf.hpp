@@ -34,34 +34,13 @@
 
 namespace perf {
 
-// Sample the perf events for process pid for duration.
-process::Future<mesos::PerfStatistics> sample(
-    const std::set<std::string>& events,
-    pid_t pid,
-    const Duration& duration);
-
-
-// Sample the perf events for processes in pids for duration.
-process::Future<mesos::PerfStatistics> sample(
-    const std::set<std::string>& events,
-    const std::set<pid_t>& pids,
-    const Duration& duration);
-
-
 // Sample the perf events for process(es) in the perf_event cgroups
 // for duration. The returned hashmap is keyed by cgroup.
 // NOTE: cgroups should be relative to the perf_event subsystem mount,
 // e.g., mesos/test for /sys/fs/cgroup/perf_event/mesos/test.
 process::Future<hashmap<std::string, mesos::PerfStatistics>> sample(
     const std::set<std::string>& events,
-    const std::set<std::string>& cgroup,
-    const Duration& duration);
-
-
-// Sample the perf events for process(es) in the perf_event cgroup.
-process::Future<mesos::PerfStatistics> sample(
-    const std::set<std::string>& events,
-    const std::string& cgroup,
+    const std::set<std::string>& cgroups,
     const Duration& duration);
 
 
@@ -74,9 +53,11 @@ bool valid(const std::set<std::string>& events);
 bool supported();
 
 
-// Note: Exposed for testing purposes.
+// Note: The parse function is exposed to allow testing of the
+// multiple supported perf stat output formats.
 Try<hashmap<std::string, mesos::PerfStatistics>> parse(
-    const std::string& output);
+    const std::string& output,
+    const Version& version);
 
 } // namespace perf {
 

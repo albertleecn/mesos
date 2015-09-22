@@ -25,6 +25,7 @@
 
 #include <mesos/type_utils.hpp>
 
+#include <process/clock.hpp>
 #include <process/gmock.hpp>
 #include <process/gtest.hpp>
 #include <process/pid.hpp>
@@ -45,6 +46,7 @@
 #include "messages/state.hpp"
 
 #include "master/flags.hpp"
+#include "master/maintenance.hpp"
 #include "master/master.hpp"
 #include "master/registrar.hpp"
 
@@ -68,6 +70,15 @@ using std::set;
 using std::string;
 using std::vector;
 
+using process::Clock;
+
+using google::protobuf::RepeatedPtrField;
+
+using mesos::internal::protobuf::maintenance::createMachineList;
+using mesos::internal::protobuf::maintenance::createSchedule;
+using mesos::internal::protobuf::maintenance::createUnavailability;
+using mesos::internal::protobuf::maintenance::createWindow;
+
 using testing::_;
 using testing::DoAll;
 using testing::Eq;
@@ -80,6 +91,9 @@ using ::testing::WithParamInterface;
 namespace mesos {
 namespace internal {
 namespace tests {
+
+using namespace mesos::maintenance;
+using namespace mesos::internal::master::maintenance;
 
 using state::Entry;
 using state::LogStorage;
@@ -312,6 +326,348 @@ TEST_P(RegistrarTest, Remove)
     AWAIT_EQ(false, registrar.apply(Owned<Operation>(new RemoveSlave(info3))));
   } else {
     AWAIT_EQ(true, registrar.apply(Owned<Operation>(new RemoveSlave(info3))));
+  }
+}
+
+
+// NOTE: For the following tests, the state of the registrar can
+// only be viewed once per instantiation of the registrar.
+// To check the result of each operation, we must re-construct
+// the registrar, which is done by putting the code into scoped blocks.
+
+// TODO(josephw): Consider refactoring these maintenance operation tests
+// to use a helper function for each un-named scoped block.
+// For example:
+//   MaintenanceTest(flags, state, [=](const Registry& registry) {
+//     // Checks and operations.  i.e.:
+//     EXPECT_EQ(1, registry.get().schedules().size());
+//   });
+
+// Adds maintenance schedules to the registry, one machine at a time.
+// Then removes machines from the schedule.
+TEST_P(RegistrarTest, UpdateMaintenanceSchedule)
+{
+  // Machine definitions used in this test.
+  MachineID machine1;
+  machine1.set_ip("0.0.0.1");
+
+  MachineID machine2;
+  machine2.set_hostname("2");
+
+  MachineID machine3;
+  machine3.set_hostname("3");
+  machine3.set_ip("0.0.0.3");
+
+  Unavailability unavailability = createUnavailability(Clock::now());
+
+  {
+    // Prepare the registrar.
+    Registrar registrar(flags, state);
+    AWAIT_READY(registrar.recover(master));
+
+    // Schedule one machine for maintenance.
+    maintenance::Schedule schedule = createSchedule(
+        {createWindow({machine1}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+  }
+
+  {
+    // Check that one schedule and one machine info was made.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(1, registry.get().schedules().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows(0).machine_ids().size());
+    EXPECT_EQ(1, registry.get().machines().machines().size());
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(0).info().mode());
+
+    // Extend the schedule by one machine (in a different window).
+    maintenance::Schedule schedule = createSchedule({
+        createWindow({machine1}, unavailability),
+        createWindow({machine2}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+  }
+
+  {
+    // Check that both machines are part of maintenance.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(1, registry.get().schedules().size());
+    EXPECT_EQ(2, registry.get().schedules(0).windows().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows(0).machine_ids().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows(1).machine_ids().size());
+    EXPECT_EQ(2, registry.get().machines().machines().size());
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(1).info().mode());
+
+    // Extend a window by one machine.
+    maintenance::Schedule schedule = createSchedule({
+        createWindow({machine1}, unavailability),
+        createWindow({machine2, machine3}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+  }
+
+  {
+    // Check that all three machines are included.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(1, registry.get().schedules().size());
+    EXPECT_EQ(2, registry.get().schedules(0).windows().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows(0).machine_ids().size());
+    EXPECT_EQ(2, registry.get().schedules(0).windows(1).machine_ids().size());
+    EXPECT_EQ(3, registry.get().machines().machines().size());
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(2).info().mode());
+
+    // Rearrange the schedule into one window.
+    maintenance::Schedule schedule = createSchedule(
+        {createWindow({machine1, machine2, machine3}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+  }
+
+  {
+    // Check that the machine infos are unchanged, but the schedule is.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(1, registry.get().schedules().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows().size());
+    EXPECT_EQ(3, registry.get().schedules(0).windows(0).machine_ids().size());
+    EXPECT_EQ(3, registry.get().machines().machines().size());
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(0).info().mode());
+
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(1).info().mode());
+
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(2).info().mode());
+
+    // Delete one machine from the schedule.
+    maintenance::Schedule schedule = createSchedule(
+        {createWindow({machine2, machine3}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+  }
+
+  {
+    // Check that one machine info is removed.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(1, registry.get().schedules().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows().size());
+    EXPECT_EQ(2, registry.get().schedules(0).windows(0).machine_ids().size());
+    EXPECT_EQ(2, registry.get().machines().machines().size());
+
+    // Delete all machines from the schedule.
+    maintenance::Schedule schedule;
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+  }
+
+  {
+    // Check that all statuses are removed.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(1, registry.get().schedules().size());
+    EXPECT_EQ(0, registry.get().schedules(0).windows().size());
+    EXPECT_EQ(0, registry.get().machines().machines().size());
+  }
+}
+
+
+// Creates a schedule and properly starts maintenance.
+TEST_P(RegistrarTest, StartMaintenance)
+{
+  // Machine definitions used in this test.
+  MachineID machine1;
+  machine1.set_ip("0.0.0.1");
+
+  MachineID machine2;
+  machine2.set_hostname("2");
+
+  MachineID machine3;
+  machine3.set_hostname("3");
+  machine3.set_ip("0.0.0.3");
+
+  Unavailability unavailability = createUnavailability(Clock::now());
+
+  {
+    // Prepare the registrar.
+    Registrar registrar(flags, state);
+    AWAIT_READY(registrar.recover(master));
+
+    // Schedule two machines for maintenance.
+    maintenance::Schedule schedule = createSchedule(
+        {createWindow({machine1, machine2}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+
+    // Transition machine two into `DOWN` mode.
+    RepeatedPtrField<MachineID> machines = createMachineList({machine2});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new StartMaintenance(machines))));
+  }
+
+  {
+    // Check that machine two is down.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(2, registry.get().machines().machines().size());
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(0).info().mode());
+
+    EXPECT_EQ(
+        MachineInfo::DOWN,
+        registry.get().machines().machines(1).info().mode());
+
+    // Schedule three machines for maintenance.
+    maintenance::Schedule schedule = createSchedule(
+        {createWindow({machine1, machine2, machine3}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+
+    // Deactivate the two `DRAINING` machines.
+    RepeatedPtrField<MachineID> machines =
+      createMachineList({machine1, machine3});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new StartMaintenance(machines))));
+  }
+
+  {
+    // Check that all machines are down.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(3, registry.get().machines().machines().size());
+    EXPECT_EQ(
+        MachineInfo::DOWN,
+        registry.get().machines().machines(0).info().mode());
+
+    EXPECT_EQ(
+        MachineInfo::DOWN,
+        registry.get().machines().machines(1).info().mode());
+
+    EXPECT_EQ(
+        MachineInfo::DOWN,
+        registry.get().machines().machines(2).info().mode());
+  }
+}
+
+
+// Creates a schedule and properly starts and stops maintenance.
+TEST_P(RegistrarTest, StopMaintenance)
+{
+  // Machine definitions used in this test.
+  MachineID machine1;
+  machine1.set_ip("0.0.0.1");
+
+  MachineID machine2;
+  machine2.set_hostname("2");
+
+  MachineID machine3;
+  machine3.set_hostname("3");
+  machine3.set_ip("0.0.0.3");
+
+  Unavailability unavailability = createUnavailability(Clock::now());
+
+  {
+    // Prepare the registrar.
+    Registrar registrar(flags, state);
+    AWAIT_READY(registrar.recover(master));
+
+    // Schdule three machines for maintenance.
+    maintenance::Schedule schedule = createSchedule({
+        createWindow({machine1, machine2}, unavailability),
+        createWindow({machine3}, unavailability)});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new UpdateSchedule(schedule))));
+
+    // Transition machine three into `DOWN` mode.
+    RepeatedPtrField<MachineID> machines = createMachineList({machine3});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new StartMaintenance(machines))));
+
+    // Transition machine three into `UP` mode.
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new StopMaintenance(machines))));
+  }
+
+  {
+    // Check that machine three and the window were removed.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(1, registry.get().schedules().size());
+    EXPECT_EQ(1, registry.get().schedules(0).windows().size());
+    EXPECT_EQ(2, registry.get().schedules(0).windows(0).machine_ids().size());
+    EXPECT_EQ(2, registry.get().machines().machines().size());
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(0).info().mode());
+
+    EXPECT_EQ(
+        MachineInfo::DRAINING,
+        registry.get().machines().machines(1).info().mode());
+
+    // Transition machine one and two into `DOWN` mode.
+    RepeatedPtrField<MachineID> machines =
+      createMachineList({machine1, machine2});
+
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new StartMaintenance(machines))));
+
+    // Transition all machines into `UP` mode.
+    AWAIT_READY(registrar.apply(
+        Owned<Operation>(new StopMaintenance(machines))));
+  }
+
+  {
+    // Check that the schedule is now empty.
+    Registrar registrar(flags, state);
+    Future<Registry> registry = registrar.recover(master);
+    AWAIT_READY(registry);
+
+    EXPECT_EQ(0, registry.get().schedules().size());
+    EXPECT_EQ(0, registry.get().machines().machines().size());
   }
 }
 

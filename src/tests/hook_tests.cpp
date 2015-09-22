@@ -40,6 +40,7 @@
 #include "slave/flags.hpp"
 #include "slave/slave.hpp"
 
+#include "slave/containerizer/docker.hpp"
 #include "slave/containerizer/fetcher.hpp"
 
 #include "slave/containerizer/mesos/containerizer.hpp"
@@ -62,7 +63,9 @@ using mesos::internal::slave::Slave;
 
 using process::Future;
 using process::PID;
+using process::Shared;
 
+using std::list;
 using std::string;
 using std::vector;
 
@@ -425,7 +428,7 @@ TEST_F(HookTest, VerifySlaveRunTaskHook)
 // "bar":"baz") is sent from the executor. The labels get modified by
 // the slave hook to strip the "foo":"bar" pair and/ add a new
 // "baz":"qux" pair.
-TEST_F(HookTest, VerifySlaveTaskStatusLabelDecorator)
+TEST_F(HookTest, VerifySlaveTaskStatusDecorator)
 {
   Try<PID<Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -492,7 +495,7 @@ TEST_F(HookTest, VerifySlaveTaskStatusLabelDecorator)
 
   AWAIT_READY(status);
 
-  // The master hook will hang an extra label off.
+  // The hook will hang an extra label off.
   const Labels& labels_ = status.get().labels();
 
   EXPECT_EQ(2, labels_.labels_size());
@@ -507,10 +510,148 @@ TEST_F(HookTest, VerifySlaveTaskStatusLabelDecorator)
   EXPECT_EQ("bar", labels_.labels(1).key());
   EXPECT_EQ("baz", labels_.labels(1).value());
 
+  // Now validate TaskInfo.container_status. We must have received a
+  // container_status with one network_info set by the test hook module.
+  EXPECT_TRUE(status.get().has_container_status());
+  EXPECT_EQ(1, status.get().container_status().network_infos().size());
+
+  const NetworkInfo networkInfo =
+    status.get().container_status().network_infos(0);
+
+  // The hook module sets up '4.3.2.1' as the IP address and 'public' as the
+  // network isolation group.
+  EXPECT_TRUE(networkInfo.has_ip_address());
+  EXPECT_EQ("4.3.2.1", networkInfo.ip_address());
+
+  EXPECT_EQ(1, networkInfo.groups().size());
+  EXPECT_EQ("public", networkInfo.groups(0));
+
+  EXPECT_TRUE(networkInfo.has_labels());
+  EXPECT_EQ(1, networkInfo.labels().labels().size());
+
+  const Label networkInfoLabel = networkInfo.labels().labels(0);
+
+  // Finally, the labels set inside NetworkInfo by the hook module.
+  EXPECT_EQ("net_foo", networkInfoLabel.key());
+  EXPECT_EQ("net_bar", networkInfoLabel.value());
+
   driver.stop();
   driver.join();
 
   Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
+}
+
+
+// Test that the prepare launch docker hook execute before launch
+// a docker container. Test hook create a file "foo" in the sandbox
+// directory. When the docker container launched, the sandbox directory
+// is mounted to the docker container. We validate the hook by verifying
+// the "foo" file exists in the docker container or not.
+TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockDocker* mockDocker =
+    new MockDocker(tests::flags.docker, tests::flags.docker_socket);
+  Shared<Docker> docker(mockDocker);
+
+  slave::Flags flags = CreateSlaveFlags();
+
+  Fetcher fetcher;
+
+  MockDockerContainerizer dockerContainerizer(flags, &fetcher, docker);
+
+  Try<PID<Slave>> slave = StartSlave(&dockerContainerizer, flags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+  Future<FrameworkID> frameworkId;
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .WillOnce(FutureArg<1>(&frameworkId));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(frameworkId);
+
+  AWAIT_READY(offers);
+  ASSERT_NE(0u, offers.get().size());
+
+  const Offer& offer = offers.get()[0];
+
+  SlaveID slaveId = offer.slave_id();
+
+  TaskInfo task;
+  task.set_name("");
+  task.mutable_task_id()->set_value("1");
+  task.mutable_slave_id()->CopyFrom(offer.slave_id());
+  task.mutable_resources()->CopyFrom(offer.resources());
+
+  CommandInfo command;
+  command.set_value("test -f " + path::join(flags.sandbox_directory, "foo"));
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  // TODO(tnachen): Use local image to test if possible.
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("busybox");
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  task.mutable_command()->CopyFrom(command);
+  task.mutable_container()->CopyFrom(containerInfo);
+
+  vector<TaskInfo> tasks;
+  tasks.push_back(task);
+
+  Future<ContainerID> containerId;
+  EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _, _))
+    .WillOnce(DoAll(FutureArg<0>(&containerId),
+                    Invoke(&dockerContainerizer,
+                           &MockDockerContainerizer::_launch)));
+
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> statusFinished;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusFinished))
+    .WillRepeatedly(DoDefault());
+
+  driver.launchTasks(offers.get()[0].id(), tasks);
+
+  AWAIT_READY_FOR(containerId, Seconds(60));
+  AWAIT_READY_FOR(statusRunning, Seconds(60));
+  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+  AWAIT_READY_FOR(statusFinished, Seconds(60));
+  EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
+
+  Future<containerizer::Termination> termination =
+    dockerContainerizer.wait(containerId.get());
+
+  driver.stop();
+  driver.join();
+
+  AWAIT_READY(termination);
+
+  Future<list<Docker::Container>> containers =
+    docker.get()->ps(true, slave::DOCKER_NAME_PREFIX);
+
+  AWAIT_READY(containers);
+
+  // Cleanup all mesos launched containers.
+  foreach (const Docker::Container& container, containers.get()) {
+    AWAIT_READY_FOR(docker.get()->rm(container.id, true), Seconds(30));
+  }
+
+  Shutdown();
 }
 
 } // namespace tests {

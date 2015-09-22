@@ -29,12 +29,11 @@
 #include <mesos/executor.hpp>
 #include <mesos/scheduler.hpp>
 
-#include <mesos/scheduler/scheduler.hpp>
-
 #include <process/clock.hpp>
 #include <process/future.hpp>
 #include <process/gmock.hpp>
 #include <process/pid.hpp>
+#include <process/reap.hpp>
 #include <process/subprocess.hpp>
 
 #include <stout/option.hpp>
@@ -225,7 +224,7 @@ TEST_F(SlaveTest, ShutdownUnregisteredExecutor)
 
   // Now advance time until the reaper reaps the executor.
   while (status.isPending()) {
-    Clock::advance(Seconds(1));
+    Clock::advance(process::MAX_REAP_INTERVAL());
     Clock::settle();
   }
 
@@ -1047,7 +1046,7 @@ TEST_F(SlaveTest, StateEndpoint)
   ASSERT_SOME(slave);
 
   Future<process::http::Response> response =
-    process::http::get(slave.get(), "state.json");
+    process::http::get(slave.get(), "state");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
 
@@ -1082,7 +1081,7 @@ TEST_F(SlaveTest, StateEndpoint)
   ASSERT_TRUE(state.values["start_time"].is<JSON::Number>());
   EXPECT_EQ(
       static_cast<int>(Clock::now().secs()),
-      static_cast<int>(state.values["start_time"].as<JSON::Number>().value));
+      state.values["start_time"].as<JSON::Number>().as<int>());
 
   // TODO(bmahler): The slave must register for the 'id'
   // to be non-empty.
@@ -1159,7 +1158,7 @@ TEST_F(SlaveTest, StateEndpoint)
   AWAIT_READY(status);
   EXPECT_EQ(TASK_RUNNING, status.get().state());
 
-  response = http::get(slave.get(), "state.json");
+  response = http::get(slave.get(), "state");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
 
@@ -1510,7 +1509,7 @@ TEST_F(SlaveTest, PingTimeoutNoPings)
   ASSERT_SOME(master);
 
   // Block all pings to the slave.
-  DROP_MESSAGES(Eq("PING"), _, _);
+  DROP_MESSAGES(Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
@@ -1564,7 +1563,8 @@ TEST_F(SlaveTest, PingTimeoutSomePings)
   Clock::pause();
 
   // Ensure a ping reaches the slave.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   Clock::advance(masterFlags.slave_ping_timeout);
 
@@ -1573,7 +1573,7 @@ TEST_F(SlaveTest, PingTimeoutSomePings)
   // Now block further pings from the master and advance
   // the clock to trigger a re-detection and re-registration on
   // the slave.
-  DROP_MESSAGES(Eq("PING"), _, _);
+  DROP_MESSAGES(Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   Future<Nothing> detected = FUTURE_DISPATCH(_, &Slave::detected);
 
@@ -1600,10 +1600,11 @@ TEST_F(SlaveTest, RateLimitSlaveShutdown)
 
   // Set these expectations up before we spawn the slave so that we
   // don't miss the first PING.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   // Drop all the PONGs to simulate health check timeout.
-  DROP_MESSAGES(Eq("PONG"), _, _);
+  DROP_MESSAGES(Eq(PongSlaveMessage().GetTypeName()), _, _);
 
   Future<SlaveRegisteredMessage> slaveRegisteredMessage =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
@@ -1633,7 +1634,7 @@ TEST_F(SlaveTest, RateLimitSlaveShutdown)
       Clock::advance(masterFlags.slave_ping_timeout);
       break;
     }
-    ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+    ping = FUTURE_MESSAGE(Eq(PingSlaveMessage().GetTypeName()), _, _);
     Clock::advance(masterFlags.slave_ping_timeout);
   }
 
@@ -1664,10 +1665,11 @@ TEST_F(SlaveTest, CancelSlaveShutdown)
 
   // Set these expectations up before we spawn the slave so that we
   // don't miss the first PING.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   // Drop all the PONGs to simulate health check timeout.
-  DROP_MESSAGES(Eq("PONG"), _, _);
+  DROP_MESSAGES(Eq(PongSlaveMessage().GetTypeName()), _, _);
 
   // No shutdown should occur during the test!
   EXPECT_NO_FUTURE_PROTOBUFS(ShutdownMessage(), _, _);
@@ -1698,7 +1700,7 @@ TEST_F(SlaveTest, CancelSlaveShutdown)
       Clock::advance(masterFlags.slave_ping_timeout);
       break;
     }
-    ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+    ping = FUTURE_MESSAGE(Eq(PingSlaveMessage().GetTypeName()), _, _);
     Clock::advance(masterFlags.slave_ping_timeout);
   }
 
@@ -2078,9 +2080,9 @@ TEST_F(SlaveTest, TaskLabels)
 
   AWAIT_READY(update);
 
-  // Verify label key and value in slave state.json.
+  // Verify label key and value in slave state endpoint.
   Future<process::http::Response> response =
-    process::http::get(slave.get(), "state.json");
+    process::http::get(slave.get(), "state");
   AWAIT_READY(response);
 
   EXPECT_SOME_EQ(
@@ -2208,6 +2210,94 @@ TEST_F(SlaveTest, TaskStatusLabels)
   EXPECT_EQ(
       JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))),
       labelsObject.values[2]);
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
+
+  Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
+}
+
+
+// This test verifies that TaskStatus::container_status an is exposed over
+// the slave state endpoint.
+TEST_F(SlaveTest, TaskStatusContainerStatus)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+
+  Try<PID<Slave>> slave = StartSlave(&exec);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .Times(1);
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers.get().size());
+
+  TaskInfo task = createTask(offers.get()[0], "sleep 100", DEFAULT_EXECUTOR_ID);
+
+  ExecutorDriver* execDriver;
+  EXPECT_CALL(exec, registered(_, _, _, _))
+    .WillOnce(SaveArg<0>(&execDriver));
+
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
+
+  Future<TaskStatus> status;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status));
+
+  driver.launchTasks(offers.get()[0].id(), {task});
+
+  AWAIT_READY(status);
+
+  const string slaveIPAddress = stringify(slave.get().address.ip);
+
+  // Validate that the Slave has passed in its IP address in
+  // TaskStatus.container_status.network_infos[0].ip_address.
+  EXPECT_TRUE(status.get().has_container_status());
+  EXPECT_EQ(1, status.get().container_status().network_infos().size());
+  EXPECT_TRUE(
+      status.get().container_status().network_infos(0).has_ip_address());
+  EXPECT_EQ(
+      slaveIPAddress,
+      status.get().container_status().network_infos(0).ip_address());
+
+  // Now do the same validation with state endpoint.
+  Future<process::http::Response> response =
+    process::http::get(slave.get(), "state.json");
+  AWAIT_READY(response);
+
+  EXPECT_SOME_EQ(
+      "application/json",
+      response.get().headers.get("Content-Type"));
+
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+  ASSERT_SOME(parse);
+
+  // Validate that the IP address passed in by the Slave is available at the
+  // state endpoint.
+  ASSERT_SOME_EQ(
+      slaveIPAddress,
+      parse.get().find<JSON::String>(
+          "frameworks[0].executors[0].tasks[0].statuses[0]"
+          ".container_status.network_infos[0].ip_address"));
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -2616,8 +2706,15 @@ TEST_F(SlaveTest, HTTPSchedulerSlaveRestart)
   Future<UpdateFrameworkMessage> updateFrameworkMessage =
      DROP_PROTOBUF(UpdateFrameworkMessage(), _, _);
 
+  // Ensure that there will be no reregistration retries from the
+  // slave resulting in another UpdateFrameworkMessage from master.
+  Clock::pause();
+
   slave = StartSlave(containerizer2.get(), flags);
   ASSERT_SOME(slave);
+
+  Clock::settle();
+  Clock::resume();
 
   AWAIT_READY(slaveReregisteredMessage);
   AWAIT_READY(updateFrameworkMessage);

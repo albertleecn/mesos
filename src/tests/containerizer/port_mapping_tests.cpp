@@ -39,6 +39,7 @@
 #include <stout/os/exists.hpp>
 
 #include "linux/fs.hpp"
+#include "linux/ns.hpp"
 
 #include "linux/routing/utils.hpp"
 
@@ -191,14 +192,14 @@ public:
       << "new libnl library, or disable this test case\n"
       << "-------------------------------------------------------------";
 
-    ASSERT_SOME_EQ(0, os::shell(NULL, "which nc"))
+    ASSERT_SOME(os::shell("which nc"))
       << "-------------------------------------------------------------\n"
       << "We cannot run any PortMappingIsolatorTests because 'nc'\n"
       << "could not be found. You can either install 'nc', or disable\n"
       << "this test case\n"
       << "-------------------------------------------------------------";
 
-    ASSERT_SOME_EQ(0, os::shell(NULL, "which arping"))
+    ASSERT_SOME(os::shell("which arping"))
       << "-------------------------------------------------------------\n"
       << "We cannot run some PortMappingIsolatorTests because 'arping'\n"
       << "could not be found. You can either isntall 'arping', or\n"
@@ -341,7 +342,8 @@ protected:
         Subprocess::FD(STDERR_FILENO),
         launchFlags,
         None(),
-        None());
+        None(),
+        CLONE_NEWNET | CLONE_NEWNS);
 
     return pid;
   }
@@ -439,8 +441,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_ContainerToContainerTCP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -461,7 +462,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_ContainerToContainerTCP)
         containerId1,
         executorInfo,
         dir1.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -529,7 +529,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_ContainerToContainerTCP)
         containerId2,
         executorInfo,
         dir2.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation2);
@@ -601,8 +600,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_ContainerToContainerUDP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -623,7 +621,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_ContainerToContainerUDP)
         containerId1,
         executorInfo,
         dir1.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -691,7 +688,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_ContainerToContainerUDP)
         containerId2,
         executorInfo,
         dir2.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation2);
@@ -765,8 +761,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_HostToContainerUDP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -787,7 +782,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_HostToContainerUDP)
         containerId,
         executorInfo,
         dir.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -843,24 +837,24 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_HostToContainerUDP)
   // Send to 'localhost' and 'port'.
   ostringstream command2;
   command2 << "printf hello1 | nc -w1 -u localhost " << validPort;
-  ASSERT_SOME_EQ(0, os::shell(NULL, command2.str().c_str()));
+  ASSERT_SOME(os::shell(command2.str()));
 
   // Send to 'localhost' and 'invalidPort'. The command should return
   // successfully because UDP is stateless but no data could be sent.
   ostringstream command3;
   command3 << "printf hello2 | nc -w1 -u localhost " << invalidPort;
-  ASSERT_SOME_EQ(0, os::shell(NULL, command3.str().c_str()));
+  ASSERT_SOME(os::shell(command3.str()));
 
   // Send to 'public IP' and 'port'.
   ostringstream command4;
   command4 << "printf hello3 | nc -w1 -u " << hostIP << " " << validPort;
-  ASSERT_SOME_EQ(0, os::shell(NULL, command4.str().c_str()));
+  ASSERT_SOME(os::shell(command4.str()));
 
   // Send to 'public IP' and 'invalidPort'. The command should return
   // successfully because UDP is stateless but no data could be sent.
   ostringstream command5;
   command5 << "printf hello4 | nc -w1 -u " << hostIP << " " << invalidPort;
-  ASSERT_SOME_EQ(0, os::shell(NULL, command5.str().c_str()));
+  ASSERT_SOME(os::shell(command5.str()));
 
   EXPECT_SOME_EQ("hello1", os::read(trafficViaLoopback));
   EXPECT_SOME_EQ("hello3", os::read(trafficViaPublic));
@@ -883,8 +877,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_HostToContainerTCP)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -905,7 +898,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_HostToContainerTCP)
         containerId,
         executorInfo,
         dir.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -961,24 +953,24 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_HostToContainerTCP)
   // Send to 'localhost' and 'port'.
   ostringstream command2;
   command2 << "printf hello1 | nc localhost " << validPort;
-  ASSERT_SOME_EQ(0, os::shell(NULL, command2.str().c_str()));
+  ASSERT_SOME(os::shell(command2.str()));
 
   // Send to 'localhost' and 'invalidPort'. This should fail because TCP
   // connection couldn't be established..
   ostringstream command3;
   command3 << "printf hello2 | nc localhost " << invalidPort;
-  ASSERT_SOME_EQ(256, os::shell(NULL, command3.str().c_str()));
+  ASSERT_ERROR(os::shell(command3.str()));
 
   // Send to 'public IP' and 'port'.
   ostringstream command4;
   command4 << "printf hello3 | nc " << hostIP << " " << validPort;
-  ASSERT_SOME_EQ(0, os::shell(NULL, command4.str().c_str()));
+  ASSERT_SOME(os::shell(command4.str()));
 
   // Send to 'public IP' and 'invalidPort'. This should fail because TCP
   // connection couldn't be established.
   ostringstream command5;
   command5 << "printf hello4 | nc " << hostIP << " " << invalidPort;
-  ASSERT_SOME_EQ(256, os::shell(NULL, command5.str().c_str()));
+  ASSERT_ERROR(os::shell(command5.str()));
 
   EXPECT_SOME_EQ("hello1", os::read(trafficViaLoopback));
   EXPECT_SOME_EQ("hello3", os::read(trafficViaPublic));
@@ -1009,8 +1001,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerICMPExternal)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1031,7 +1022,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerICMPExternal)
         containerId,
         executorInfo,
         dir.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -1096,8 +1086,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerICMPInternal)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1118,7 +1107,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerICMPInternal)
         containerId,
         executorInfo,
         dir.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -1186,8 +1174,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerARPExternal)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1208,7 +1195,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_ContainerARPExternal)
         containerId,
         executorInfo,
         dir.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -1282,8 +1268,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_DNS)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1304,7 +1289,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_DNS)
         containerId,
         executorInfo,
         dir.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -1374,8 +1358,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_TooManyContainers)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources.
@@ -1396,7 +1379,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_TooManyContainers)
         containerId1,
         executorInfo,
         dir1.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -1448,7 +1430,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_TooManyContainers)
         containerId2,
         executorInfo,
         dir2.get(),
-        None(),
         None());
 
   AWAIT_FAILED(preparation2);
@@ -1484,8 +1465,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_SmallEgressLimit)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Open an nc server on the host side. Note that 'invalidPort' is in
@@ -1514,7 +1494,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_SmallEgressLimit)
         containerId,
         executorInfo,
         dir.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);
@@ -1637,8 +1616,7 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_PortMappingStatistics)
   Try<Isolator*> isolator = PortMappingIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Open an nc server on the host side. Note that 'invalidPort' is
@@ -1669,7 +1647,6 @@ TEST_F(PortMappingIsolatorTest, ROOT_NC_PortMappingStatistics)
         containerId,
         executorInfo,
         dir1.get(),
-        None(),
         None());
 
   AWAIT_READY(preparation1);

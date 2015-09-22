@@ -55,7 +55,6 @@ using mesos::internal::slave::Launcher;
 using mesos::internal::slave::MesosContainerizer;
 using mesos::internal::slave::MesosContainerizerProcess;
 using mesos::internal::slave::PosixLauncher;
-using mesos::internal::slave::Provisioner;
 using mesos::internal::slave::Slave;
 
 using mesos::internal::slave::state::ExecutorState;
@@ -116,8 +115,7 @@ public:
         false,
         fetcher,
         Owned<Launcher>(launcher.get()),
-        isolators,
-        hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>());
+        isolators);
   }
 
   Try<MesosContainerizer*> CreateContainerizer(
@@ -429,16 +427,13 @@ public:
       bool local,
       Fetcher* fetcher,
       const Owned<Launcher>& launcher,
-      const vector<Owned<Isolator>>& isolators,
-      const hashmap<ContainerInfo::Image::Type,
-                    Owned<Provisioner>>& provisioners)
+      const vector<Owned<Isolator>>& isolators)
     : MesosContainerizerProcess(
           flags,
           local,
           fetcher,
           launcher,
-          isolators,
-          provisioners)
+          isolators)
   {
     // NOTE: See TestContainerizer::setup for why we use
     // 'EXPECT_CALL' and 'WillRepeatedly' here instead of
@@ -478,7 +473,7 @@ public:
     EXPECT_CALL(*this, cleanup(_))
       .WillRepeatedly(Return(Nothing()));
 
-    EXPECT_CALL(*this, prepare(_, _, _, _, _))
+    EXPECT_CALL(*this, prepare(_, _, _, _))
       .WillRepeatedly(Invoke(this, &MockIsolator::_prepare));
   }
 
@@ -488,20 +483,18 @@ public:
           const list<ContainerState>&,
           const hashset<ContainerID>&));
 
-  MOCK_METHOD5(
+  MOCK_METHOD4(
       prepare,
       Future<Option<ContainerPrepareInfo>>(
           const ContainerID&,
           const ExecutorInfo&,
           const string&,
-          const Option<string>&,
           const Option<string>&));
 
   virtual Future<Option<ContainerPrepareInfo>> _prepare(
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const string& directory,
-      const Option<string>& rootfs,
       const Option<string>& user)
   {
     return None();
@@ -547,8 +540,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
       true,
       &fetcher,
       Owned<Launcher>(launcher.get()),
-      vector<Owned<Isolator>>(),
-      hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>());
+      vector<Owned<Isolator>>());
 
   Future<Nothing> exec;
   Promise<bool> promise;
@@ -603,7 +595,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
   Promise<Option<ContainerPrepareInfo>> promise;
 
   // Simulate a long prepare from the isolator.
-  EXPECT_CALL(*isolator, prepare(_, _, _, _, _))
+  EXPECT_CALL(*isolator, prepare(_, _, _, _))
     .WillOnce(DoAll(FutureSatisfy(&prepare),
                     Return(promise.future())));
 
@@ -614,8 +606,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
       true,
       &fetcher,
       Owned<Launcher>(launcher.get()),
-      {Owned<Isolator>(isolator)},
-      hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>());
+      {Owned<Isolator>(isolator)});
 
   MesosContainerizer containerizer((Owned<MesosContainerizerProcess>(process)));
 
@@ -692,8 +683,7 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
       true,
       &fetcher,
       Owned<Launcher>(launcher),
-      vector<Owned<Isolator>>(),
-      hashmap<ContainerInfo::Image::Type, Owned<Provisioner>>());
+      vector<Owned<Isolator>>());
 
   MesosContainerizer containerizer((Owned<MesosContainerizerProcess>(process)));
 

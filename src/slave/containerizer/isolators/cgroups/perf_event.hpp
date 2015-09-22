@@ -49,7 +49,6 @@ public:
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
-      const Option<std::string>& rootfs,
       const Option<std::string>& user);
 
   virtual process::Future<Nothing> isolate(
@@ -74,8 +73,12 @@ protected:
 
 private:
   CgroupsPerfEventIsolatorProcess(
-      const Flags& flags,
-      const std::string& hierarchy);
+      const Flags& _flags,
+      const std::string& _hierarchy,
+      const std::set<std::string>& _events)
+    : flags(_flags),
+      hierarchy(_hierarchy),
+      events(_events) {}
 
   void sample();
 

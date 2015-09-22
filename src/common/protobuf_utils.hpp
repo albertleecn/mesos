@@ -19,13 +19,20 @@
 #ifndef __PROTOBUF_UTILS_HPP__
 #define __PROTOBUF_UTILS_HPP__
 
+#include <initializer_list>
 #include <string>
 
-#include <mesos/scheduler/scheduler.hpp>
+#include <mesos/mesos.hpp>
+
+#include <mesos/maintenance/maintenance.hpp>
 
 #include <mesos/slave/isolator.hpp>
 
+#include <process/time.hpp>
+
+#include <stout/duration.hpp>
 #include <stout/ip.hpp>
+#include <stout/none.hpp>
 #include <stout/option.hpp>
 #include <stout/uuid.hpp>
 
@@ -88,26 +95,44 @@ mesos::slave::ContainerState createContainerState(
     const ExecutorInfo& executorInfo,
     const ContainerID& id,
     pid_t pid,
-    const std::string& directory,
-    const Option<std::string>& rootfs);
+    const std::string& directory);
 
 } // namespace slave {
 
-namespace scheduler {
+namespace maintenance {
 
-// Helper functions that create scheduler::Event from a message that
-// is sent to the scheduler.
-mesos::scheduler::Event event(const FrameworkRegisteredMessage& message);
-mesos::scheduler::Event event(const FrameworkReregisteredMessage& message);
-mesos::scheduler::Event event(const ResourceOffersMessage& message);
-mesos::scheduler::Event event(const RescindResourceOfferMessage& message);
-mesos::scheduler::Event event(const StatusUpdateMessage& message);
-mesos::scheduler::Event event(const LostSlaveMessage& message);
-mesos::scheduler::Event event(const ExitedExecutorMessage& message);
-mesos::scheduler::Event event(const ExecutorToFrameworkMessage& message);
-mesos::scheduler::Event event(const FrameworkErrorMessage& message);
+/**
+ * Helper for constructing an unavailability from a `Time` and `Duration`.
+ */
+Unavailability createUnavailability(
+    const process::Time& start,
+    const Option<Duration>& duration = None());
 
-} // namespace scheduler {
+
+/**
+ * Helper for constructing a list of `MachineID`.
+ */
+google::protobuf::RepeatedPtrField<MachineID> createMachineList(
+    std::initializer_list<MachineID> ids);
+
+
+/**
+ * Helper for constructing a maintenance `Window`.
+ * See `createUnavailability` above.
+ */
+mesos::maintenance::Window createWindow(
+    std::initializer_list<MachineID> ids,
+    const Unavailability& unavailability);
+
+
+/**
+ * Helper for constructing a maintenance `Schedule`.
+ * See `createWindow` above.
+ */
+mesos::maintenance::Schedule createSchedule(
+    std::initializer_list<mesos::maintenance::Window> windows);
+
+} // namespace maintenance {
 
 } // namespace protobuf {
 } // namespace internal {

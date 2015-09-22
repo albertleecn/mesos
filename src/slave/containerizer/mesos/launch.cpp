@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -263,7 +264,7 @@ int MesosContainerizerLaunch::execute()
 
   if (command.get().shell()) {
     // Execute the command using shell.
-    execl("/bin/sh", "sh", "-c", command.get().value().c_str(), (char*) NULL);
+    execlp("sh", "sh", "-c", command.get().value().c_str(), (char*) NULL);
   } else {
     // Use os::execvpe to launch the command.
     char** argv = new char*[command.get().arguments().size() + 1];
@@ -276,7 +277,7 @@ int MesosContainerizerLaunch::execute()
   }
 
   // If we get here, the execle call failed.
-  cerr << "Failed to execute command" << endl;
+  cerr << "Failed to execute command: " << strerror(errno) << endl;
   UNREACHABLE();
 }
 

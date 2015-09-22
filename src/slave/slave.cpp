@@ -494,16 +494,31 @@ void Slave::initialize()
   // Setup HTTP routes.
   Http http = Http(this);
 
-  route("/health",
-        Http::HEALTH_HELP,
+  route("/api/v1/executor",
+        Http::EXECUTOR_HELP,
         [http](const process::http::Request& request) {
-          return http.health(request);
+          Http::log(request);
+          return http.executor(request);
         });
+
+  // TODO(ijimenez): Remove this endpoint at the end of the
+  // deprecation cycle on 0.26.
   route("/state.json",
         Http::STATE_HELP,
         [http](const process::http::Request& request) {
           Http::log(request);
           return http.state(request);
+        });
+  route("/state",
+        Http::STATE_HELP,
+        [http](const process::http::Request& request) {
+          Http::log(request);
+          return http.state(request);
+        });
+  route("/health",
+        Http::HEALTH_HELP,
+        [http](const process::http::Request& request) {
+          return http.health(request);
         });
 
   // Expose the log file for the webui. Fall back to 'log_dir' if
@@ -854,7 +869,7 @@ void Slave::registered(
     masterPingTimeout = DEFAULT_MASTER_PING_TIMEOUT();
   }
 
-  switch(state) {
+  switch (state) {
     case DISCONNECTED: {
       LOG(INFO) << "Registered with master " << master.get()
                 << "; given slave ID " << slaveId;
@@ -954,7 +969,7 @@ void Slave::reregistered(
     masterPingTimeout = DEFAULT_MASTER_PING_TIMEOUT();
   }
 
-  switch(state) {
+  switch (state) {
     case DISCONNECTED:
       LOG(INFO) << "Re-registered with master " << master.get();
       state = RUNNING;
@@ -1270,12 +1285,6 @@ void Slave::runTask(
     return;
   }
 
-  if (HookManager::hooksAvailable()) {
-    // Set task labels from run task label decorator.
-    task.mutable_labels()->CopyFrom(
-        HookManager::slaveRunTaskLabelDecorator(task, frameworkInfo, info));
-  }
-
   Future<bool> unschedule = true;
 
   // If we are about to create a new framework, unschedule the work
@@ -1322,6 +1331,12 @@ void Slave::runTask(
 
   const ExecutorInfo executorInfo = getExecutorInfo(frameworkId, task);
   const ExecutorID& executorId = executorInfo.executor_id();
+
+  if (HookManager::hooksAvailable()) {
+    // Set task labels from run task label decorator.
+    task.mutable_labels()->CopyFrom(HookManager::slaveRunTaskLabelDecorator(
+        task, executorInfo, frameworkInfo, info));
+  }
 
   // We add the task to 'pending' to ensure the framework is not
   // removed and the framework and top level executor directories
@@ -1468,7 +1483,7 @@ void Slave::_runTask(
           TASK_LOST,
           TaskStatus::SOURCE_SLAVE,
           UUID::random(),
-         "The checkpointed resources being used by the task are unknown to "
+          "The checkpointed resources being used by the task are unknown to "
           "the slave",
           TaskStatus::REASON_RESOURCES_UNKNOWN);
 
@@ -2751,10 +2766,30 @@ void Slave::statusUpdate(StatusUpdate update, const UPID& pid)
   }
 
   if (HookManager::hooksAvailable()) {
-    // Set TaskStatus labels from run task label decorator.
-    update.mutable_status()->mutable_labels()->CopyFrom(
-        HookManager::slaveTaskStatusLabelDecorator(
-            update.framework_id(), update.status()));
+    // Even though the hook(s) return a TaskStatus, we only use two fields:
+    // container_status and labels. Remaining fields are discarded.
+    TaskStatus statusFromHooks =
+      HookManager::slaveTaskStatusDecorator(
+          update.framework_id(), update.status());
+    if (statusFromHooks.has_labels()) {
+      update.mutable_status()->mutable_labels()->CopyFrom(
+          statusFromHooks.labels());
+    }
+
+    if (statusFromHooks.has_container_status()) {
+      update.mutable_status()->mutable_container_status()->CopyFrom(
+          statusFromHooks.container_status());
+    }
+  }
+
+  // Fill in the container IP address with the IP from the agent PID, if not
+  // already filled in.
+  // TODO(karya): Fill in the IP address by looking up the executor PID.
+  ContainerStatus* containerStatus =
+    update.mutable_status()->mutable_container_status();
+  if (containerStatus->network_infos().size() == 0) {
+    NetworkInfo* networkInfo = containerStatus->add_network_infos();
+    networkInfo->set_ip_address(stringify(self().address.ip));
   }
 
   TaskStatus status = update.status();
@@ -3269,23 +3304,10 @@ ExecutorInfo Slave::getExecutorInfo(
           "cpus:" + stringify(DEFAULT_EXECUTOR_CPUS) + ";" +
           "mem:" + stringify(DEFAULT_EXECUTOR_MEM.megabytes())).get());
 
-    // Add in any default ContainerInfo.
-    if (!executor.has_container() && flags.default_container_info.isSome()) {
-      executor.mutable_container()->CopyFrom(
-          flags.default_container_info.get());
-    }
-
     return executor;
   }
 
-  ExecutorInfo executor = task.executor();
-
-  // Add in any default ContainerInfo.
-  if (!executor.has_container() && flags.default_container_info.isSome()) {
-    executor.mutable_container()->CopyFrom(flags.default_container_info.get());
-  }
-
-  return executor;
+  return task.executor();
 }
 
 
@@ -4236,7 +4258,7 @@ Future<Nothing> Slave::garbageCollect(const string& path)
 
 void Slave::forwardOversubscribed()
 {
-  LOG(INFO) << "Querying resource estimator for oversubscribable resources";
+  VLOG(1) << "Querying resource estimator for oversubscribable resources";
 
   resourceEstimator->oversubscribable()
     .onAny(defer(self(), &Self::_forwardOversubscribed, lambda::_1));
@@ -4250,8 +4272,8 @@ void Slave::_forwardOversubscribed(const Future<Resources>& oversubscribable)
                << (oversubscribable.isFailed()
                    ? oversubscribable.failure() : "future discarded");
   } else {
-    LOG(INFO) << "Received oversubscribable resources "
-              << oversubscribable.get() << " from the resource estimator";
+    VLOG(1) << "Received oversubscribable resources "
+            << oversubscribable.get() << " from the resource estimator";
 
     // Calculate the latest allocation of oversubscribed resources.
     // Note that this allocation value might be different from the
@@ -4377,10 +4399,21 @@ void Slave::_qosCorrections(const Future<list<QoSCorrection>>& future)
         continue;
       }
 
+      const ContainerID containerId =
+          kill.has_container_id() ? kill.container_id() : executor->containerId;
+      if (containerId != executor->containerId) {
+        LOG(WARNING) << "Ignoring QoS correction KILL on container '"
+                     << containerId << "' for executor '"
+                     << executorId << "' of framework " << frameworkId
+                     << ": container cannot be found";
+        continue;
+      }
+
       switch (executor->state) {
         case Executor::REGISTERING:
         case Executor::RUNNING: {
-          LOG(INFO) << "Killing executor '" << executorId
+          LOG(INFO) << "Killing container '" << containerId
+                    << "' for executor '" << executorId
                     << "' of framework " << frameworkId
                     << " as QoS correction";
 
@@ -4393,7 +4426,7 @@ void Slave::_qosCorrections(const Future<list<QoSCorrection>>& future)
           // (MESOS-2875).
           executor->state = Executor::TERMINATING;
           executor->reason = TaskStatus::REASON_EXECUTOR_PREEMPTED;
-          containerizer->destroy(executor->containerId);
+          containerizer->destroy(containerId);
 
           ++metrics.executors_preempted;
           break;
@@ -4432,6 +4465,7 @@ Future<ResourceUsage> Slave::usage()
       ResourceUsage::Executor* entry = usage->add_executors();
       entry->mutable_executor_info()->CopyFrom(executor->info);
       entry->mutable_allocated()->CopyFrom(executor->resources);
+      entry->mutable_container_id()->CopyFrom(executor->containerId);
 
       futures.push_back(containerizer->usage(executor->containerId));
     }
@@ -5265,7 +5299,7 @@ bool Executor::isCommandExecutor() const
 }
 
 
-std::ostream& operator << (std::ostream& stream, Slave::State state)
+std::ostream& operator<<(std::ostream& stream, Slave::State state)
 {
   switch (state) {
     case Slave::RECOVERING:   return stream << "RECOVERING";
@@ -5277,7 +5311,7 @@ std::ostream& operator << (std::ostream& stream, Slave::State state)
 }
 
 
-std::ostream& operator << (std::ostream& stream, Framework::State state)
+std::ostream& operator<<(std::ostream& stream, Framework::State state)
 {
   switch (state) {
     case Framework::RUNNING:     return stream << "RUNNING";
@@ -5287,7 +5321,7 @@ std::ostream& operator << (std::ostream& stream, Framework::State state)
 }
 
 
-std::ostream& operator << (std::ostream& stream, Executor::State state)
+std::ostream& operator<<(std::ostream& stream, Executor::State state)
 {
   switch (state) {
     case Executor::REGISTERING: return stream << "REGISTERING";

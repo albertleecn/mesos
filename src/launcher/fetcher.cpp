@@ -97,8 +97,9 @@ static Try<string> downloadWithHadoopClient(
   Try<bool> available = hdfs.available();
 
   if (available.isError() || !available.get()) {
-    return Error("Skipping fetch with Hadoop Client as"
-                 " Hadoop Client not available: " + available.error());
+      return Error(
+          "Skipping fetch with Hadoop client: " +
+          (available.isError() ? available.error() : " client not found"));
   }
 
   LOG(INFO) << "Downloading resource with Hadoop client from '" << sourceUri
@@ -260,7 +261,7 @@ static Try<string> fetchBypassingCache(
     Try<bool> extracted = extract(path, sandboxDirectory);
     if (extracted.isError()) {
       return Error(extracted.error());
-    } else {
+    } else if (!extracted.get()) {
       LOG(WARNING) << "Copying instead of extracting resource from URI with "
                    << "'extract' flag, because it does not seem to be an "
                    << "archive: " << uri.value();

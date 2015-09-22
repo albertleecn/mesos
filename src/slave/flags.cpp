@@ -59,10 +59,21 @@ mesos::internal::slave::Flags::Flags()
       "for the Mesos Containerizer.",
       "posix/cpu,posix/mem");
 
-  add(&Flags::provisioners,
-      "provisioners",
-      "Comma separated list of image rootfs provisioners,\n"
-      "e.g., appc,docker");
+  add(&Flags::image_providers,
+      "image_providers",
+      "Comma separated list of supported image providers,\n"
+      "e.g., 'APPC,DOCKER'.");
+
+  add(&Flags::image_provisioner_backend,
+      "image_provisioner_backend",
+      "Strategy for provisioning container rootfs from images,\n"
+      "e.g., 'bind', 'copy'.",
+      "copy");
+
+  add(&Flags::appc_store_dir,
+      "appc_store_dir",
+      "Directory the appc provisioner will store images in.",
+      "/tmp/mesos/store/appc");
 
   add(&Flags::default_role,
       "default_role",
@@ -78,7 +89,8 @@ mesos::internal::slave::Flags::Flags()
       "Attributes of machine, in the form:\n"
       "rack:2 or 'rack:2;u:1'");
 
-  add(&Flags::fetcher_cache_size, "fetcher_cache_size",
+  add(&Flags::fetcher_cache_size,
+      "fetcher_cache_size",
       "Size of the fetcher cache in Bytes.",
       DEFAULT_FETCHER_CACHE_SIZE);
 
@@ -90,7 +102,8 @@ mesos::internal::slave::Flags::Flags()
   // and the cache directory can interfere with each other in
   // unpredictable ways by occupying shared space. So it is recommended
   // to set the cache directory explicitly.
-  add(&Flags::fetcher_cache_dir, "fetcher_cache_dir",
+  add(&Flags::fetcher_cache_dir,
+      "fetcher_cache_dir",
       "Parent directory for fetcher cache directories\n"
       "(one subdirectory per slave).",
       "/tmp/mesos/fetch");
@@ -214,7 +227,7 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::recovery_timeout,
       "recovery_timeout",
-      "Amount of time alloted for the slave to recover. If the slave takes\n"
+      "Amount of time allotted for the slave to recover. If the slave takes\n"
       "longer than recovery_timeout to recover, any executors that are\n"
       "waiting to reconnect to the slave will self-terminate.\n",
       RECOVERY_TIMEOUT);
@@ -310,7 +323,7 @@ mesos::internal::slave::Flags::Flags()
       "{\n"
       "  \"disabled_endpoints\": {\n"
       "    \"paths\": [\n"
-      "      \"/files/browse.json\",\n"
+      "      \"/files/browse\",\n"
       "      \"/slave(0)/stats.json\",\n"
       "    ]\n"
       "  }\n"

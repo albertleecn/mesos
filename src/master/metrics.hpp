@@ -29,6 +29,7 @@
 #include <stout/hashmap.hpp>
 
 #include "mesos/mesos.hpp"
+#include "mesos/type_utils.hpp"
 
 namespace mesos {
 namespace internal {
@@ -129,8 +130,11 @@ struct Metrics
   process::metrics::Counter messages_launch_tasks;
   process::metrics::Counter messages_decline_offers;
   process::metrics::Counter messages_revive_offers;
+  process::metrics::Counter messages_suppress_offers;
   process::metrics::Counter messages_reconcile_tasks;
   process::metrics::Counter messages_framework_to_executor;
+
+  // Messages from executors.
   process::metrics::Counter messages_executor_to_framework;
 
   // Messages from slaves.

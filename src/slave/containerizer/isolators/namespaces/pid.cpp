@@ -121,12 +121,6 @@ Result<ino_t> NamespacesPidIsolatorProcess::getNamespace(
 }
 
 
-process::Future<Option<int>> NamespacesPidIsolatorProcess::namespaces()
-{
-  return CLONE_NEWPID | CLONE_NEWNS;
-}
-
-
 Future<Nothing> NamespacesPidIsolatorProcess::recover(
     const list<ContainerState>& states,
     const hashset<ContainerID>& orphans)
@@ -163,10 +157,10 @@ Future<Option<ContainerPrepareInfo>> NamespacesPidIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
-    const Option<string>& rootfs,
     const Option<string>& user)
 {
   ContainerPrepareInfo prepareInfo;
+  prepareInfo.set_namespaces(CLONE_NEWPID | CLONE_NEWNS);
 
   // Mask the bind mount root directory in each container so
   // containers cannot see the namespace bind mount of other

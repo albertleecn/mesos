@@ -55,6 +55,8 @@ public:
     Try<string> path = os::mkdtemp();
     CHECK_SOME(path) << "Failed to mkdtemp";
     rootDir = path.get();
+
+    imageType = Image::APPC;
   }
 
   virtual void TearDown()
@@ -71,6 +73,7 @@ protected:
   string role;
   string persistenceId;
   string rootDir;
+  Image::Type imageType;
 };
 
 
@@ -98,6 +101,13 @@ TEST_F(PathsTest, CreateExecutorDirectory)
 TEST_F(PathsTest, Meta)
 {
   EXPECT_EQ(path::join(rootDir, "meta"), paths::getMetaRootDir(rootDir));
+}
+
+
+TEST_F(PathsTest, ProvisionerDir)
+{
+  EXPECT_EQ(path::join(rootDir, "provisioner"),
+            paths::getProvisionerDir(rootDir));
 }
 
 
@@ -214,6 +224,7 @@ TEST_F(PathsTest, PersistentVolume)
 
   EXPECT_EQ(dir, paths::getPersistentVolumePath(rootDir, role, persistenceId));
 }
+
 
 } // namespace paths {
 } // namespace slave {

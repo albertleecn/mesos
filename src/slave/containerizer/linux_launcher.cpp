@@ -67,16 +67,12 @@ static ContainerID container(const string& cgroup)
 
 LinuxLauncher::LinuxLauncher(
     const Flags& _flags,
-    int _namespaces,
     const string& _hierarchy)
   : flags(_flags),
-    namespaces(_namespaces),
     hierarchy(_hierarchy) {}
 
 
-Try<Launcher*> LinuxLauncher::create(
-    const Flags& flags,
-    const Option<int>& namespaces)
+Try<Launcher*> LinuxLauncher::create(const Flags& flags)
 {
   Try<string> hierarchy = cgroups::prepare(
       flags.cgroups_hierarchy,
@@ -104,7 +100,6 @@ Try<Launcher*> LinuxLauncher::create(
 
   return new LinuxLauncher(
       flags,
-      namespaces.isSome() ? namespaces.get() : 0,
       hierarchy.get());
 }
 
@@ -178,22 +173,39 @@ static int childMain(void* _func)
 
 
 // The customized clone function which will be used by 'subprocess()'.
-static pid_t clone(const lambda::function<int()>& func, int namespaces)
+static pid_t clone(
+    const lambda::function<int()>& func,
+    const Option<int>& namespaces)
 {
   // Stack for the child.
   // - unsigned long long used for best alignment.
   // - static is ok because each child gets their own copy after the clone.
   // - 8 MiB appears to be the default for "ulimit -s" on OSX and Linux.
-  static unsigned long long stack[(8*1024*1024)/sizeof(unsigned long long)];
+  //
+  // NOTE: We need to allocate the stack dynamically. This is because
+  // glibc's 'clone' will modify the stack passed to it, therefore the
+  // stack must NOT be shared as multiple 'clone's can be invoked
+  // simultaneously.
+  int stackSize = 8 * 1024 * 1024;
+
+  unsigned long long *stack =
+    new unsigned long long[stackSize/sizeof(unsigned long long)];
+
+  int flags = namespaces.isSome() ? namespaces.get() : 0;
+  flags |= SIGCHLD; // Specify SIGCHLD as child termination signal.
 
   LOG(INFO) << "Cloning child process with flags = "
-            << ns::stringify(namespaces);
+            << ns::stringify(flags);
 
-  return ::clone(
+  pid_t pid = ::clone(
       childMain,
-      &stack[sizeof(stack)/sizeof(stack[0]) - 1],  // stack grows down.
-      namespaces | SIGCHLD,   // Specify SIGCHLD as child termination signal.
+      &stack[stackSize/sizeof(stack[0]) - 1],  // stack grows down.
+      flags,
       (void*) &func);
+
+  delete[] stack;
+
+  return pid;
 }
 
 
@@ -246,7 +258,8 @@ Try<pid_t> LinuxLauncher::fork(
     const process::Subprocess::IO& err,
     const Option<flags::FlagsBase>& flags,
     const Option<map<string, string>>& environment,
-    const Option<lambda::function<int()>>& setup)
+    const Option<lambda::function<int()>>& setup,
+    const Option<int>& namespaces)
 {
   // Create a freezer cgroup for this container if necessary.
   Try<bool> exists = cgroups::exists(hierarchy, cgroup(containerId));

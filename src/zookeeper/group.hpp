@@ -58,32 +58,32 @@ public:
   // from different Group instances will still be considered the same.
   struct Membership
   {
-    bool operator == (const Membership& that) const
+    bool operator==(const Membership& that) const
     {
       return sequence == that.sequence;
     }
 
-    bool operator != (const Membership& that) const
+    bool operator!=(const Membership& that) const
     {
       return sequence != that.sequence;
     }
 
-    bool operator < (const Membership& that) const
+    bool operator<(const Membership& that) const
     {
       return sequence < that.sequence;
     }
 
-    bool operator <= (const Membership& that) const
+    bool operator<=(const Membership& that) const
     {
       return sequence <= that.sequence;
     }
 
-    bool operator > (const Membership& that) const
+    bool operator>(const Membership& that) const
     {
       return sequence > that.sequence;
     }
 
-    bool operator >= (const Membership& that) const
+    bool operator>=(const Membership& that) const
     {
       return sequence >= that.sequence;
     }
@@ -278,7 +278,8 @@ private:
   // the client's "progress" in setting up the group is preserved
   // across reconnections. This means authenticate() and create() are
   // only successfully executed once in one ZooKeeper session.
-  enum State {
+  enum State
+  {
     DISCONNECTED,  // The initial state.
     CONNECTING,    // ZooKeeper connecting.
     CONNECTED,     // ZooKeeper connected but before group setup.

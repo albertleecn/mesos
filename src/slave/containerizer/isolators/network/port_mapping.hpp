@@ -152,8 +152,6 @@ public:
 
   virtual ~PortMappingIsolatorProcess() {}
 
-  virtual process::Future<Option<int>> namespaces();
-
   virtual process::Future<Nothing> recover(
       const std::list<mesos::slave::ContainerState>& states,
       const hashset<ContainerID>& orphans);
@@ -162,7 +160,6 @@ public:
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
-      const Option<std::string>& rootfs,
       const Option<std::string>& user);
 
   virtual process::Future<Nothing> isolate(

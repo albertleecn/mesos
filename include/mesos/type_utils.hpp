@@ -31,6 +31,7 @@
 
 #include <stout/hashmap.hpp>
 #include <stout/stringify.hpp>
+#include <stout/strings.hpp>
 #include <stout/uuid.hpp>
 
 // This file includes definitions for operators on public protobuf
@@ -46,237 +47,203 @@
 
 namespace mesos {
 
-bool operator == (const CommandInfo& left, const CommandInfo& right);
-bool operator == (const CommandInfo::URI& left, const CommandInfo::URI& right);
-bool operator == (const Credential& left, const Credential& right);
-bool operator == (const Environment& left, const Environment& right);
-bool operator == (const ExecutorInfo& left, const ExecutorInfo& right);
-bool operator == (const MasterInfo& left, const MasterInfo& right);
+bool operator==(const CommandInfo& left, const CommandInfo& right);
+bool operator==(const CommandInfo::URI& left, const CommandInfo::URI& right);
+bool operator==(const Credential& left, const Credential& right);
+bool operator==(const Environment& left, const Environment& right);
+bool operator==(const ExecutorInfo& left, const ExecutorInfo& right);
+bool operator==(const MasterInfo& left, const MasterInfo& right);
 
-bool operator == (
+bool operator==(
     const ResourceStatistics& left,
     const ResourceStatistics& right);
 
-bool operator == (const SlaveInfo& left, const SlaveInfo& right);
-bool operator == (const Volume& left, const Volume& right);
+bool operator==(const SlaveInfo& left, const SlaveInfo& right);
+bool operator==(const Volume& left, const Volume& right);
 
-bool operator == (const URL& left, const URL& right);
+bool operator==(const URL& left, const URL& right);
 
-bool operator == (const TaskStatus& left, const TaskStatus& right);
-bool operator != (const TaskStatus& left, const TaskStatus& right);
+bool operator==(const TaskStatus& left, const TaskStatus& right);
+bool operator!=(const TaskStatus& left, const TaskStatus& right);
 
-inline bool operator == (const ContainerID& left, const ContainerID& right)
+inline bool operator==(const ContainerID& left, const ContainerID& right)
 {
   return left.value() == right.value();
 }
 
 
-inline bool operator == (const ExecutorID& left, const ExecutorID& right)
+inline bool operator==(const ExecutorID& left, const ExecutorID& right)
 {
   return left.value() == right.value();
 }
 
 
-inline bool operator == (const FrameworkID& left, const FrameworkID& right)
+inline bool operator==(const FrameworkID& left, const FrameworkID& right)
 {
   return left.value() == right.value();
 }
 
 
-inline bool operator == (const FrameworkInfo& left, const FrameworkInfo& right)
+inline bool operator==(const FrameworkInfo& left, const FrameworkInfo& right)
 {
   return (left.name() == right.name()) && (left.user() == right.user());
 }
 
 
-inline bool operator == (const OfferID& left, const OfferID& right)
+inline bool operator==(const OfferID& left, const OfferID& right)
 {
   return left.value() == right.value();
 }
 
 
-inline bool operator == (const SlaveID& left, const SlaveID& right)
+inline bool operator==(const SlaveID& left, const SlaveID& right)
 {
   return left.value() == right.value();
 }
 
 
-inline bool operator == (const TaskID& left, const TaskID& right)
+inline bool operator==(const TaskID& left, const TaskID& right)
 {
   return left.value() == right.value();
 }
 
 
-inline bool operator == (const ContainerID& left, const std::string& right)
+inline bool operator==(const TimeInfo& left, const TimeInfo& right)
+{
+  return left.nanoseconds() == right.nanoseconds();
+}
+
+
+inline bool operator==(const DurationInfo& left, const DurationInfo& right)
+{
+  return left.nanoseconds() == right.nanoseconds();
+}
+
+
+inline bool operator==(const ContainerID& left, const std::string& right)
 {
   return left.value() == right;
 }
 
 
-inline bool operator == (const ExecutorID& left, const std::string& right)
+inline bool operator==(const ExecutorID& left, const std::string& right)
 {
   return left.value() == right;
 }
 
 
-inline bool operator == (const FrameworkID& left, const std::string& right)
+inline bool operator==(const FrameworkID& left, const std::string& right)
 {
   return left.value() == right;
 }
 
 
-inline bool operator == (const OfferID& left, const std::string& right)
+inline bool operator==(const OfferID& left, const std::string& right)
 {
   return left.value() == right;
 }
 
 
-inline bool operator == (const SlaveID& left, const std::string& right)
+inline bool operator==(const SlaveID& left, const std::string& right)
 {
   return left.value() == right;
 }
 
 
-inline bool operator == (const TaskID& left, const std::string& right)
+inline bool operator==(const TaskID& left, const std::string& right)
 {
   return left.value() == right;
 }
 
 
-inline bool operator != (const ContainerID& left, const ContainerID& right)
+/**
+ * For machines to match, both the `hostname` and `ip` must be equivalent.
+ * Hostname is not case sensitive, so it is lowercased before comparison.
+ */
+inline bool operator==(const MachineID& left, const MachineID& right)
+{
+  // NOTE: Both fields default to the empty string if they are not specified,
+  // so the string comparisons are safe.
+  return left.has_hostname() == right.has_hostname() &&
+    strings::lower(left.hostname()) == strings::lower(right.hostname()) &&
+    left.has_ip() == right.has_ip() &&
+    left.ip() == right.ip();
+}
+
+
+inline bool operator!=(const ContainerID& left, const ContainerID& right)
 {
   return left.value() != right.value();
 }
 
 
-inline bool operator != (const ExecutorID& left, const ExecutorID& right)
+inline bool operator!=(const ExecutorID& left, const ExecutorID& right)
 {
   return left.value() != right.value();
 }
 
 
-inline bool operator != (const FrameworkID& left, const FrameworkID& right)
+inline bool operator!=(const FrameworkID& left, const FrameworkID& right)
 {
   return left.value() != right.value();
 }
 
 
-inline bool operator != (const SlaveID& left, const SlaveID& right)
+inline bool operator!=(const SlaveID& left, const SlaveID& right)
 {
   return left.value() != right.value();
 }
 
 
-inline bool operator < (const ContainerID& left, const ContainerID& right)
+inline bool operator!=(const TimeInfo& left, const TimeInfo& right)
+{
+  return !(left == right);
+}
+
+
+inline bool operator!=(const DurationInfo& left, const DurationInfo& right)
+{
+  return !(left == right);
+}
+
+
+inline bool operator<(const ContainerID& left, const ContainerID& right)
 {
   return left.value() < right.value();
 }
 
 
-inline bool operator < (const ExecutorID& left, const ExecutorID& right)
+inline bool operator<(const ExecutorID& left, const ExecutorID& right)
 {
   return left.value() < right.value();
 }
 
 
-inline bool operator < (const FrameworkID& left, const FrameworkID& right)
+inline bool operator<(const FrameworkID& left, const FrameworkID& right)
 {
   return left.value() < right.value();
 }
 
 
-inline bool operator < (const OfferID& left, const OfferID& right)
+inline bool operator<(const OfferID& left, const OfferID& right)
 {
   return left.value() < right.value();
 }
 
 
-inline bool operator < (const SlaveID& left, const SlaveID& right)
+inline bool operator<(const SlaveID& left, const SlaveID& right)
 {
   return left.value() < right.value();
 }
 
 
-inline bool operator < (const TaskID& left, const TaskID& right)
+inline bool operator<(const TaskID& left, const TaskID& right)
 {
   return left.value() < right.value();
 }
 
 
-inline std::size_t hash_value(const CommandInfo::URI& uri)
-{
-  size_t seed = 0;
-
-  if (uri.extract()) {
-    seed += 11;
-  }
-
-  if (uri.executable()) {
-    seed += 2003;
-  }
-
-  boost::hash_combine(seed, uri.value());
-  return seed;
-}
-
-
-inline std::size_t hash_value(const ContainerID& containerId)
-{
-  size_t seed = 0;
-  boost::hash_combine(seed, containerId.value());
-  return seed;
-}
-
-
-inline std::size_t hash_value(const ExecutorID& executorId)
-{
-  size_t seed = 0;
-  boost::hash_combine(seed, executorId.value());
-  return seed;
-}
-
-
-inline std::size_t hash_value(const FrameworkID& frameworkId)
-{
-  size_t seed = 0;
-  boost::hash_combine(seed, frameworkId.value());
-  return seed;
-}
-
-
-inline std::size_t hash_value(const OfferID& offerId)
-{
-  size_t seed = 0;
-  boost::hash_combine(seed, offerId.value());
-  return seed;
-}
-
-
-inline std::size_t hash_value(const SlaveID& slaveId)
-{
-  size_t seed = 0;
-  boost::hash_combine(seed, slaveId.value());
-  return seed;
-}
-
-
-inline std::size_t hash_value(const TaskID& taskId)
-{
-  size_t seed = 0;
-  boost::hash_combine(seed, taskId.value());
-  return seed;
-}
-
-
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const ACLs& acls)
-{
-  return stream << acls.DebugString();
-}
-
-
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const ContainerID& containerId)
 {
@@ -284,7 +251,7 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const ContainerInfo& containerInfo)
 {
@@ -292,7 +259,7 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const ExecutorID& executorId)
 {
@@ -300,7 +267,7 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const ExecutorInfo& executor)
 {
@@ -308,7 +275,7 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const FrameworkID& frameworkId)
 {
@@ -316,79 +283,79 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const MasterInfo& master)
+inline std::ostream& operator<<(std::ostream& stream, const MasterInfo& master)
 {
   return stream << master.DebugString();
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const OfferID& offerId)
+inline std::ostream& operator<<(std::ostream& stream, const OfferID& offerId)
 {
   return stream << offerId.value();
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const RateLimits& limits)
+inline std::ostream& operator<<(std::ostream& stream, const RateLimits& limits)
 {
   return stream << limits.DebugString();
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const SlaveID& slaveId)
+inline std::ostream& operator<<(std::ostream& stream, const SlaveID& slaveId)
 {
   return stream << slaveId.value();
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const SlaveInfo& slave)
+inline std::ostream& operator<<(std::ostream& stream, const SlaveInfo& slave)
 {
   return stream << slave.DebugString();
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const TaskID& taskId)
+inline std::ostream& operator<<(std::ostream& stream, const TaskID& taskId)
 {
   return stream << taskId.value();
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
-    const TaskInfo& task)
+    const MachineID& machineId)
+{
+  if (machineId.has_hostname() && machineId.has_ip()) {
+    return stream << machineId.hostname() << " (" << machineId.ip() << ")";
+  }
+
+  // If only a hostname is present.
+  if (machineId.has_hostname()) {
+    return stream << machineId.hostname();
+  } else { // If there is no hostname, then there is an IP.
+    return stream << "(" << machineId.ip() << ")";
+  }
+}
+
+
+inline std::ostream& operator<<(std::ostream& stream, const TaskInfo& task)
 {
   return stream << task.DebugString();
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const TaskState& state)
+inline std::ostream& operator<<(std::ostream& stream, const TaskState& state)
 {
   return stream << TaskState_Name(state);
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const scheduler::Call::Type& type)
+inline std::ostream& operator<<(std::ostream& stream,
+                                const scheduler::Call::Type& type)
 {
   return stream << scheduler::Call_Type_Name(type);
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const scheduler::Event::Type& type)
 {
@@ -396,7 +363,7 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const std::vector<TaskID>& taskIds)
 {
@@ -412,7 +379,7 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const FrameworkInfo::Capability& capability)
 {
@@ -420,8 +387,16 @@ inline std::ostream& operator << (
 }
 
 
+inline std::ostream& operator<<(
+    std::ostream& stream,
+    const Image::Type& imageType)
+{
+  return stream << Image::Type_Name(imageType);
+}
+
+
 template <typename T>
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const google::protobuf::RepeatedPtrField<T>& messages)
 {
@@ -437,15 +412,13 @@ inline std::ostream& operator << (
 }
 
 
-inline std::ostream& operator << (
-    std::ostream& stream,
-    const Modules& modules)
+inline std::ostream& operator<<(std::ostream& stream, const Modules& modules)
 {
   return stream << modules.DebugString();
 }
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const hashmap<std::string, std::string>& map)
 {
@@ -454,5 +427,223 @@ inline std::ostream& operator << (
 }
 
 } // namespace mesos {
+
+namespace std {
+
+template <>
+struct hash<mesos::CommandInfo_URI>
+{
+  typedef size_t result_type;
+
+  typedef mesos::CommandInfo_URI argument_type;
+
+  result_type operator()(const argument_type& uri) const
+  {
+    size_t seed = 0;
+
+    if (uri.extract()) {
+      seed += 11;
+    }
+
+    if (uri.executable()) {
+      seed += 2003;
+    }
+
+    boost::hash_combine(seed, uri.value());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::ContainerID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::ContainerID argument_type;
+
+  result_type operator()(const argument_type& containerId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, containerId.value());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::ExecutorID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::ExecutorID argument_type;
+
+  result_type operator()(const argument_type& executorId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, executorId.value());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::FrameworkID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::FrameworkID argument_type;
+
+  result_type operator()(const argument_type& frameworkId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, frameworkId.value());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::OfferID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::OfferID argument_type;
+
+  result_type operator()(const argument_type& offerId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, offerId.value());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::SlaveID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::SlaveID argument_type;
+
+  result_type operator()(const argument_type& slaveId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, slaveId.value());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::TaskID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::TaskID argument_type;
+
+  result_type operator()(const argument_type& taskId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, taskId.value());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::TaskState>
+{
+  typedef size_t result_type;
+
+  typedef mesos::TaskState argument_type;
+
+  result_type operator()(const argument_type& taskState) const
+  {
+    // Use the underlying type of the enum as hash value.
+    return static_cast<size_t>(taskState);
+  }
+};
+
+
+template <>
+struct hash<mesos::TaskStatus_Source>
+{
+  typedef size_t result_type;
+
+  typedef mesos::TaskStatus_Source argument_type;
+
+  result_type operator()(const argument_type& source) const
+  {
+    // Use the underlying type of the enum as hash value.
+    return static_cast<size_t>(source);
+  }
+};
+
+
+template <>
+struct hash<mesos::TaskStatus_Reason>
+{
+  typedef size_t result_type;
+
+  typedef mesos::TaskStatus_Reason argument_type;
+
+  result_type operator()(const argument_type& reason) const
+  {
+    // Use the underlying type of the enum as hash value.
+    return static_cast<size_t>(reason);
+  }
+};
+
+
+template <>
+struct hash<mesos::Image_Type>
+{
+  typedef size_t result_type;
+
+  typedef mesos::Image_Type argument_type;
+
+  result_type operator()(const argument_type& imageType) const
+  {
+    // Use the underlying type of the enum as hash value.
+    return static_cast<size_t>(imageType);
+  }
+};
+
+
+template <>
+struct hash<std::pair<mesos::FrameworkID, mesos::ExecutorID>>
+{
+  typedef size_t result_type;
+
+  typedef std::pair<mesos::FrameworkID, mesos::ExecutorID> argument_type;
+
+  result_type operator()(const argument_type& pair) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, std::hash<mesos::FrameworkID>()(pair.first));
+    boost::hash_combine(seed, std::hash<mesos::ExecutorID>()(pair.second));
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::MachineID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::MachineID argument_type;
+
+  result_type operator()(const argument_type& machineId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, strings::lower(machineId.hostname()));
+    boost::hash_combine(seed, machineId.ip());
+    return seed;
+  }
+};
+
+} // namespace std {
 
 #endif // __MESOS_TYPE_UTILS_H__

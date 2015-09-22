@@ -86,6 +86,7 @@
 #include <stout/foreach.hpp>
 #include <stout/lambda.hpp>
 #include <stout/net.hpp>
+#include <stout/numify.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
 #include <stout/path.hpp>
@@ -426,7 +427,7 @@ private:
   std::recursive_mutex runq_mutex;
 
   // Number of running processes, to support Clock::settle operation.
-  int running;
+  std::atomic_long running;
 
   // List of rules applied to all incoming HTTP requests.
   vector<Owned<FirewallRule>> firewallRules;
@@ -472,9 +473,6 @@ THREAD_LOCAL ProcessBase* __process__ = NULL;
 
 // Per thread executor pointer.
 THREAD_LOCAL Executor* _executor_ = NULL;
-
-// TODO(dhamon): Reintroduce this when it is plumbed through to Statistics.
-// const Duration LIBPROCESS_STATISTICS_WINDOW = Days(1);
 
 
 // NOTE: Clock::* implementations are in clock.cpp except for
@@ -748,23 +746,26 @@ void install(vector<Owned<FirewallRule>>&& rules)
 void initialize(const string& delegate)
 {
   // TODO(benh): Return an error if attempting to initialize again
-  // with a different delegate then originally specified.
+  // with a different delegate than originally specified.
 
   // static pthread_once_t init = PTHREAD_ONCE_INIT;
   // pthread_once(&init, ...);
 
-  static volatile bool initialized = false;
-  static volatile bool initializing = true;
+  static std::atomic_bool initialized(false);
+  static std::atomic_bool initializing(true);
 
   // Try and do the initialization or wait for it to complete.
-  if (initialized && !initializing) {
+  // TODO(neilc): Try to simplify and/or document this logic.
+  if (initialized.load() && !initializing.load()) {
     return;
-  } else if (initialized && initializing) {
-    while (initializing);
+  } else if (initialized.load() && initializing.load()) {
+    while (initializing.load());
     return;
   } else {
-    if (!__sync_bool_compare_and_swap(&initialized, false, true)) {
-      while (initializing);
+    // `compare_exchange_strong` needs an lvalue.
+    bool expected = false;
+    if (!initialized.compare_exchange_strong(expected, true)) {
+      while (initializing.load());
       return;
     }
   }
@@ -868,11 +869,12 @@ void initialize(const string& delegate)
   // Check environment for port.
   value = os::getenv("LIBPROCESS_PORT");
   if (value.isSome()) {
-    const int result = atoi(value.get().c_str());
-    if (result < 0 || result > USHRT_MAX) {
+    Try<int> result = numify<int>(value.get().c_str());
+    if (result.isSome() && result.get() >=0 && result.get() <= USHRT_MAX) {
+      __address__.port = result.get();
+    } else {
       LOG(FATAL) << "LIBPROCESS_PORT=" << value.get() << " is not a valid port";
     }
-    __address__.port = result;
   }
 
   // Create a "server" socket for communicating.
@@ -894,6 +896,28 @@ void initialize(const string& delegate)
   }
 
   __address__ = bind.get();
+
+  // If advertised IP and port are present, use them instead.
+  value = os::getenv("LIBPROCESS_ADVERTISE_IP");
+  if (value.isSome()) {
+    Try<net::IP> ip = net::IP::parse(value.get(), AF_INET);
+    if (ip.isError()) {
+      LOG(FATAL) << "Parsing LIBPROCESS_ADVERTISE_IP=" << value.get()
+                 << " failed: " << ip.error();
+    }
+    __address__.ip = ip.get();
+  }
+
+  value = os::getenv("LIBPROCESS_ADVERTISE_PORT");
+  if (value.isSome()) {
+    Try<int> result = numify<int>(value.get().c_str());
+    if (result.isSome() && result.get() >=0 && result.get() <= USHRT_MAX) {
+      __address__.port = result.get();
+    } else {
+      LOG(FATAL) << "LIBPROCESS_ADVERTISE_PORT=" << value.get()
+                 << " is not a valid port";
+    }
+  }
 
   // Lookup hostname if missing ip or if ip is 0.0.0.0 in case we
   // actually have a valid external ip address. Note that we need only
@@ -924,9 +948,9 @@ void initialize(const string& delegate)
     PLOG(FATAL) << "Failed to initialize: " << listen.error();
   }
 
-  // Need to set initialzing here so that we can actually invoke
-  // 'spawn' below for the garbage collector.
-  initializing = false;
+  // Need to set `initializing` here so that we can actually invoke `spawn()`
+  // below for the garbage collector.
+  initializing.store(false);
 
   __s__->accept()
     .onAny(lambda::bind(&internal::on_accept, lambda::_1));
@@ -949,23 +973,6 @@ void initialize(const string& delegate)
 
   // Create the global system statistics process.
   spawn(new System(), true);
-
-  // Create the global statistics.
-  // TODO(dhamon): Plumb this through to metrics.
-  // value = os::getenv("LIBPROCESS_STATISTICS_WINDOW");
-  // if (value.isSome()) {
-  //   Try<Duration> window = Duration::parse(value.get());
-  //   if (window.isError()) {
-  //     LOG(FATAL) << "LIBPROCESS_STATISTICS_WINDOW=" << value.get()
-  //                << " is not a valid duration: " << window.error();
-  //   }
-  //   statistics = new Statistics(window.get());
-  // } else {
-  //   // TODO(bmahler): Investigate memory implications of this window
-  //   // size. We may also want to provide a maximum memory size rather than
-  //   // time window. Or, offload older data to disk, etc.
-  //   statistics = new Statistics(LIBPROCESS_STATISTICS_WINDOW);
-  // }
 
   // Ensure metrics process is running.
   // TODO(bmahler): Consider initializing this consistently with
@@ -994,7 +1001,7 @@ void finalize()
 {
   delete process_manager;
 
-  // TODO(benh): Finialize/shutdown Clock so that it doesn't attempt
+  // TODO(benh): Finalize/shutdown Clock so that it doesn't attempt
   // to dereference 'process_manager' in the 'timedout' callback.
 }
 
@@ -2107,8 +2114,7 @@ void SocketManager::swap_implementing_socket(const Socket& from, Socket* to)
 ProcessManager::ProcessManager(const string& _delegate)
   : delegate(_delegate)
 {
-  running = 0;
-  __sync_synchronize(); // Ensure write to 'running' visible in other threads.
+  running.store(0);
 }
 
 
@@ -2481,8 +2487,8 @@ void ProcessManager::resume(ProcessBase* process)
 
   __process__ = NULL;
 
-  CHECK_GE(running, 1);
-  __sync_fetch_and_sub(&running, 1);
+  CHECK_GE(running.load(), 1);
+  running.fetch_sub(1);
 }
 
 
@@ -2521,11 +2527,10 @@ void ProcessManager::cleanup(ProcessBase* process)
   // Remove process.
   synchronized (processes_mutex) {
     // Wait for all process references to get cleaned up.
-    while (process->refs > 0) {
+    while (process->refs.load() > 0) {
 #if defined(__i386__) || defined(__x86_64__)
       asm ("pause");
 #endif
-      __sync_synchronize();
     }
 
     synchronized (process->mutex) {
@@ -2541,7 +2546,7 @@ void ProcessManager::cleanup(ProcessBase* process)
         gates.erase(it);
       }
 
-      CHECK(process->refs == 0);
+      CHECK(process->refs.load() == 0);
       process->state = ProcessBase::TERMINATED;
     }
 
@@ -2668,7 +2673,7 @@ bool ProcessManager::wait(const UPID& pid)
             // 'runq' and 'running' equal to 0 between when we exit
             // this critical section and increment 'running').
             runq.erase(it);
-            __sync_fetch_and_add(&running, 1);
+            running.fetch_add(1);
           } else {
             // Another thread has resumed the process ...
             process = NULL;
@@ -2779,7 +2784,7 @@ ProcessBase* ProcessManager::dequeue()
       // Increment the running count of processes in order to support
       // the Clock::settle() operation (this must be done atomically
       // with removing the process from the runq).
-      __sync_fetch_and_add(&running, 1);
+      running.fetch_add(1);
     }
   }
 
@@ -2799,7 +2804,7 @@ void ProcessManager::settle()
     // expect the http::get will have properly enqueued a process on
     // the run queue but http::get is just sending bytes on a
     // socket. Without sleeping at the beginning of this function we
-    // can get unlucky and appear settled when in actuallity the
+    // can get unlucky and appear settled when in actuality the
     // kernel just hasn't copied the bytes to a socket or we haven't
     // yet read the bytes and enqueued an event on a process (and the
     // process on the run queue).
@@ -2813,10 +2818,7 @@ void ProcessManager::settle()
         continue;
       }
 
-      // Read barrier for 'running'.
-      __sync_synchronize();
-
-      if (running > 0) {
+      if (running.load() > 0) {
         done = false;
         continue;
       }
@@ -3026,24 +3028,42 @@ void ProcessBase::visit(const HttpEvent& event)
   CHECK(tokens.size() >= 1);
   CHECK_EQ(pid.id, http::decode(tokens[0]).get());
 
-  const string name = tokens.size() > 1 ? tokens[1] : "";
+  // First look to see if there is an HTTP handler that can handle the
+  // longest prefix of this path.
 
-  if (handlers.http.count(name) > 0) {
-    // Create the promise to link with whatever gets returned, as well
-    // as a future to wait for the response.
-    std::shared_ptr<Promise<Response>> promise(new Promise<Response>());
+  // Remove the 'id' prefix from the path.
+  string name = strings::remove(
+      event.request->path, "/" + tokens[0], strings::PREFIX);
 
-    Future<Response>* future = new Future<Response>(promise->future());
+  name = strings::trim(name, strings::PREFIX, "/");
 
-    // Get the HttpProxy pid for this socket.
-    PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
+  while (Path(name).dirname() != name) {
+    if (handlers.http.count(name) > 0) {
+      // Create the promise to link with whatever gets returned, as well
+      // as a future to wait for the response.
+      std::shared_ptr<Promise<Response>> promise(new Promise<Response>());
 
-    // Let the HttpProxy know about this request (via the future).
-    dispatch(proxy, &HttpProxy::handle, future, *event.request);
+      Future<Response>* future = new Future<Response>(promise->future());
 
-    // Now call the handler and associate the response with the promise.
-    promise->associate(handlers.http[name](*event.request));
-  } else if (assets.count(name) > 0) {
+      // Get the HttpProxy pid for this socket.
+      PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
+
+      // Let the HttpProxy know about this request (via the future).
+      dispatch(proxy, &HttpProxy::handle, future, *event.request);
+
+      // Now call the handler and associate the response with the promise.
+      promise->associate(handlers.http[name](*event.request));
+
+      return;
+    }
+
+    name = Path(name).dirname();
+  }
+
+  // If no HTTP handler is found look in assets.
+  name = tokens.size() > 1 ? tokens[1] : "";
+
+  if (assets.count(name) > 0) {
     OK response;
     response.type = Response::PATH;
     response.path = assets[name].path;
@@ -3073,16 +3093,18 @@ void ProcessBase::visit(const HttpEvent& event)
     // Enqueue the response with the HttpProxy so that it respects the
     // order of requests to account for HTTP/1.1 pipelining.
     dispatch(proxy, &HttpProxy::enqueue, response, *event.request);
-  } else {
-    VLOG(1) << "Returning '404 Not Found' for '" << event.request->path << "'";
 
-    // Get the HttpProxy pid for this socket.
-    PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
-
-    // Enqueue the response with the HttpProxy so that it respects the
-    // order of requests to account for HTTP/1.1 pipelining.
-    dispatch(proxy, &HttpProxy::enqueue, NotFound(), *event.request);
+    return;
   }
+
+  VLOG(1) << "Returning '404 Not Found' for '" << event.request->path << "'";
+
+  // Get the HttpProxy pid for this socket.
+  PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
+
+  // Enqueue the response with the HttpProxy so that it respects the
+  // order of requests to account for HTTP/1.1 pipelining.
+  dispatch(proxy, &HttpProxy::enqueue, NotFound(), *event.request);
 }
 
 

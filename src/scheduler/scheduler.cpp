@@ -26,16 +26,12 @@
 #include <arpa/inet.h>
 
 #include <iostream>
+#include <queue>
 #include <string>
 #include <sstream>
 
-#include <mesos/mesos.hpp>
-#include <mesos/scheduler.hpp>
-#include <mesos/type_utils.hpp>
-
-#include <mesos/authentication/authenticatee.hpp>
-
-#include <mesos/module/authenticatee.hpp>
+#include <mesos/v1/mesos.hpp>
+#include <mesos/v1/scheduler.hpp>
 
 #include <process/async.hpp>
 #include <process/defer.hpp>
@@ -52,24 +48,28 @@
 #include <stout/duration.hpp>
 #include <stout/error.hpp>
 #include <stout/flags.hpp>
+#include <stout/hashmap.hpp>
 #include <stout/ip.hpp>
 #include <stout/lambda.hpp>
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
+#include <stout/recordio.hpp>
 #include <stout/uuid.hpp>
 
-#include "authentication/cram_md5/authenticatee.hpp"
+#include "common/http.hpp"
+#include "common/recordio.hpp"
 
-#include "common/protobuf_utils.hpp"
-
-#include "master/detector.hpp"
-#include "master/validation.hpp"
+#include "internal/devolve.hpp"
+#include "internal/evolve.hpp"
 
 #include "local/local.hpp"
 
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
+
+#include "master/detector.hpp"
+#include "master/validation.hpp"
 
 #include "messages/messages.hpp"
 
@@ -83,9 +83,19 @@ using std::queue;
 using std::string;
 using std::vector;
 
+using mesos::internal::recordio::Reader;
+
+using process::Owned;
 using process::wait; // Necessary on some OS's to disambiguate.
 
+using process::http::Pipe;
+using process::http::post;
+using process::http::Response;
+
+using ::recordio::Decoder;
+
 namespace mesos {
+namespace v1 {
 namespace scheduler {
 
 // The process (below) is responsible for receiving messages
@@ -96,21 +106,17 @@ class MesosProcess : public ProtobufProcess<MesosProcess>
 public:
   MesosProcess(
       const string& master,
-      const Option<Credential>& _credential,
+      ContentType _contentType,
       const lambda::function<void(void)>& _connected,
       const lambda::function<void(void)>& _disconnected,
       lambda::function<void(const queue<Event>&)> _received)
     : ProcessBase(ID::generate("scheduler")),
-      credential(_credential),
+      contentType(_contentType),
       connected(_connected),
       disconnected(_disconnected),
       received(_received),
       local(false),
-      detector(NULL),
-      authenticatee(NULL),
-      authenticating(None()),
-      authenticated(false),
-      reauthenticate(false)
+      detector(NULL)
   {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
@@ -171,59 +177,44 @@ public:
 
   virtual ~MesosProcess()
   {
-    delete authenticatee;
+    disconnect();
 
     // Check and see if we need to shutdown a local cluster.
     if (local) {
       local::shutdown();
     }
 
-    // Wait for any callbacks to finish.
-    mutex.lock().await();
+    // Note that we ignore any callbacks that are enqueued.
   }
 
   // TODO(benh): Move this to 'protected'.
   using ProtobufProcess<MesosProcess>::send;
 
-  void send(Call call)
+  void send(const Call& call)
   {
-    if (master.isNone()) {
-      drop(call, "Disconnected");
+    // NOTE: We enqueue the calls to guarantee that a call is sent only after
+    // a response has been received for the previous call.
+    // TODO(vinod): Use HTTP pipelining instead.
+    calls.push(call);
+
+    if (calls.size() > 1) {
       return;
     }
 
-    Option<Error> error = validation::scheduler::call::validate(call);
-
-    if (error.isSome()) {
-      drop(call, error.get().message);
-      return;
-    }
-
-    // TODO(vinod): Add support for sending MESSAGE calls directly
-    // to the slave, instead of relaying it through the master, as
-    // the scheduler driver does.
-    send(master.get(), call);
+    // If this is the first in the queue send the call.
+    _send(call)
+      .onAny(defer(self(), &Self::___send));
   }
 
 protected:
   virtual void initialize()
   {
-    install<FrameworkRegisteredMessage>(&MesosProcess::receive);
-    install<FrameworkReregisteredMessage>(&MesosProcess::receive);
-    install<ResourceOffersMessage>(&MesosProcess::receive);
-    install<RescindResourceOfferMessage>(&MesosProcess::receive);
-    install<StatusUpdateMessage>(&MesosProcess::receive);
-    install<LostSlaveMessage>(&MesosProcess::receive);
-    install<ExitedExecutorMessage>(&MesosProcess::receive);
-    install<ExecutorToFrameworkMessage>(&MesosProcess::receive);
-    install<FrameworkErrorMessage>(&MesosProcess::receive);
-
     // Start detecting masters.
     detector->detect()
       .onAny(defer(self(), &MesosProcess::detected, lambda::_1));
   }
 
-  void detected(const Future<Option<MasterInfo> >& future)
+  void detected(const Future<Option<mesos::MasterInfo>>& future)
   {
     CHECK(!future.isDiscarded());
 
@@ -231,6 +222,9 @@ protected:
       error("Failed to detect a master: " + future.failure());
       return;
     }
+
+    // Disconnect the reader upon a master detection callback.
+    disconnect();
 
     if (future.get().isNone()) {
       master = None();
@@ -245,15 +239,9 @@ protected:
 
       VLOG(1) << "New master detected at " << master.get();
 
-      if (credential.isSome()) {
-        // TODO(vinod): Do pure HTTP Authentication instead of SASL.
-        // Authenticate with the master.
-        authenticate();
-      } else {
-        mutex.lock()
-          .then(defer(self(), &Self::__detected))
-          .onAny(lambda::bind(&Mutex::unlock, mutex));
-      }
+      mutex.lock()
+        .then(defer(self(), &Self::__detected))
+        .onAny(lambda::bind(&Mutex::unlock, mutex));
     }
 
     // Keep detecting masters.
@@ -271,209 +259,11 @@ protected:
     return async(connected);
   }
 
-  void authenticate()
-  {
-    authenticated = false;
-
-    // We retry to authenticate and it's possible that we'll get
-    // disconnected while that is happening.
-    if (master.isNone()) {
-      return;
-    }
-
-    if (authenticating.isSome()) {
-      // Authentication is in progress. Try to cancel it.
-      // Note that it is possible that 'authenticating' is ready
-      // and the dispatch to '_authenticate' is enqueued when we
-      // are here, making the 'discard' here a no-op. This is ok
-      // because we set 'reauthenticate' here which enforces a retry
-      // in '_authenticate'.
-      Future<bool>(authenticating.get()).discard();
-      reauthenticate = true;
-      return;
-    }
-
-    VLOG(1) << "Authenticating with master " << master.get();
-
-    CHECK_SOME(credential);
-
-    CHECK(authenticatee == NULL);
-    authenticatee = new cram_md5::CRAMMD5Authenticatee();
-
-    // NOTE: We do not pass 'Owned<Authenticatee>' here because doing
-    // so could make 'AuthenticateeProcess' responsible for deleting
-    // 'Authenticatee' causing a deadlock because the destructor of
-    // 'Authenticatee' waits on 'AuthenticateeProcess'.
-    // This will happen in the following scenario:
-    // --> 'AuthenticateeProcess' does a 'Future.set()'.
-    // --> '_authenticate()' is dispatched to this process.
-    // --> This process executes '_authenticatee()'.
-    // --> 'AuthenticateeProcess' removes the onAny callback
-    //     from its queue which holds the last reference to
-    //     'Authenticatee'.
-    // --> '~Authenticatee()' is invoked by 'AuthenticateeProcess'.
-    // TODO(vinod): Consider using 'Shared' to 'Owned' upgrade.
-    authenticating =
-      authenticatee->authenticate(master.get(), self(), credential.get())
-        .onAny(defer(self(), &Self::_authenticate));
-
-    delay(Seconds(5),
-          self(),
-          &Self::authenticationTimeout,
-          authenticating.get());
-  }
-
-  void _authenticate()
-  {
-    delete CHECK_NOTNULL(authenticatee);
-    authenticatee = NULL;
-
-    CHECK_SOME(authenticating);
-    const Future<bool>& future = authenticating.get();
-
-    if (master.isNone()) {
-      VLOG(1) << "Ignoring authentication because no master is detected";
-      authenticating = None();
-
-      // Set it to false because we do not want further retries until
-      // a new master is detected.
-      // We obviously do not need to reauthenticate either even if
-      // 'reauthenticate' is currently true because the master is
-      // lost.
-      reauthenticate = false;
-      return;
-    }
-
-    if (reauthenticate || !future.isReady()) {
-      VLOG(1)
-        << "Failed to authenticate with master " << master.get() << ": "
-        << (reauthenticate ? "master changed" :
-           (future.isFailed() ? future.failure() : "future discarded"));
-
-      authenticating = None();
-      reauthenticate = false;
-
-      // TODO(vinod): Add a limit on number of retries.
-      dispatch(self(), &Self::authenticate); // Retry.
-      return;
-    }
-
-    if (!future.get()) {
-      VLOG(1) << "Master " << master.get() << " refused authentication";
-      error("Authentication refused");
-      return;
-    }
-
-    VLOG(1) << "Successfully authenticated with master " << master.get();
-
-    authenticated = true;
-    authenticating = None();
-
-    mutex.lock()
-      .then(defer(self(), &Self::__authenticate))
-      .onAny(lambda::bind(&Mutex::unlock, mutex));
-  }
-
-  Future<Nothing> __authenticate()
-  {
-    return async(connected);
-  }
-
-  void authenticationTimeout(Future<bool> future)
-  {
-    // NOTE: Discarded future results in a retry in '_authenticate()'.
-    // Also note that a 'discard' here is safe even if another
-    // authenticator is in progress because this copy of the future
-    // corresponds to the original authenticator that started the timer.
-    if (future.discard()) { // This is a no-op if the future is already ready.
-      LOG(WARNING) << "Authentication timed out";
-    }
-  }
-
-  // NOTE: A None 'from' is possible when an event is injected locally.
-  void receive(const Option<UPID>& from, const Event& event)
-  {
-    // Check if we're disconnected but received an event.
-    if (from.isSome() && master.isNone()) {
-      VLOG(1) << "Ignoring " << stringify(event.type())
-              << " event because we're disconnected";
-      return;
-    } else if (from.isSome() && master != from) {
-      VLOG(1)
-        << "Ignoring " << stringify(event.type())
-        << " event because it was sent from '" << from.get()
-        << "' instead of the leading master '" << master.get() << "'";
-      return;
-    }
-
-    // Note that if 'from' is None we're locally injecting this event
-    // so we always want to enqueue it even if we're not connected!
-
-    VLOG(1) << "Enqueuing event " << stringify(event.type()) << " from "
-            << (from.isNone() ? "(locally injected)" : from.get());
-
-    // Queue up the event and invoke the 'received' callback if this
-    // is the first event (between now and when the 'received'
-    // callback actually gets invoked more events might get queued).
-    events.push(event);
-
-    if (events.size() == 1) {
-      mutex.lock()
-        .then(defer(self(), &Self::_receive))
-        .onAny(lambda::bind(&Mutex::unlock, mutex));
-    }
-  }
-
   Future<Nothing> _receive()
   {
     Future<Nothing> future = async(received, events);
     events = queue<Event>();
     return future;
-  }
-
-  void receive(const UPID& from, const FrameworkRegisteredMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const FrameworkReregisteredMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const ResourceOffersMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const RescindResourceOfferMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const StatusUpdateMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const LostSlaveMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const ExitedExecutorMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const ExecutorToFrameworkMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
-  }
-
-  void receive(const UPID& from, const FrameworkErrorMessage& message)
-  {
-    receive(from, protobuf::scheduler::event(message));
   }
 
   // Helper for injecting an ERROR event.
@@ -487,7 +277,7 @@ protected:
 
     error->set_message(message);
 
-    receive(None(), event);
+    receive(event, true);
   }
 
   void drop(const Call& call, const string& message)
@@ -495,8 +285,216 @@ protected:
     LOG(WARNING) << "Dropping " << call.type() << ": " << message;
   }
 
+  Future<Nothing> _send(const Call& call)
+  {
+    if (master.isNone()) {
+      drop(call, "Disconnected");
+      return Nothing();
+    }
+
+    Option<Error> error = validation::scheduler::call::validate(devolve(call));
+
+    if (error.isSome()) {
+      drop(call, error.get().message);
+      return Nothing();
+    }
+
+    VLOG(1) << "Sending " << call.type() << " call to " << master.get();
+
+    // TODO(vinod): Add support for sending MESSAGE calls directly
+    // to the slave, instead of relaying it through the master, as
+    // the scheduler driver does.
+
+    const string body = serialize(contentType, call);
+    const hashmap<string, string> headers{{"Accept", stringify(contentType)}};
+
+    Future<Response> response;
+
+    if (call.type() == Call::SUBSCRIBE) {
+      // Each subscription requires a new connection.
+      disconnect();
+
+      // Send a streaming request for Subscribe call.
+      response = process::http::streaming::post(
+          master.get(),
+          "api/v1/scheduler",
+          headers,
+          body,
+          stringify(contentType));
+    } else {
+      response = post(
+          master.get(),
+          "api/v1/scheduler",
+          headers,
+          body,
+          stringify(contentType));
+    }
+
+    return response
+      .onAny(defer(self(), &Self::__send, call, lambda::_1))
+      .then([]() { return Nothing(); });
+  }
+
+  void __send(const Call& call, const Future<Response>& response)
+  {
+    CHECK(!response.isDiscarded());
+
+    // This can happen during a master failover or a network blip
+    // causing the socket to timeout. Eventually, the scheduler would
+    // detect the disconnection via ZK(disconnect()) or lack of heartbeats.
+    if (response.isFailed()) {
+      LOG(ERROR) << "Request for call type " << call.type() << " failed: "
+                 << response.failure();
+      return;
+    }
+
+    if (response.get().status == process::http::statuses[200]) {
+      // Only SUBSCRIBE call should get a "200 OK" response.
+      CHECK_EQ(Call::SUBSCRIBE, call.type());
+      CHECK_EQ(response.get().type, http::Response::PIPE);
+      CHECK_SOME(response.get().reader);
+
+      Pipe::Reader reader = response.get().reader.get();
+
+      auto deserializer =
+        lambda::bind(deserialize<Event>, contentType, lambda::_1);
+
+      Owned<Reader<Event>> decoder(
+          new Reader<Event>(Decoder<Event>(deserializer), reader));
+
+      connection = Connection {reader, decoder};
+
+      read();
+
+      return;
+    }
+
+    if (response.get().status == process::http::statuses[202]) {
+      // Only non SUBSCRIBE calls should get a "202 Accepted" response.
+      CHECK_NE(Call::SUBSCRIBE, call.type());
+      return;
+    }
+
+    if (response.get().status == process::http::statuses[503]) {
+      // This could happen if the master hasn't realized it is the leader yet
+      // or is still in the process of recovery.
+      LOG(WARNING) << "Received '" << response.get().status << "' ("
+                   << response.get().body << ") for " << call.type();
+      return;
+    }
+
+    // We should be able to get here only for AuthN errors which is not
+    // yet supported for HTTP frameworks.
+    error("Received unexpected '" + response.get().status + "' (" +
+          response.get().body + ") for " + stringify(call.type()));
+  }
+
+  void ___send()
+  {
+    CHECK_LT(0u, calls.size());
+    calls.pop();
+
+    // Execute the next event in the queue.
+    if (!calls.empty()) {
+      _send(calls.front())
+        .onAny(defer(self(), &Self::___send));
+    }
+  }
+
+  void read()
+  {
+    connection.get().decoder->read()
+      .onAny(defer(self(),
+                   &Self::_read,
+                   connection.get().reader,
+                   lambda::_1));
+  }
+
+  void _read(const Pipe::Reader& reader, const Future<Result<Event>>& event)
+  {
+    CHECK(!event.isDiscarded());
+
+    // Ignore enqueued events from the previous Subscribe call reader.
+    if (!connection.isSome() || connection.get().reader != reader) {
+      VLOG(1) << "Ignoring event from old stale connection";
+      return;
+    }
+
+    // This could happen if the master failed over while sending a response.
+    // It's fine to drop this as the scheduler would detect the
+    // disconnection via ZK(disconnect) or lack of heartbeats.
+    if (event.isFailed()) {
+      LOG(ERROR) << "Failed to decode the stream of events: "
+                 << event.failure();
+      return;
+    }
+
+    if (!event.get().isSome()) {
+      // It's fine to drop this as the scheduler would detect the
+      // disconnection via ZK(disconnect) or lack of heartbeats.
+      LOG(ERROR) << "End-Of-File received from master."
+                 << " The master closed the event stream";
+      return;
+    }
+
+    if (event.get().isError()) {
+      error("Failed to de-serialize event: " + event.get().error());
+    } else {
+      receive(event.get().get(), false);
+    }
+
+    read();
+  }
+
+  void receive(const Event& event, bool isLocallyInjected)
+  {
+    // Check if we're disconnected but received an event.
+    if (!isLocallyInjected && master.isNone()) {
+      LOG(WARNING) << "Ignoring " << stringify(event.type())
+                   << " event because we're disconnected";
+      return;
+    }
+
+    if (isLocallyInjected) {
+      VLOG(1) << "Enqueuing locally injected event " << stringify(event.type());
+    } else {
+      VLOG(1) << "Enqueuing event " << stringify(event.type()) << " received"
+              << " from " << master.get();
+    }
+
+    // Queue up the event and invoke the 'received' callback if this
+    // is the first event (between now and when the 'received'
+    // callback actually gets invoked more events might get queued).
+    events.push(event);
+
+    if (events.size() == 1) {
+      mutex.lock()
+        .then(defer(self(), &Self::_receive))
+        .onAny(lambda::bind(&Mutex::unlock, mutex));
+    }
+  }
+
+  void disconnect()
+  {
+    if (connection.isSome()) {
+      if (!connection.get().reader.close()) {
+        LOG(WARNING) << "HTTP connection was already closed";
+      }
+    }
+
+    connection = None();
+  }
+
 private:
-  const Option<Credential> credential;
+  struct Connection
+  {
+    Pipe::Reader reader;
+    process::Owned<Reader<Event>> decoder;
+  };
+
+  Option<Connection> connection;
+
+  ContentType contentType;
 
   Mutex mutex; // Used to serialize the callback invocations.
 
@@ -510,44 +508,37 @@ private:
 
   queue<Event> events;
 
+  queue<Call> calls;
+
   Option<UPID> master;
-
-  Authenticatee* authenticatee;
-
-  // Indicates if an authentication attempt is in progress.
-  Option<Future<bool> > authenticating;
-
-  // Indicates if the authentication is successful.
-  bool authenticated;
-
-  // Indicates if a new authentication attempt should be enforced.
-  bool reauthenticate;
 };
 
 
 Mesos::Mesos(
     const string& master,
+    ContentType contentType,
     const lambda::function<void(void)>& connected,
     const lambda::function<void(void)>& disconnected,
     const lambda::function<void(const queue<Event>&)>& received)
 {
-  process =
-    new MesosProcess(master, None(), connected, disconnected, received);
+  process = new MesosProcess(
+      master,
+      contentType,
+      connected,
+      disconnected,
+      received);
+
   spawn(process);
 }
 
 
+// Default ContentType is protobuf for HTTP requests.
 Mesos::Mesos(
     const string& master,
-    const Credential& credential,
     const lambda::function<void(void)>& connected,
     const lambda::function<void(void)>& disconnected,
     const lambda::function<void(const queue<Event>&)>& received)
-{
-  process =
-    new MesosProcess(master, credential, connected, disconnected, received);
-  spawn(process);
-}
+  : Mesos(master, ContentType::PROTOBUF, connected, disconnected, received) {}
 
 
 Mesos::~Mesos()
@@ -563,6 +554,6 @@ void Mesos::send(const Call& call)
   dispatch(process, &MesosProcess::send, call);
 }
 
-
 } // namespace scheduler {
+} // namespace v1 {
 } // namespace mesos {

@@ -45,6 +45,8 @@ namespace paths {
 //       This includes things like persistent volumes and dynamic
 //       reservations.
 //
+//   (5) For provisioning root filesystems for containers.
+//
 // The file system layout is as follows:
 //
 //   root ('--work_dir' flag)
@@ -52,7 +54,7 @@ namespace paths {
 //   |   |-- latest (symlink)
 //   |   |-- <slave_id>
 //   |       |-- frameworks
-//   |           |-- <framework__id>
+//   |           |-- <framework_id>
 //   |               |-- executors
 //   |                   |-- <executor_id>
 //   |                       |-- runs
@@ -64,7 +66,7 @@ namespace paths {
 //   |       |-- <slave_id>
 //   |           |-- slave.info
 //   |           |-- frameworks
-//   |               |-- <framework__id>
+//   |               |-- <framework_id>
 //   |                   |-- framework.info
 //   |                   |-- framework.pid
 //   |                   |-- executors
@@ -85,15 +87,22 @@ namespace paths {
 //   |-- resources
 //   |   |-- resources.info
 //   |-- volumes
-//       |-- roles
-//           |-- <role>
-//               |-- <persistence_id> (persistent volume)
+//   |   |-- roles
+//   |       |-- <role>
+//   |           |-- <persistence_id> (persistent volume)
+//   |-- provisioner
 
 const char LATEST_SYMLINK[] = "latest";
 
 // Helpers for obtaining paths in the layout:
 
 std::string getMetaRootDir(const std::string& rootDir);
+
+
+std::string getSandboxRootDir(const std::string& rootDir);
+
+
+std::string getProvisionerDir(const std::string& rootDir);
 
 
 std::string getArchiveDir(const std::string& rootDir);

@@ -70,7 +70,7 @@ public:
   // Returns the mask (in host order) of this port range.
   uint16_t mask() const { return ~(end_ - begin_); }
 
-  bool operator == (const PortRange& that) const
+  bool operator==(const PortRange& that) const
   {
     return begin_ == that.begin_ && end_ == that.end_;
   }
@@ -84,20 +84,11 @@ private:
 };
 
 
-inline std::ostream& operator << (
+inline std::ostream& operator<<(
     std::ostream& stream,
     const PortRange& range)
 {
   return stream << "[" << range.begin() << "," << range.end() << "]";
-}
-
-
-inline size_t hash_value(const PortRange& range)
-{
-  size_t seed = 0;
-  boost::hash_combine(seed, range.begin());
-  boost::hash_combine(seed, range.end());
-  return seed;
 }
 
 
@@ -113,7 +104,7 @@ struct Classifier
       sourcePorts(_sourcePorts),
       destinationPorts(_destinationPorts) {}
 
-  bool operator == (const Classifier& that) const
+  bool operator==(const Classifier& that) const
   {
     return (destinationMAC == that.destinationMAC &&
         destinationIP == that.destinationIP &&
@@ -216,5 +207,25 @@ Result<std::vector<Classifier>> classifiers(
 } // namespace ip {
 } // namespace filter {
 } // namespace routing {
+
+namespace std {
+
+template <>
+struct hash<routing::filter::ip::PortRange>
+{
+  typedef size_t result_type;
+
+  typedef routing::filter::ip::PortRange argument_type;
+
+  result_type operator()(const argument_type& range) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, range.begin());
+    boost::hash_combine(seed, range.end());
+    return seed;
+  }
+};
+
+} // namespace std {
 
 #endif // __LINUX_ROUTING_FILTER_IP_HPP__

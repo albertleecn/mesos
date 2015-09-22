@@ -90,7 +90,7 @@ public:
   // Try<Option<T>>.
   Result(const Result<T>& that) = default;
   ~Result() = default;
-  Result<T>& operator = (const Result<T>& that) = default;
+  Result<T>& operator=(const Result<T>& that) = default;
 
   // 'isSome', 'isNone', and 'isError' are mutually exclusive. They
   // correspond to the underlying unioned state of the Option and Try.
@@ -111,6 +111,14 @@ public:
     }
     return data.get().get();
   }
+
+  T& get()
+  {
+    return const_cast<T&>(static_cast<const Result&>(*this).get());
+  }
+
+  const T* operator->() const { return &get(); }
+  T* operator->() { return &get(); }
 
   const std::string& error() const { assert(isError()); return data.error(); }
 

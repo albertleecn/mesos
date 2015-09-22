@@ -587,7 +587,7 @@ TYPED_TEST(SlaveRecoveryTest, RecoverUnregisteredExecutor)
 
   // Now advance time until the reaper reaps the executor.
   while (status.isPending()) {
-    Clock::advance(Seconds(1));
+    Clock::advance(process::MAX_REAP_INTERVAL());
     Clock::settle();
   }
 
@@ -706,7 +706,7 @@ TYPED_TEST(SlaveRecoveryTest, RecoverTerminatedExecutor)
 
   // Now advance time until the reaper reaps the executor.
   while (status.isPending()) {
-    Clock::advance(Seconds(1));
+    Clock::advance(process::MAX_REAP_INTERVAL());
     Clock::settle();
   }
 
@@ -1000,7 +1000,7 @@ TYPED_TEST(SlaveRecoveryTest, CleanupExecutor)
 
   // Now advance time until the reaper reaps the executor.
   while (status.isPending()) {
-    Clock::advance(Seconds(1));
+    Clock::advance(process::MAX_REAP_INTERVAL());
     Clock::settle();
   }
 
@@ -1685,7 +1685,7 @@ TYPED_TEST(SlaveRecoveryTest, ShutdownSlave)
 
   // Now advance time until the reaper reaps the executor.
   while (executorTerminated.isPending()) {
-    Clock::advance(Seconds(1));
+    Clock::advance(process::MAX_REAP_INTERVAL());
     Clock::settle();
   }
 
@@ -2143,14 +2143,14 @@ TYPED_TEST(SlaveRecoveryTest, ReconcileTasksMissingFromSlave)
 {
   TestAllocator<master::allocator::HierarchicalDRFAllocator> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<PID<Master> > master = this->StartMaster(&allocator);
   ASSERT_SOME(master);
 
   slave::Flags flags = this->CreateSlaveFlags();
 
-  EXPECT_CALL(allocator, addSlave(_, _, _, _));
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _));
 
   Fetcher fetcher;
 
@@ -2469,10 +2469,11 @@ TYPED_TEST(SlaveRecoveryTest, PartitionedSlave)
 
   // Set these expectations up before we spawn the slave so that we
   // don't miss the first PING.
-  Future<Message> ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+  Future<Message> ping = FUTURE_MESSAGE(
+      Eq(PingSlaveMessage().GetTypeName()), _, _);
 
   // Drop all the PONGs to simulate slave partition.
-  DROP_MESSAGES(Eq("PONG"), _, _);
+  DROP_MESSAGES(Eq(PongSlaveMessage().GetTypeName()), _, _);
 
   slave::Flags flags = this->CreateSlaveFlags();
 
@@ -2542,7 +2543,7 @@ TYPED_TEST(SlaveRecoveryTest, PartitionedSlave)
     if (pings == masterFlags.max_slave_ping_timeouts) {
      break;
     }
-    ping = FUTURE_MESSAGE(Eq("PING"), _, _);
+    ping = FUTURE_MESSAGE(Eq(PingSlaveMessage().GetTypeName()), _, _);
     Clock::advance(masterFlags.slave_ping_timeout);
     Clock::settle();
   }
@@ -2562,7 +2563,7 @@ TYPED_TEST(SlaveRecoveryTest, PartitionedSlave)
 
   // Wait for the executor to be terminated.
   while (executorTerminated.isPending()) {
-    Clock::advance(Seconds(1));
+    Clock::advance(process::MAX_REAP_INTERVAL());
     Clock::settle();
   }
 
@@ -2931,6 +2932,10 @@ TYPED_TEST(SlaveRecoveryTest, MultipleSlaves)
   // Start the first slave.
   slave::Flags flags1 = this->CreateSlaveFlags();
 
+  // NOTE: We cannot run multiple slaves simultaneously on a host if
+  // cgroups isolation is involved.
+  flags1.isolation = "filesystem/posix,posix/mem,posix/cpu";
+
 #ifdef __linux__
   // Disable putting slave into cgroup(s) because this is a multi-slave test.
   flags1.slave_subsystems = None();
@@ -2967,6 +2972,10 @@ TYPED_TEST(SlaveRecoveryTest, MultipleSlaves)
 
   // Start the second slave.
   slave::Flags flags2 = this->CreateSlaveFlags();
+
+  // NOTE: We cannot run multiple slaves simultaneously on a host if
+  // cgroups isolation is involved.
+  flags2.isolation = "filesystem/posix,posix/mem,posix/cpu";
 
 #ifdef __linux__
   // Disable putting slave into cgroup(s) because this is a multi-slave test.

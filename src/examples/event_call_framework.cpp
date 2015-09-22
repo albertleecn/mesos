@@ -22,9 +22,9 @@
 
 #include <boost/lexical_cast.hpp>
 
-#include <mesos/resources.hpp>
-#include <mesos/scheduler.hpp>
-#include <mesos/type_utils.hpp>
+#include <mesos/v1/mesos.hpp>
+#include <mesos/v1/resources.hpp>
+#include <mesos/v1/scheduler.hpp>
 
 #include <process/delay.hpp>
 #include <process/process.hpp>
@@ -49,7 +49,7 @@
 #include "logging/flags.hpp"
 #include "logging/logging.hpp"
 
-using namespace mesos;
+using namespace mesos::v1;
 
 using std::cerr;
 using std::cout;
@@ -60,9 +60,8 @@ using std::vector;
 
 using boost::lexical_cast;
 
-using mesos::Resources;
-using mesos::scheduler::Call;
-using mesos::scheduler::Event;
+using mesos::v1::scheduler::Call;
+using mesos::v1::scheduler::Event;
 
 const int32_t CPUS_PER_TASK = 1;
 const int32_t MEM_PER_TASK = 128;
@@ -91,7 +90,6 @@ public:
     : framework(_framework),
       executor(_executor),
       mesos(master,
-            credential,
             process::defer(self(), &Self::connected),
             process::defer(self(), &Self::disconnected),
             process::defer(self(), &Self::received, lambda::_1)),
@@ -161,9 +159,9 @@ public:
             cout << "Executor '"
                  << event.failure().executor_id().value() << "' terminated";
 
-            if (event.failure().has_slave_id()) {
-              cout << " on Slave '"
-                   << event.failure().slave_id().value() << "'";
+            if (event.failure().has_agent_id()) {
+              cout << " on Agent '"
+                   << event.failure().agent_id().value() << "'";
             }
 
             if (event.failure().has_status()) {
@@ -171,9 +169,9 @@ public:
             }
 
             cout << endl;
-          } else if (event.failure().has_slave_id()) {
-            // Slave failed.
-            cout << "Slave '" << event.failure().slave_id().value()
+          } else if (event.failure().has_agent_id()) {
+            // Agent failed.
+            cout << "Agent '" << event.failure().agent_id().value()
                  << "' terminated" << endl;
           }
           break;
@@ -183,6 +181,11 @@ public:
           cout << endl << "Received an ERROR event: "
                << event.error().message() << endl;
           process::terminate(self());
+          break;
+        }
+
+        case Event::HEARTBEAT: {
+          cout << endl << "Received a HEARTBEAT event" << endl;
           break;
         }
 
@@ -197,7 +200,8 @@ private:
   void resourceOffers(const vector<Offer>& offers)
   {
     foreach (const Offer& offer, offers) {
-      cout << "Received offer " << offer.id() << " with " << offer.resources()
+      cout << "Received offer " << offer.id() << " with "
+           << Resources(offer.resources())
            << endl;
 
       static const Resources TASK_RESOURCES = Resources::parse(
@@ -219,14 +223,16 @@ private:
         task.set_name("Task " + lexical_cast<string>(taskId));
         task.mutable_task_id()->set_value(
             lexical_cast<string>(taskId));
-        task.mutable_slave_id()->MergeFrom(offer.slave_id());
+        task.mutable_agent_id()->MergeFrom(offer.agent_id());
         task.mutable_executor()->MergeFrom(executor);
 
         Option<Resources> resources =
           remaining.find(TASK_RESOURCES.flatten(framework.role()));
 
         CHECK_SOME(resources);
-        task.mutable_resources()->MergeFrom(resources.get());
+
+        task.mutable_resources()->CopyFrom(resources.get());
+
         remaining -= resources.get();
 
         tasks.push_back(task);
@@ -266,7 +272,7 @@ private:
       call.set_type(Call::ACKNOWLEDGE);
 
       Call::Acknowledge* ack = call.mutable_acknowledge();
-      ack->mutable_slave_id()->CopyFrom(status.slave_id());
+      ack->mutable_agent_id()->CopyFrom(status.agent_id());
       ack->mutable_task_id ()->CopyFrom(status.task_id ());
       ack->set_uuid(status.uuid());
 
@@ -332,7 +338,8 @@ private:
   const ExecutorInfo executor;
   scheduler::Mesos mesos;
 
-  enum State {
+  enum State
+  {
     INITIALIZING = 0,
     SUBSCRIBED = 1,
     DISCONNECTED = 2
@@ -393,7 +400,7 @@ int main(int argc, char** argv)
   }
 
   process::initialize();
-  internal::logging::initialize(argv[0], flags, true); // Catch signals.
+  mesos::internal::logging::initialize(argv[0], flags, true); // Catch signals.
 
   FrameworkInfo framework;
   framework.set_name("Event Call Scheduler using libprocess (C++)");
@@ -416,35 +423,15 @@ int main(int argc, char** argv)
   executor.set_name("Test Executor (C++)");
   executor.set_source("cpp_test");
 
-  EventCallScheduler* scheduler;
-  if (os::getenv("MESOS_AUTHENTICATE").isSome()) {
-    cout << "Enabling authentication for the scheduler" << endl;
-
-    value = os::getenv("DEFAULT_PRINCIPAL");
-    if (value.isNone()) {
-      EXIT(1) << "Expecting authentication principal in the environment";
-    }
-
-    Credential credential;
-    credential.set_principal(value.get());
-
-    framework.set_principal(value.get());
-
-    value = os::getenv("DEFAULT_SECRET");
-    if (value.isNone()) {
-      EXIT(1) << "Expecting authentication secret in the environment";
-    }
-
-    credential.set_secret(value.get());
-
-    scheduler =
-      new EventCallScheduler(framework, executor, master.get(), credential);
-  } else {
-    framework.set_principal("event-call-scheduler-cpp");
-
-    scheduler =
-      new EventCallScheduler(framework, executor, master.get());
+  value = os::getenv("DEFAULT_PRINCIPAL");
+  if (value.isNone()) {
+    EXIT(1) << "Expecting authentication principal in the environment";
   }
+
+  framework.set_principal(value.get());
+
+  EventCallScheduler* scheduler;
+  scheduler = new EventCallScheduler(framework, executor, master.get());
 
   process::spawn(scheduler);
   process::wait(scheduler);

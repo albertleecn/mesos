@@ -29,7 +29,7 @@ namespace internal {
 namespace master {
 namespace allocator {
 
-bool DRFComparator::operator () (const Client& client1, const Client& client2)
+bool DRFComparator::operator()(const Client& client1, const Client& client2)
 {
   if (client1.share == client2.share) {
     if (client1.allocations == client2.allocations) {
@@ -159,6 +159,26 @@ hashmap<SlaveID, Resources> DRFSorter::allocation(const string& name)
   CHECK(contains(name));
 
   return allocations[name].resources;
+}
+
+
+hashmap<std::string, Resources> DRFSorter::allocation(const SlaveID& slaveId)
+{
+  // TODO(jmlvanre): We can index the allocation by slaveId to make this faster.
+  // It is a tradeoff between speed vs. memory. For now we use existing data
+  // structures.
+
+  hashmap<std::string, Resources> result;
+
+  foreachpair (const string& name, const Allocation& allocation, allocations) {
+    if (allocation.resources.contains(slaveId)) {
+      // It is safe to use `at()` here because we've just checked the existence
+      // of the key. This avoid un-necessary copies.
+      result.emplace(name, allocation.resources.at(slaveId));
+    }
+  }
+
+  return result;
 }
 
 

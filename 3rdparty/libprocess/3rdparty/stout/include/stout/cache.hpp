@@ -18,9 +18,8 @@
 #include <iostream>
 #include <list>
 #include <map>
+#include <unordered_map>
 #include <utility>
-
-#include <boost/unordered_map.hpp>
 
 #include <glog/logging.h>
 
@@ -33,9 +32,7 @@ class Cache;
 
 // Outputs the key/value pairs from least to most-recently used.
 template <typename Key, typename Value>
-std::ostream& operator << (
-    std::ostream& stream,
-    const Cache<Key, Value>& c);
+std::ostream& operator<<(std::ostream& stream, const Cache<Key, Value>& c);
 
 
 // Provides a least-recently used (LRU) cache of some predefined
@@ -45,8 +42,8 @@ class Cache
 {
 public:
   typedef std::list<Key> list;
-  typedef boost::unordered_map<
-    Key, std::pair<Value, typename list::iterator> > map;
+  typedef std::unordered_map<
+    Key, std::pair<Value, typename list::iterator>> map;
 
   explicit Cache(size_t _capacity) : capacity(_capacity) {}
 
@@ -92,10 +89,10 @@ public:
 private:
   // Not copyable, not assignable.
   Cache(const Cache&);
-  Cache& operator = (const Cache&);
+  Cache& operator=(const Cache&);
 
   // Give the operator access to our internals.
-  friend std::ostream& operator << <>(
+  friend std::ostream& operator<<<>(
       std::ostream& stream,
       const Cache<Key, Value>& c);
 
@@ -144,9 +141,7 @@ private:
 
 
 template <typename Key, typename Value>
-std::ostream& operator << (
-    std::ostream& stream,
-    const Cache<Key, Value>& c)
+std::ostream& operator<<(std::ostream& stream, const Cache<Key, Value>& c)
 {
   typename Cache<Key, Value>::list::const_iterator i1;
   for (i1 = c.keys.begin(); i1 != c.keys.end(); i1++) {

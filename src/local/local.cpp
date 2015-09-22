@@ -23,9 +23,12 @@
 #include <string>
 #include <vector>
 
+#include <mesos/authorizer/authorizer.hpp>
+
 #include <mesos/master/allocator.hpp>
 
 #include <mesos/module/anonymous.hpp>
+#include <mesos/module/authorizer.hpp>
 
 #include <mesos/slave/resource_estimator.hpp>
 
@@ -40,8 +43,6 @@
 #include <stout/path.hpp>
 #include <stout/try.hpp>
 #include <stout/strings.hpp>
-
-#include "authorizer/authorizer.hpp"
 
 #include "common/protobuf_utils.hpp"
 
@@ -213,17 +214,52 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
     contender = new StandaloneMasterContender();
     detector = new StandaloneMasterDetector();
 
-    if (flags.acls.isSome()) {
-      Try<Owned<Authorizer>> create = Authorizer::create(flags.acls.get());
+    auto authorizerNames = strings::split(flags.authorizers, ",");
+    if (authorizerNames.empty()) {
+      EXIT(EXIT_FAILURE) << "No authorizer specified";
+    }
+    if (authorizerNames.size() > 1) {
+      EXIT(EXIT_FAILURE) << "Multiple authorizers not supported";
+    }
+    std::string authorizerName = authorizerNames[0];
+
+    // NOTE: The flag --authorizers overrides the flag --acls, i.e. if
+    // a non default authorizer is requested, it will be used and
+    // the contents of --acls will be ignored.
+    // TODO(arojas): Add support for multiple authorizers.
+    if (authorizerName != master::DEFAULT_AUTHORIZER ||
+        flags.acls.isSome()) {
+      Try<Authorizer*> create = Authorizer::create(authorizerName);
 
       if (create.isError()) {
-        EXIT(1) << "Failed to initialize the authorizer: "
-                << create.error() << " (see --acls flag)";
+        EXIT(EXIT_FAILURE) << "Could not create '" << authorizerName
+                           << "' authorizer: " << create.error();
       }
 
-      // Now pull out the authorizer but need to make a copy since we
-      // get a 'const &' from 'Try::get'.
-      authorizer = Owned<Authorizer>(create.get()).release();
+      authorizer = create.get();
+
+      LOG(INFO) << "Using '" << authorizerName << "' authorizer";
+
+      if (authorizerName == master::DEFAULT_AUTHORIZER) {
+        Try<Nothing> initialize =
+          authorizer.get()->initialize(flags.acls.get());
+
+        if (initialize.isError()) {
+          // Failing to initialize the authorizer leads to undefined
+          // behavior, therefore we default to skip authorization
+          // altogether.
+          EXIT(EXIT_FAILURE) << "Failed to initialize '"
+                             << authorizerName << "' authorizer: "
+                             << initialize.error();
+
+          delete authorizer.get();
+          authorizer = None();
+        }
+      } else if (flags.acls.isSome()) {
+        LOG(WARNING) << "Ignoring contents of --acls flag, because '"
+                     << authorizerName << "' authorizer will be used instead"
+                     << " of the default.";
+      }
     }
 
     Option<shared_ptr<RateLimiter>> slaveRemovalLimiter = None();

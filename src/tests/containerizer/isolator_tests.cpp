@@ -172,7 +172,6 @@ TYPED_TEST(CpuIsolatorTest, UserCpuUsage)
       containerId,
       executorInfo,
       dir.get(),
-      None(),
       None()));
 
   const string& file = path::join(dir.get(), "mesos_isolator_test_ready");
@@ -192,14 +191,15 @@ TYPED_TEST(CpuIsolatorTest, UserCpuUsage)
 
   Try<pid_t> pid = launcher.get()->fork(
       containerId,
-      "/bin/sh",
+      "sh",
       argv,
       Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
       None(),
       None(),
-      lambda::bind(&childSetup, pipes));
+      lambda::bind(&childSetup, pipes),
+      None());
 
   ASSERT_SOME(pid);
 
@@ -282,7 +282,6 @@ TYPED_TEST(CpuIsolatorTest, SystemCpuUsage)
       containerId,
       executorInfo,
       dir.get(),
-      None(),
       None()));
 
   const string& file = path::join(dir.get(), "mesos_isolator_test_ready");
@@ -303,14 +302,15 @@ TYPED_TEST(CpuIsolatorTest, SystemCpuUsage)
 
   Try<pid_t> pid = launcher.get()->fork(
       containerId,
-      "/bin/sh",
+      "sh",
       argv,
       Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
       None(),
       None(),
-      lambda::bind(&childSetup, pipes));
+      lambda::bind(&childSetup, pipes),
+      None());
 
   ASSERT_SOME(pid);
 
@@ -394,7 +394,6 @@ TEST_F(RevocableCpuIsolatorTest, ROOT_CGROUPS_RevocableCpu)
         containerId,
         executorInfo,
         os::getcwd(),
-        None(),
         None()));
 
   vector<string> argv{"sleep", "100"};
@@ -406,6 +405,7 @@ TEST_F(RevocableCpuIsolatorTest, ROOT_CGROUPS_RevocableCpu)
       Subprocess::PATH("/dev/null"),
       Subprocess::PATH("/dev/null"),
       Subprocess::PATH("/dev/null"),
+      None(),
       None(),
       None(),
       None());
@@ -454,8 +454,7 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Cfs)
   Try<Isolator*> isolator = CgroupsCpushareIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources to 0.5 cpu.
@@ -471,12 +470,14 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Cfs)
   Try<string> dir = os::mkdtemp(path::join(os::getcwd(), "XXXXXX"));
   ASSERT_SOME(dir);
 
-  AWAIT_READY(isolator.get()->prepare(
-      containerId,
-      executorInfo,
-      dir.get(),
-      None(),
-      None()));
+  Future<Option<ContainerPrepareInfo>> prepare =
+    isolator.get()->prepare(
+        containerId,
+        executorInfo,
+        dir.get(),
+        None());
+
+  AWAIT_READY(prepare);
 
   // Generate random numbers to max out a single core. We'll run this for 0.5
   // seconds of wall time so it should consume approximately 250 ms of total
@@ -497,14 +498,15 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Cfs)
 
   Try<pid_t> pid = launcher.get()->fork(
       containerId,
-      "/bin/sh",
+      "sh",
       argv,
       Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
       None(),
       None(),
-      lambda::bind(&childSetup, pipes));
+      lambda::bind(&childSetup, pipes),
+      prepare.get().isSome() ? prepare.get().get().namespaces() : 0);
 
   ASSERT_SOME(pid);
 
@@ -566,8 +568,7 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Cfs_Big_Quota)
   Try<Isolator*> isolator = CgroupsCpushareIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Set the executor's resources to 100.5 cpu.
@@ -583,12 +584,14 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Cfs_Big_Quota)
   Try<string> dir = os::mkdtemp(path::join(os::getcwd(), "XXXXXX"));
   ASSERT_SOME(dir);
 
-  AWAIT_READY(isolator.get()->prepare(
-      containerId,
-      executorInfo,
-      dir.get(),
-      None(),
-      None()));
+  Future<Option<ContainerPrepareInfo>> prepare =
+    isolator.get()->prepare(
+        containerId,
+        executorInfo,
+        dir.get(),
+        None());
+
+  AWAIT_READY(prepare);
 
   int pipes[2];
   ASSERT_NE(-1, ::pipe(pipes));
@@ -600,14 +603,15 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Cfs_Big_Quota)
 
   Try<pid_t> pid = launcher.get()->fork(
       containerId,
-      "/bin/sh",
+      "sh",
       argv,
       Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
       None(),
       None(),
-      lambda::bind(&childSetup, pipes));
+      lambda::bind(&childSetup, pipes),
+      prepare.get().isSome() ? prepare.get().get().namespaces() : 0);
 
   ASSERT_SOME(pid);
 
@@ -651,8 +655,7 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Pids_and_Tids)
   Try<Isolator*> isolator = CgroupsCpushareIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   ExecutorInfo executorInfo;
@@ -667,12 +670,14 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Pids_and_Tids)
   Try<string> dir = os::mkdtemp(path::join(os::getcwd(), "XXXXXX"));
   ASSERT_SOME(dir);
 
-  AWAIT_READY(isolator.get()->prepare(
-      containerId,
-      executorInfo,
-      dir.get(),
-      None(),
-      None()));
+  Future<Option<ContainerPrepareInfo>> prepare =
+    isolator.get()->prepare(
+        containerId,
+        executorInfo,
+        dir.get(),
+        None());
+
+  AWAIT_READY(prepare);
 
   // Right after the creation of the cgroup, which happens in
   // 'prepare', we check that it is empty.
@@ -691,14 +696,15 @@ TEST_F(LimitedCpuIsolatorTest, ROOT_CGROUPS_Pids_and_Tids)
 
   Try<pid_t> pid = launcher.get()->fork(
       containerId,
-      "/bin/sh",
+      "sh",
       argv,
       Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
       None(),
       None(),
-      lambda::bind(&childSetup, pipes));
+      lambda::bind(&childSetup, pipes),
+      prepare.get().isSome() ? prepare.get().get().namespaces() : 0);
 
   ASSERT_SOME(pid);
 
@@ -795,7 +801,6 @@ TYPED_TEST(MemIsolatorTest, MemUsage)
       containerId,
       executorInfo,
       dir.get(),
-      None(),
       None()));
 
   MemoryTestHelper helper;
@@ -858,7 +863,6 @@ TEST_F(PerfEventIsolatorTest, ROOT_CGROUPS_Sample)
       containerId,
       executorInfo,
       dir.get(),
-      None(),
       None()));
 
   // This first sample is likely to be empty because perf hasn't
@@ -929,8 +933,7 @@ TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_RelativeVolume)
   Try<Isolator*> isolator = SharedFilesystemIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // Use /var/tmp so we don't mask the work directory (under /tmp).
@@ -956,12 +959,12 @@ TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_RelativeVolume)
         containerId,
         executorInfo,
         flags.work_dir,
-        None(),
         None());
 
   AWAIT_READY(prepare);
   ASSERT_SOME(prepare.get());
   ASSERT_EQ(1, prepare.get().get().commands().size());
+  EXPECT_TRUE(prepare.get().get().has_namespaces());
 
   // The test will touch a file in container path.
   const string file = path::join(containerPath, UUID::random().toString());
@@ -970,21 +973,22 @@ TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_RelativeVolume)
   // Manually run the isolator's preparation command first, then touch
   // the file.
   vector<string> args;
-  args.push_back("/bin/sh");
+  args.push_back("sh");
   args.push_back("-x");
   args.push_back("-c");
   args.push_back(prepare.get().get().commands(0).value() + " && touch " + file);
 
   Try<pid_t> pid = launcher.get()->fork(
       containerId,
-      "/bin/sh",
+      "sh",
       args,
       Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
       None(),
       None(),
-      None());
+      None(),
+      prepare.get().get().namespaces());
   ASSERT_SOME(pid);
 
   // Set up the reaper to wait on the forked child.
@@ -1036,8 +1040,7 @@ TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_AbsoluteVolume)
   Try<Isolator*> isolator = SharedFilesystemIsolatorProcess::create(flags);
   CHECK_SOME(isolator);
 
-  Try<Launcher*> launcher =
-    LinuxLauncher::create(flags, isolator.get()->namespaces().get());
+  Try<Launcher*> launcher = LinuxLauncher::create(flags);
   CHECK_SOME(launcher);
 
   // We'll mount the absolute test work directory as /var/tmp in the
@@ -1061,12 +1064,12 @@ TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_AbsoluteVolume)
         containerId,
         executorInfo,
         flags.work_dir,
-        None(),
         None());
 
   AWAIT_READY(prepare);
   ASSERT_SOME(prepare.get());
   ASSERT_EQ(1, prepare.get().get().commands().size());
+  EXPECT_TRUE(prepare.get().get().has_namespaces());
 
   // Test the volume mounting by touching a file in the container's
   // /tmp, which should then be in flags.work_dir.
@@ -1074,7 +1077,7 @@ TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_AbsoluteVolume)
   ASSERT_FALSE(os::exists(path::join(containerPath, filename)));
 
   vector<string> args;
-  args.push_back("/bin/sh");
+  args.push_back("sh");
   args.push_back("-x");
   args.push_back("-c");
   args.push_back(prepare.get().get().commands(0).value() +
@@ -1083,14 +1086,15 @@ TEST_F(SharedFilesystemIsolatorTest, DISABLED_ROOT_AbsoluteVolume)
 
   Try<pid_t> pid = launcher.get()->fork(
       containerId,
-      "/bin/sh",
+      "sh",
       args,
       Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
       None(),
       None(),
-      None());
+      None(),
+      prepare.get().get().namespaces());
   ASSERT_SOME(pid);
 
   // Set up the reaper to wait on the forked child.
@@ -1230,7 +1234,6 @@ TYPED_TEST(UserCgroupIsolatorTest, ROOT_CGROUPS_UserCgroup)
       containerId,
       executorInfo,
       os::getcwd(),
-      None(),
       UNPRIVILEGED_USERNAME));
 
   // Isolators don't provide a way to determine the cgroups they use
@@ -1261,23 +1264,31 @@ TYPED_TEST(UserCgroupIsolatorTest, ROOT_CGROUPS_UserCgroup)
   //
   // Our 'grep' will only select the 'memory' line and then 'awk' will
   // output 'memory/mesos/b7410ed8-c85b-445e-b50e-3a1698d0e18c'.
-  ostringstream output;
-  Try<int> status = os::shell(
-      &output,
+  Try<string> grepOut = os::shell(
       "grep '" + path::join("/", flags.cgroups_root) + "' /proc/" +
-      stringify(pid) + "/cgroup | awk -F ':' '{print $2$3}'");
+       stringify(pid) + "/cgroup | awk -F ':' '{print $2$3}'");
 
-  ASSERT_SOME(status);
+  ASSERT_SOME(grepOut);
 
   // Kill the dummy child process.
   ::kill(pid, SIGKILL);
   int exitStatus;
   EXPECT_NE(-1, ::waitpid(pid, &exitStatus, 0));
 
-  vector<string> cgroups = strings::tokenize(output.str(), "\n");
+  vector<string> cgroups = strings::tokenize(grepOut.get(), "\n");
   ASSERT_FALSE(cgroups.empty());
 
-  foreach (const string& cgroup, cgroups) {
+  foreach (string cgroup, cgroups) {
+    if (!os::exists(path::join(flags.cgroups_hierarchy, cgroup)) &&
+        strings::startsWith(cgroup, "cpuacct,cpu")) {
+      // An existing bug in CentOS 7.x causes 'cpuacct,cpu' cgroup to
+      // be under 'cpu,cpuacct'. Actively detect this here to
+      // work around this problem.
+      vector<string> parts = strings::split(cgroup, "/");
+      parts[0] = "cpu,cpuacct";
+      cgroup = strings::join("/", parts);
+    }
+
     // Check the user cannot manipulate the container's cgroup control
     // files.
     EXPECT_NE(0, os::system(

@@ -20,6 +20,7 @@
 #include <netinet/tcp.h>
 
 #include <string>
+#include <vector>
 
 #include <process/address.hpp>
 #include <process/future.hpp>
@@ -45,6 +46,7 @@ using process::http::URL;
 using process::network::Socket;
 
 using std::string;
+using std::vector;
 
 using testing::_;
 using testing::Assign;
@@ -63,6 +65,9 @@ public:
   MOCK_METHOD1(pipe, Future<http::Response>(const http::Request&));
   MOCK_METHOD1(get, Future<http::Response>(const http::Request&));
   MOCK_METHOD1(post, Future<http::Response>(const http::Request&));
+  MOCK_METHOD1(requestDelete, Future<http::Response>(const http::Request&));
+  MOCK_METHOD1(a, Future<http::Response>(const http::Request&));
+  MOCK_METHOD1(abc, Future<http::Response>(const http::Request&));
 
 protected:
   virtual void initialize()
@@ -72,6 +77,9 @@ protected:
     route("/pipe", None(), &HttpProcess::pipe);
     route("/get", None(), &HttpProcess::get);
     route("/post", None(), &HttpProcess::post);
+    route("/delete", None(), &HttpProcess::requestDelete);
+    route("/a", None(), &HttpProcess::a);
+    route("/a/b/c", None(), &HttpProcess::abc);
   }
 
   Future<http::Response> auth(const http::Request& request)
@@ -103,6 +111,8 @@ public:
   Owned<HttpProcess> process;
 };
 
+
+// TODO(vinod): Use AWAIT_EXPECT_RESPONSE_STATUS_EQ in the tests.
 
 TEST(HTTPTest, Auth)
 {
@@ -431,6 +441,31 @@ TEST(HTTPTest, Get)
 }
 
 
+TEST(HTTPTest, NestedGet)
+{
+  Http http;
+
+  EXPECT_CALL(*http.process, a(_))
+    .WillOnce(Return(http::Accepted()));
+
+  EXPECT_CALL(*http.process, abc(_))
+    .WillOnce(Return(http::OK()));
+
+  // The handler for "/a/b/c" should return 'http::OK()'.
+  Future<http::Response> response = http::get(http.process->self(), "/a/b/c");
+
+  AWAIT_READY(response);
+  ASSERT_EQ(http::statuses[200], response.get().status);
+
+  // "/a/b" should be handled by "/a" handler and return
+  // 'http::Accepted()'.
+  response = http::get(http.process->self(), "/a/b");
+
+  AWAIT_READY(response);
+  ASSERT_EQ(http::statuses[202], response.get().status);
+}
+
+
 TEST(HTTPTest, StreamingGetComplete)
 {
   Http http;
@@ -585,6 +620,32 @@ TEST(HTTPTest, Post)
 }
 
 
+http::Response validateDelete(const http::Request& request)
+{
+  EXPECT_EQ("DELETE", request.method);
+  EXPECT_THAT(request.path, EndsWith("delete"));
+  EXPECT_TRUE(request.body.empty());
+  EXPECT_TRUE(request.query.empty());
+
+  return http::OK();
+}
+
+
+TEST(HTTPTest, Delete)
+{
+  Http http;
+
+  EXPECT_CALL(*http.process, requestDelete(_))
+    .WillOnce(Invoke(validateDelete));
+
+  Future<http::Response> future =
+    http::requestDelete(http.process->self(), "delete", None());
+
+  AWAIT_READY(future);
+  ASSERT_EQ(http::statuses[200], future.get().status);
+}
+
+
 TEST(HTTPTest, QueryEncodeDecode)
 {
   // If we use Type<a, b> directly inside a macro without surrounding
@@ -652,6 +713,62 @@ TEST(HTTPTest, CaseInsensitiveHeaders)
 }
 
 
+TEST(HTTPTest, Accepts)
+{
+  // Create requests that do not accept the 'text/*' media type.
+  vector<string> headers = {
+    "text/*;q=0.0",
+    "text/html;q=0.0",
+    "text/",
+    "text",
+    "foo/*",
+    "foo/*, text/*;q=0.0",
+    "foo/*,\ttext/*;q=0.0",
+    "*/*, text/*;q=0.0",
+    "*/*;q=0.0, foo",
+    "textttt/*"
+  };
+
+  foreach (const string& accept, headers) {
+    http::Request request;
+    request.headers["Accept"] = accept;
+
+    EXPECT_FALSE(request.acceptsMediaType("text/*"))
+      << "Not expecting " << accept << " to match 'text/*'";
+
+    EXPECT_FALSE(request.acceptsMediaType("text/html"))
+      << "Not expecting " << accept << " to match 'text/html'";
+  }
+
+  // Create requests that accept 'text/html' media type.
+  headers = {
+    "text/*",
+    "text/*;q=0.1",
+    "text/html",
+    "text/html;q=0.1",
+    "text/bar, text/html,q=0.1",
+    "*/*, text/bar;q=0.5",
+    "*/*;q=0.9, text/foo",
+    "text/foo,\ttext/*;q=0.1",
+    "*/*",
+    "*/*, text/bar",
+    "*/*, foo/*"
+  };
+
+  foreach (const string& accept, headers) {
+    http::Request request;
+    request.headers["Accept"] = accept;
+
+    EXPECT_TRUE(request.acceptsMediaType("text/html"))
+      << "Expecting '" << accept << "' to match 'text/html'";
+  }
+
+  // Missing header should accept all media types.
+  http::Request empty;
+  EXPECT_TRUE(empty.acceptsMediaType("text/html"));
+}
+
+
 // TODO(evelinad): Add URLTest for IPv6.
 TEST(URLTest, Stringification)
 {
@@ -674,15 +791,27 @@ TEST(URLTest, Stringification)
   query["foo"] = "bar";
   query["baz"] = "bam";
 
-  EXPECT_EQ("http://172.158.1.23:80/?baz=bam&foo=bar",
-            stringify(URL("http", ip.get(), 80, "/", query)));
+  // The order of the hashmap entries may vary, hence we have
+  // to check if one of the possible outcomes is satisfied.
+  const string url1 = stringify(URL("http", ip.get(), 80, "/", query));
 
-  EXPECT_EQ("http://172.158.1.23:80/path?baz=bam&foo=bar",
-            stringify(URL("http", ip.get(), 80, "/path", query)));
+  EXPECT_TRUE(url1 == "http://172.158.1.23:80/?baz=bam&foo=bar" ||
+              url1 == "http://172.158.1.23:80/?foo=bar&baz=bam");
 
-  EXPECT_EQ("http://172.158.1.23:80/?baz=bam&foo=bar#fragment",
-            stringify(URL("http", ip.get(), 80, "/", query, "fragment")));
+  const string url2 = stringify(URL("http", ip.get(), 80, "/path", query));
 
-  EXPECT_EQ("http://172.158.1.23:80/path?baz=bam&foo=bar#fragment",
-            stringify(URL("http", ip.get(), 80, "/path", query, "fragment")));
+  EXPECT_TRUE(url2 == "http://172.158.1.23:80/path?baz=bam&foo=bar" ||
+              url2 == "http://172.158.1.23:80/path?foo=bar&baz=bam");
+
+  const string url3 =
+    stringify(URL("http", ip.get(), 80, "/", query, "fragment"));
+
+  EXPECT_TRUE(url3 == "http://172.158.1.23:80/?baz=bam&foo=bar#fragment" ||
+              url3 == "http://172.158.1.23:80/?foo=bar&baz=bam#fragment");
+
+  const string url4 =
+    stringify(URL("http", ip.get(), 80, "/path", query, "fragment"));
+
+  EXPECT_TRUE(url4 == "http://172.158.1.23:80/path?baz=bam&foo=bar#fragment" ||
+              url4 == "http://172.158.1.23:80/path?foo=bar&baz=bam#fragment");
 }

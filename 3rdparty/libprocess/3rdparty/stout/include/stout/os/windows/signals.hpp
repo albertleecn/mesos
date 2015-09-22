@@ -79,8 +79,8 @@ struct Suppressor
     UNIMPLEMENTED;
   }
 
-  // Needed for the suppress() macro.
-  operator bool () { return true; }
+  // Needed for the SUPPRESS() macro.
+  operator bool() { return true; }
 };
 
 } // namespace internal {

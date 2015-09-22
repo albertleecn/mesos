@@ -16,8 +16,6 @@
  * limitations under the License.
  */
 
-#include <mesos/scheduler/scheduler.hpp>
-
 #include <mesos/slave/isolator.hpp>
 
 #include <mesos/type_utils.hpp>
@@ -35,7 +33,7 @@
 
 using std::string;
 
-using mesos::scheduler::Event;
+using google::protobuf::RepeatedPtrField;
 
 using mesos::slave::ContainerLimitation;
 using mesos::slave::ContainerState;
@@ -141,7 +139,9 @@ Task createTask(
     t.mutable_executor_id()->CopyFrom(task.executor().executor_id());
   }
 
-  t.mutable_labels()->MergeFrom(task.labels());
+  if (task.has_labels()) {
+    t.mutable_labels()->CopyFrom(task.labels());
+  }
 
   if (task.has_discovery()) {
     t.mutable_discovery()->MergeFrom(task.discovery());
@@ -240,165 +240,76 @@ ContainerState createContainerState(
     const ExecutorInfo& executorInfo,
     const ContainerID& container_id,
     pid_t pid,
-    const std::string& directory,
-    const Option<std::string>& rootfs)
+    const std::string& directory)
 {
   ContainerState state;
   state.mutable_executor_info()->CopyFrom(executorInfo);
   state.mutable_container_id()->CopyFrom(container_id);
   state.set_pid(pid);
   state.set_directory(directory);
-  if (rootfs.isSome()) {
-    state.set_rootfs(rootfs.get());
-  }
   return state;
 }
 
 } // namespace slave {
 
-namespace scheduler {
+namespace maintenance {
 
-Event event(const FrameworkRegisteredMessage& message)
+Unavailability createUnavailability(
+    const process::Time& start,
+    const Option<Duration>& duration)
 {
-  Event event;
-  event.set_type(Event::SUBSCRIBED);
+  Unavailability unavailability;
+  unavailability.mutable_start()->set_nanoseconds(start.duration().ns());
 
-  Event::Subscribed* subscribed = event.mutable_subscribed();
-  subscribed->mutable_framework_id()->CopyFrom(message.framework_id());
-
-  return event;
-}
-
-
-Event event(const FrameworkReregisteredMessage& message)
-{
-  Event event;
-  event.set_type(Event::SUBSCRIBED);
-
-  Event::Subscribed* subscribed = event.mutable_subscribed();
-  subscribed->mutable_framework_id()->CopyFrom(message.framework_id());
-
-  return event;
-}
-
-
-Event event(const ResourceOffersMessage& message)
-{
-  Event event;
-  event.set_type(Event::OFFERS);
-
-  Event::Offers* offers = event.mutable_offers();
-  offers->mutable_offers()->CopyFrom(message.offers());
-
-  return event;
-}
-
-
-Event event(const RescindResourceOfferMessage& message)
-{
-  Event event;
-  event.set_type(Event::RESCIND);
-
-  Event::Rescind* rescind = event.mutable_rescind();
-  rescind->mutable_offer_id()->CopyFrom(message.offer_id());
-
-  return event;
-}
-
-
-Event event(const StatusUpdateMessage& message)
-{
-  Event event;
-  event.set_type(Event::UPDATE);
-
-  Event::Update* update = event.mutable_update();
-
-  update->mutable_status()->CopyFrom(message.update().status());
-
-  if (message.update().has_slave_id()) {
-    update->mutable_status()->mutable_slave_id()->CopyFrom(
-        message.update().slave_id());
+  if (duration.isSome()) {
+    unavailability.mutable_duration()->set_nanoseconds(duration.get().ns());
   }
 
-  if (message.update().has_executor_id()) {
-    update->mutable_status()->mutable_executor_id()->CopyFrom(
-        message.update().executor_id());
+  return unavailability;
+}
+
+
+RepeatedPtrField<MachineID> createMachineList(
+    std::initializer_list<MachineID> ids)
+{
+  RepeatedPtrField<MachineID> array;
+
+  foreach (const MachineID& id, ids) {
+    array.Add()->CopyFrom(id);
   }
 
-  update->mutable_status()->set_timestamp(message.update().timestamp());
+  return array;
+}
 
-  // If the update does not have a 'uuid', it does not need
-  // acknowledging. However, prior to 0.23.0, the update uuid
-  // was required and always set. In 0.24.0, we can rely on the
-  // update uuid check here, until then we must still check for
-  // this being sent from the driver (from == UPID()) or from
-  // the master (pid == UPID()).
-  // TODO(vinod): Get rid of this logic in 0.25.0 because master
-  // and slave correctly set task status in 0.24.0.
-  if (!message.update().has_uuid() || message.update().uuid() == "") {
-    update->mutable_status()->clear_uuid();
-  } else if (UPID(message.pid()) == UPID()) {
-    update->mutable_status()->clear_uuid();
-  } else {
-    update->mutable_status()->set_uuid(message.update().uuid());
+
+mesos::maintenance::Window createWindow(
+    std::initializer_list<MachineID> ids,
+    const Unavailability& unavailability)
+{
+  mesos::maintenance::Window window;
+  window.mutable_unavailability()->CopyFrom(unavailability);
+
+  foreach (const MachineID& id, ids) {
+    window.add_machine_ids()->CopyFrom(id);
   }
 
-  return event;
+  return window;
 }
 
 
-Event event(const LostSlaveMessage& message)
+mesos::maintenance::Schedule createSchedule(
+    std::initializer_list<mesos::maintenance::Window> windows)
 {
-  Event event;
-  event.set_type(Event::FAILURE);
+  mesos::maintenance::Schedule schedule;
 
-  Event::Failure* failure = event.mutable_failure();
-  failure->mutable_slave_id()->CopyFrom(message.slave_id());
+  foreach (const mesos::maintenance::Window& window, windows) {
+    schedule.add_windows()->CopyFrom(window);
+  }
 
-  return event;
+  return schedule;
 }
 
-
-Event event(const ExitedExecutorMessage& message)
-{
-  Event event;
-  event.set_type(Event::FAILURE);
-
-  Event::Failure* failure = event.mutable_failure();
-  failure->mutable_slave_id()->CopyFrom(message.slave_id());
-  failure->mutable_executor_id()->CopyFrom(message.executor_id());
-  failure->set_status(message.status());
-
-  return event;
-}
-
-
-Event event(const ExecutorToFrameworkMessage& message)
-{
-  Event event;
-  event.set_type(Event::MESSAGE);
-
-  Event::Message* message_ = event.mutable_message();
-  message_->mutable_slave_id()->CopyFrom(message.slave_id());
-  message_->mutable_executor_id()->CopyFrom(message.executor_id());
-  message_->set_data(message.data());
-
-  return event;
-}
-
-
-Event event(const FrameworkErrorMessage& message)
-{
-  Event event;
-  event.set_type(Event::ERROR);
-
-  Event::Error* error = event.mutable_error();
-  error->set_message(message.message());
-
-  return event;
-}
-
-} // namespace scheduler {
+} // namespace maintenance {
 
 } // namespace protobuf {
 } // namespace internal {

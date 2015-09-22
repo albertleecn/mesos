@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include <atomic>
 #include <list>
 #include <memory>
 #include <set>
@@ -232,7 +233,7 @@ private:
       pid_t group;
       pid_t session;
 
-      bool set; // Has this been initialized?
+      std::atomic_bool set; // Has this been initialized?
     };
 
     std::shared_ptr<Memory> memory;
@@ -257,7 +258,7 @@ private:
   {
     SharedMemoryDeleter(int _fd) : fd(_fd) {}
 
-    void operator () (Tree::Memory* process) const
+    void operator()(Tree::Memory* process) const
     {
       if (munmap(process, sizeof(Tree::Memory)) == -1) {
         ABORT(std::string("Failed to unmap memory: ") + strerror(errno));
@@ -274,11 +275,11 @@ private:
   // Constructs a Tree (see above) from this fork template.
   Try<Tree> prepare() const
   {
-    static int forks = 0;
+    static std::atomic_int forks(0);
 
     // Each "instance" of an instantiated Fork needs a unique name for
     // creating shared memory.
-    int instance = __sync_fetch_and_add(&forks, 1);
+    int instance = forks.fetch_add(1);
 
     std::string name =
       "/stout-forks-" + stringify(getpid()) + stringify(instance);
@@ -312,7 +313,7 @@ private:
 
     Tree tree;
     tree.memory = std::shared_ptr<Tree::Memory>((Tree::Memory*)memory, deleter);
-    tree.memory->set = false;
+    tree.memory->set.store(false);
 
     for (size_t i = 0; i < children.size(); i++) {
       Try<Tree> tree_ = children[i].prepare();
@@ -340,7 +341,7 @@ private:
     process.parent = getppid();
     process.group = getpgid(0);
     process.session = getsid(0);
-    process.set = true;
+    process.set.store(true);
 
     // Copy it into shared memory.
     memcpy(tree.memory.get(), &process, sizeof(Tree::Memory));
@@ -361,7 +362,7 @@ private:
     if (exec.isSome()) {
       // Execute the command (via '/bin/sh -c command').
       const char* command = exec.get().command.c_str();
-      execl("/bin/sh", "sh", "-c", command, (char*) NULL);
+      execlp("sh", "sh", "-c", command, (char*) NULL);
       EXIT(1) << "Failed to execute '" << command << "': " << strerror(errno);
     } else if (wait.isSome()) {
       foreach (pid_t pid, pids) {
@@ -381,10 +382,7 @@ private:
   {
     // Wait for the forked process.
     // TODO(benh): Don't wait forever?
-    while (!tree.memory->set) {
-      // Make sure we don't keep reading the value from a register.
-      __sync_synchronize();
-    }
+    while (!tree.memory->set.load());
 
     // All processes in the returned ProcessTree will have the
     // command-line of the top level process, since we construct the
@@ -417,7 +415,7 @@ private:
 
 public:
   // Prepares and instantiates the process tree.
-  Try<ProcessTree> operator () () const
+  Try<ProcessTree> operator()() const
   {
     Try<Tree> tree = prepare();
 
