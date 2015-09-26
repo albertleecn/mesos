@@ -16,28 +16,29 @@
  * limitations under the License.
  */
 
-#ifndef __SCHEDULER_PROTO_HPP__
-#define __SCHEDULER_PROTO_HPP__
+import "mesos/mesos.proto";
 
-// ONLY USEFUL AFTER RUNNING PROTOC.
-#include <mesos/scheduler/scheduler.pb.h>
+package mesos.internal.slave.docker;
 
-namespace mesos {
+/**
+ * A Docker Image name and the layer ids of the layers that comprise the image.
+ * The layerIds are ordered, with the root layer id (no parent layer id) first
+ * and the leaf layer id last.
+ */
+message Image {
+  message Name {
+    optional string registry = 1;
+    required string repository = 2;
+    required string tag = 3;
+  }
 
-inline std::ostream& operator<<(std::ostream& stream,
-                                const scheduler::Call::Type& type)
-{
-  return stream << scheduler::Call_Type_Name(type);
+  required Name name = 1;
+
+  // The order of the layers represents the dependency between layers.
+  repeated string layer_ids = 2;
 }
 
 
-inline std::ostream& operator<<(
-    std::ostream& stream,
-    const scheduler::Event::Type& type)
-{
-  return stream << scheduler::Event_Type_Name(type);
+message Images {
+  repeated Image images = 1;
 }
-
-} // namespace mesos {
-
-#endif // __SCHEDULER_PROTO_HPP__

@@ -16,28 +16,31 @@
  * limitations under the License.
  */
 
-#ifndef __SCHEDULER_PROTO_HPP__
-#define __SCHEDULER_PROTO_HPP__
+#include "slave/containerizer/provisioner/docker/puller.hpp"
 
-// ONLY USEFUL AFTER RUNNING PROTOC.
-#include <mesos/scheduler/scheduler.pb.h>
+#include "slave/containerizer/provisioner/docker/local_puller.hpp"
+
+using std::string;
+
+using process::Owned;
 
 namespace mesos {
+namespace internal {
+namespace slave {
+namespace docker {
 
-inline std::ostream& operator<<(std::ostream& stream,
-                                const scheduler::Call::Type& type)
+Try<Owned<Puller>> Puller::create(const Flags& flags)
 {
-  return stream << scheduler::Call_Type_Name(type);
+  const string puller = flags.docker_puller;
+
+  if (puller == "local") {
+    return Owned<Puller>(new LocalPuller(flags));
+  }
+
+  return Error("Unknown or unsupported docker puller: " + puller);
 }
 
-
-inline std::ostream& operator<<(
-    std::ostream& stream,
-    const scheduler::Event::Type& type)
-{
-  return stream << scheduler::Event_Type_Name(type);
-}
-
+} // namespace docker {
+} // namespace slave {
+} // namespace internal {
 } // namespace mesos {
-
-#endif // __SCHEDULER_PROTO_HPP__
