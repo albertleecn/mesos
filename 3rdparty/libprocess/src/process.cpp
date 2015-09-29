@@ -377,6 +377,10 @@ public:
   explicit ProcessManager(const string& delegate);
   ~ProcessManager();
 
+  // Initializes the processing threads and the event loop thread,
+  // and returns the number of processing threads created.
+  long init_threads();
+
   ProcessReference use(const UPID& pid);
 
   bool handle(
@@ -428,6 +432,12 @@ private:
 
   // Number of running processes, to support Clock::settle operation.
   std::atomic_long running;
+
+  // Stores the thread handles so that we can join during shutdown.
+  vector<std::thread*> threads;
+
+  // Boolean used to signal processing threads to stop running.
+  std::atomic_bool joining_threads;
 
   // List of rules applied to all incoming HTTP requests.
   vector<Owned<FirewallRule>> firewallRules;
@@ -546,11 +556,11 @@ static Message* parse(Request* request)
   }
 
   // Now determine 'to'.
-  size_t index = request->path.find('/', 1);
+  size_t index = request->url.path.find('/', 1);
   index = index != string::npos ? index - 1 : string::npos;
 
   // Decode possible percent-encoded 'to'.
-  Try<string> decode = http::decode(request->path.substr(1, index));
+  Try<string> decode = http::decode(request->url.path.substr(1, index));
 
   if (decode.isError()) {
     VLOG(2) << "Failed to decode URL path: " << decode.get();
@@ -560,8 +570,8 @@ static Message* parse(Request* request)
   const UPID to(decode.get(), __address__);
 
   // And now determine 'name'.
-  index = index != string::npos ? index + 2: request->path.size();
-  const string name = request->path.substr(index);
+  index = index != string::npos ? index + 2: request->url.path.size();
+  const string name = request->url.path.substr(index);
 
   VLOG(2) << "Parsed message name '" << name
           << "' for " << to << " from " << from.get();
@@ -639,25 +649,6 @@ void decode_recv(
 
   socket->recv(data, size)
     .onAny(lambda::bind(&decode_recv, lambda::_1, data, size, socket, decoder));
-}
-
-
-void schedule()
-{
-  do {
-    ProcessBase* process = process_manager->dequeue();
-    if (process == NULL) {
-      Gate::state_t old = gate->approach();
-      process = process_manager->dequeue();
-      if (process == NULL) {
-        gate->arrive(old); // Wait at gate if idle.
-        continue;
-      } else {
-        gate->leave();
-      }
-    }
-    process_manager->resume(process);
-  } while (true);
 }
 
 } // namespace internal {
@@ -810,27 +801,12 @@ void initialize(const string& delegate)
   process_manager = new ProcessManager(delegate);
   socket_manager = new SocketManager();
 
-  // Setup processing threads.
-  // We create no fewer than 8 threads because some tests require
-  // more worker threads than 'sysconf(_SC_NPROCESSORS_ONLN)' on
-  // computers with fewer cores.
-  // e.g. https://issues.apache.org/jira/browse/MESOS-818
-  //
-  // TODO(xujyan): Use a smarter algorithm to allocate threads.
-  // Allocating a static number of threads can cause starvation if
-  // there are more waiting Processes than the number of worker
-  // threads.
-  long cpus = std::max(8L, sysconf(_SC_NPROCESSORS_ONLN));
-
-  for (int i = 0; i < cpus; i++) {
-    // We detach and forget the thread handle as we are not joining it
-    // for a clean shutdown.
-    std::thread* thread = new std::thread(&internal::schedule);
-    thread->detach();
-  }
-
   // Initialize the event loop.
   EventLoop::initialize();
+
+  // Setup processing threads.
+  long cpus = process_manager->init_threads();
+
   Clock::initialize(lambda::bind(&timedout, lambda::_1));
 
 //   ev_child_init(&child_watcher, child_exited, pid, 0);
@@ -847,11 +823,6 @@ void initialize(const string& delegate)
 //   sigemptyset (&sa.sa_mask);
 //   sigaddset (&sa.sa_mask, w->signum);
 //   sigprocmask (SIG_UNBLOCK, &sa.sa_mask, 0);
-
-  // We detach and forget the thread handle as we are not joining it
-  // for a clean shutdown.
-  std::thread* thread = new std::thread(&EventLoop::run);
-  thread->detach();
 
   __address__ = Address::LOCALHOST_ANY();
 
@@ -1850,7 +1821,12 @@ Encoder* SocketManager::next(int s)
           // calling close the termination logic is not run twice.
           Socket* socket = iterator->second;
           sockets.erase(iterator);
-          socket->shutdown();
+
+          Try<Nothing> shutdown = socket->shutdown();
+          if (shutdown.isError()) {
+            LOG(ERROR) << "Failed to shutdown socket with fd " << socket->get()
+                       << ": " << shutdown.error();
+          }
 
           delete socket;
         }
@@ -1930,7 +1906,12 @@ void SocketManager::close(int s)
       // termination logic is not run twice.
       Socket* socket = iterator->second;
       sockets.erase(iterator);
-      socket->shutdown();
+
+      Try<Nothing> shutdown = socket->shutdown();
+      if (shutdown.isError()) {
+        LOG(ERROR) << "Failed to shutdown socket with fd " << socket->get()
+                   << ": " << shutdown.error();
+      }
 
       delete socket;
     }
@@ -2121,18 +2102,83 @@ ProcessManager::ProcessManager(const string& _delegate)
 ProcessManager::~ProcessManager()
 {
   ProcessBase* process = NULL;
-  // Pop a process off the top and terminate it. Don't hold the lock
-  // or process the whole map as terminating one process might
-  // trigger other terminations. Deal with them one at a time.
+  // Terminate the first process in the queue. Events are deleted
+  // and the process is erased in ProcessManager::cleanup(). Don't
+  // hold the lock or process the whole map as terminating one process
+  // might trigger other terminations. Deal with them one at a time.
   do {
     synchronized (processes_mutex) {
       process = !processes.empty() ? processes.begin()->second : NULL;
     }
     if (process != NULL) {
-      process::terminate(process);
+      // Terminate this process but do not inject the message,
+      // i.e. allow it to finish its work first.
+      process::terminate(process, false);
       process::wait(process);
     }
   } while (process != NULL);
+
+  // Send signal to all processing threads to stop running.
+  joining_threads.store(true);
+  gate->open();
+  EventLoop::stop();
+
+  // Join all threads.
+  foreach (std::thread* thread, threads) {
+    thread->join();
+    delete thread;
+  }
+}
+
+
+long ProcessManager::init_threads()
+{
+  joining_threads.store(false);
+
+  // We create no fewer than 8 threads because some tests require
+  // more worker threads than `sysconf(_SC_NPROCESSORS_ONLN)` on
+  // computers with fewer cores.
+  // e.g. https://issues.apache.org/jira/browse/MESOS-818
+  //
+  // TODO(xujyan): Use a smarter algorithm to allocate threads.
+  // Allocating a static number of threads can cause starvation if
+  // there are more waiting Processes than the number of worker
+  // threads.
+  long cpus = std::max(8L, sysconf(_SC_NPROCESSORS_ONLN));
+  threads.reserve(cpus+1);
+
+  // Create processing threads.
+  for (long i = 0; i < cpus; i++) {
+    // Retain the thread handles so that we can join when shutting down.
+    threads.emplace_back(
+        // We pass a constant reference to `joining` to make it clear that this
+        // value is only being tested (read), and not manipulated.
+        new std::thread(std::bind([](const std::atomic_bool& joining) {
+          do {
+            ProcessBase* process = process_manager->dequeue();
+            if (process == NULL) {
+              Gate::state_t old = gate->approach();
+              process = process_manager->dequeue();
+              if (process == NULL) {
+                if (joining.load()) {
+                  break;
+                }
+                gate->arrive(old); // Wait at gate if idle.
+                continue;
+              } else {
+                gate->leave();
+              }
+            }
+            process_manager->resume(process);
+          } while (true);
+        },
+        std::cref(joining_threads))));
+  }
+
+  // Create a thread for the event loop.
+  threads.emplace_back(new std::thread(&EventLoop::run));
+
+  return cpus;
 }
 
 
@@ -2180,22 +2226,21 @@ bool ProcessManager::handle(
       Option<string> agent = request->headers.get("User-Agent");
       if (agent.getOrElse("").find("libprocess/") == string::npos) {
         if (accepted) {
-          VLOG(2) << "Accepted libprocess message to " << request->path;
+          VLOG(2) << "Accepted libprocess message to " << request->url.path;
           dispatch(proxy, &HttpProxy::enqueue, Accepted(), *request);
         } else {
           VLOG(1) << "Failed to handle libprocess message to "
-                  << request->path << ": not found";
+                  << request->url.path << ": not found";
           dispatch(proxy, &HttpProxy::enqueue, NotFound(), *request);
         }
       }
 
       delete request;
-
       return accepted;
     }
 
     VLOG(1) << "Failed to handle libprocess message: "
-            << request->method << " " << request->path
+            << request->method << " " << request->url.path
             << " (User-Agent: " << request->headers["User-Agent"] << ")";
 
     delete request;
@@ -2204,8 +2249,8 @@ bool ProcessManager::handle(
 
   // Treat this as an HTTP request. Start by checking that the path
   // starts with a '/' (since the code below assumes as much).
-  if (request->path.find('/') != 0) {
-    VLOG(1) << "Returning '400 Bad Request' for '" << request->path << "'";
+  if (request->url.path.find('/') != 0) {
+    VLOG(1) << "Returning '400 Bad Request' for '" << request->url.path << "'";
 
     // Get the HttpProxy pid for this socket.
     PID<HttpProxy> proxy = socket_manager->proxy(socket);
@@ -2220,8 +2265,8 @@ bool ProcessManager::handle(
   }
 
   // Ignore requests with relative paths (i.e., contain "/..").
-  if (request->path.find("/..") != string::npos) {
-    VLOG(1) << "Returning '404 Not Found' for '" << request->path
+  if (request->url.path.find("/..") != string::npos) {
+    VLOG(1) << "Returning '404 Not Found' for '" << request->url.path
             << "' (ignoring requests with relative paths)";
 
     // Get the HttpProxy pid for this socket.
@@ -2237,13 +2282,13 @@ bool ProcessManager::handle(
   }
 
   // Split the path by '/'.
-  vector<string> tokens = strings::tokenize(request->path, "/");
+  vector<string> tokens = strings::tokenize(request->url.path, "/");
 
   // Try and determine a receiver, otherwise try and delegate.
   ProcessReference receiver;
 
   if (tokens.size() == 0 && delegate != "") {
-    request->path = "/" + delegate;
+    request->url.path = "/" + delegate;
     receiver = use(UPID(delegate, __address__));
   } else if (tokens.size() > 0) {
     // Decode possible percent-encoded path.
@@ -2257,7 +2302,7 @@ bool ProcessManager::handle(
 
   if (!receiver && delegate != "") {
     // Try and delegate the request.
-    request->path = "/" + delegate + request->path;
+    request->url.path = "/" + delegate + request->url.path;
     receiver = use(UPID(delegate, __address__));
   }
 
@@ -2268,7 +2313,7 @@ bool ProcessManager::handle(
       Option<Response> rejection = rule->apply(socket, *request);
       if (rejection.isSome()) {
         VLOG(1) << "Returning '"<< rejection.get().status << "' for '"
-                << request->path << "' (firewall rule forbids request)";
+                << request->url.path << "' (firewall rule forbids request)";
 
         // TODO(arojas): Get rid of the duplicated code to return an
         // error.
@@ -2298,7 +2343,7 @@ bool ProcessManager::handle(
   }
 
   // This has no receiver, send error response.
-  VLOG(1) << "Returning '404 Not Found' for '" << request->path << "'";
+  VLOG(1) << "Returning '404 Not Found' for '" << request->url.path << "'";
 
   // Get the HttpProxy pid for this socket.
   PID<HttpProxy> proxy = socket_manager->proxy(socket);
@@ -2754,6 +2799,15 @@ void ProcessManager::enqueue(ProcessBase* process)
 {
   CHECK(process != NULL);
 
+  // If libprocess is shutting down and the processing threads
+  // are currently joining, then do not enqueue the process.
+  if (joining_threads.load()) {
+    VLOG(1) << "Libprocess shutting down, cannot enqueue process: "
+            << process->pid.id;
+
+    return;
+  }
+
   // TODO(benh): Check and see if this process has it's own thread. If
   // it does, push it on that threads runq, and wake up that thread if
   // it's not running. Otherwise, check and see which thread this
@@ -2870,7 +2924,7 @@ Future<Response> ProcessManager::__processes__(const Request&)
           const Request& request = *event.request;
 
           object.values["method"] = request.method;
-          object.values["url"] = request.url;
+          object.values["url"] = stringify(request.url);
 
           events->values.push_back(object);
         }
@@ -3019,12 +3073,12 @@ void ProcessBase::visit(const DispatchEvent& event)
 void ProcessBase::visit(const HttpEvent& event)
 {
   VLOG(1) << "Handling HTTP event for process '" << pid.id << "'"
-          << " with path: '" << event.request->path << "'";
+          << " with path: '" << event.request->url.path << "'";
 
-  CHECK(event.request->path.find('/') == 0); // See ProcessManager::handle.
+  CHECK(event.request->url.path.find('/') == 0); // See ProcessManager::handle.
 
   // Split the path by '/'.
-  vector<string> tokens = strings::tokenize(event.request->path, "/");
+  vector<string> tokens = strings::tokenize(event.request->url.path, "/");
   CHECK(tokens.size() >= 1);
   CHECK_EQ(pid.id, http::decode(tokens[0]).get());
 
@@ -3033,7 +3087,7 @@ void ProcessBase::visit(const HttpEvent& event)
 
   // Remove the 'id' prefix from the path.
   string name = strings::remove(
-      event.request->path, "/" + tokens[0], strings::PREFIX);
+      event.request->url.path, "/" + tokens[0], strings::PREFIX);
 
   name = strings::trim(name, strings::PREFIX, "/");
 
@@ -3097,7 +3151,8 @@ void ProcessBase::visit(const HttpEvent& event)
     return;
   }
 
-  VLOG(1) << "Returning '404 Not Found' for '" << event.request->path << "'";
+  VLOG(1) << "Returning '404 Not Found' for"
+          << " '" << event.request->url.path << "'";
 
   // Get the HttpProxy pid for this socket.
   PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
