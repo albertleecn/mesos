@@ -560,6 +560,7 @@ libmesos_no_3rdparty_la_SOURCES =					\
 	slave/containerizer/provisioner/docker/paths.cpp		\
 	slave/containerizer/provisioner/docker/puller.cpp		\
 	slave/containerizer/provisioner/docker/registry_client.cpp	\
+	slave/containerizer/provisioner/docker/spec.cpp			\
 	slave/containerizer/provisioner/docker/store.cpp		\
 	slave/containerizer/provisioner/docker/token_manager.cpp	\
 	slave/resource_estimators/noop.cpp				\
@@ -866,6 +867,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 	slave/containerizer/provisioner/docker/paths.hpp		\
 	slave/containerizer/provisioner/docker/puller.hpp		\
 	slave/containerizer/provisioner/docker/registry_client.hpp	\
+	slave/containerizer/provisioner/docker/spec.hpp			\
 	slave/containerizer/provisioner/docker/store.hpp		\
 	slave/containerizer/provisioner/docker/token_manager.hpp	\
 	slave/containerizer/isolators/posix.hpp				\
@@ -1744,7 +1746,6 @@ mesos_tests_SOURCES =						\
   tests/gc_tests.cpp						\
   tests/hierarchical_allocator_tests.cpp			\
   tests/hook_tests.cpp						\
-  tests/http_api_tests.cpp					\
   tests/log_tests.cpp						\
   tests/logging_tests.cpp					\
   tests/main.cpp						\
@@ -1776,6 +1777,7 @@ mesos_tests_SOURCES =						\
   tests/scheduler_tests.cpp					\
   tests/scheduler_driver_tests.cpp				\
   tests/scheduler_event_call_tests.cpp				\
+  tests/scheduler_http_api_tests.cpp				\
   tests/script.cpp						\
   tests/slave_recovery_tests.cpp				\
   tests/slave_tests.cpp						\
@@ -1883,9 +1885,11 @@ dist_check_SCRIPTS +=							\
 # runner that ships with newer versions of autotools.
 # See the following discussion for the workaround:
 # http://lists.gnu.org/archive/html/automake/2013-01/msg00051.html
-check-local: mesos-tests
+check-local: tests
 	./mesos-tests
 
 clean-local: clean-java clean-python
+
+tests: all $(check_PROGRAMS) mesos-tests
 
 .PHONY: $(PHONY_TARGETS)
