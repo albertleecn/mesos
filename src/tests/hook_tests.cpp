@@ -1,26 +1,27 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <mesos/module.hpp>
+
+#include <mesos/slave/container_logger.hpp>
 
 #include <process/clock.hpp>
 #include <process/future.hpp>
 #include <process/gmock.hpp>
+#include <process/owned.hpp>
 #include <process/pid.hpp>
 
 #include <stout/option.hpp>
@@ -62,8 +63,11 @@ using mesos::internal::slave::Fetcher;
 using mesos::internal::slave::MesosContainerizer;
 using mesos::internal::slave::Slave;
 
+using mesos::slave::ContainerLogger;
+
 using process::Clock;
 using process::Future;
+using process::Owned;
 using process::PID;
 using process::Shared;
 
@@ -572,9 +576,15 @@ TEST_F(HookTest, VerifySlaveTaskStatusDecorator)
     status.get().container_status().network_infos(0);
 
   // The hook module sets up '4.3.2.1' as the IP address and 'public' as the
-  // network isolation group.
+  // network isolation group. The `ip_address` field is deprecated, but the
+  // hook module should continue to set it as well as the new `ip_addresses`
+  // field for now.
   EXPECT_TRUE(networkInfo.has_ip_address());
   EXPECT_EQ("4.3.2.1", networkInfo.ip_address());
+
+  EXPECT_EQ(1, networkInfo.ip_addresses().size());
+  EXPECT_TRUE(networkInfo.ip_addresses(0).has_ip_address());
+  EXPECT_EQ("4.3.2.1", networkInfo.ip_addresses(0).ip_address());
 
   EXPECT_EQ(1, networkInfo.groups().size());
   EXPECT_EQ("public", networkInfo.groups(0));
@@ -607,13 +617,23 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
 
   MockDocker* mockDocker =
     new MockDocker(tests::flags.docker, tests::flags.docker_socket);
+
   Shared<Docker> docker(mockDocker);
 
   slave::Flags flags = CreateSlaveFlags();
 
   Fetcher fetcher;
 
-  MockDockerContainerizer dockerContainerizer(flags, &fetcher, docker);
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(flags.container_logger);
+
+  ASSERT_SOME(logger);
+
+  MockDockerContainerizer dockerContainerizer(
+      flags,
+      &fetcher,
+      Owned<ContainerLogger>(logger.get()),
+      docker);
 
   Try<PID<Slave>> slave = StartSlave(&dockerContainerizer, flags);
   ASSERT_SOME(slave);

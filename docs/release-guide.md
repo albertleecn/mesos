@@ -89,6 +89,7 @@ This guide describes the process of doing an official release of Mesos.
 6. If this is a major release, please ensure that user documentation has been
    added for any new features.
 
+7. Make sure that for any updates of the API, specifically the scheduler API, the public mesos protobuf definitions are part of both, `include/mesos` as well as `include/mesos/v1`. NOTE: This might actually demand code updates if any omissions were identified.
 
 ## Tagging the release candidate
 
@@ -117,7 +118,7 @@ This guide describes the process of doing an official release of Mesos.
 4. It is not uncommon to release multiple release candidates, with increasing release candidate
    version, if there are bugs found.
 
-5. Update to the *next* Mesos version in `configure.ac`: change `AC_INIT([mesos], [X.Y.Z]))` and commit.
+5. Update to the *next* Mesos version in `configure.ac`: change `AC_INIT([mesos], [X.Y.Z]))`, as well as in `CMakeLists.txt`: change `set(MESOS_MAJOR_VERSION X)`, `set(MESOS_MINOR_VERSION Y)`, `set(MESOS_PATCH_VERSION Z)` and then commit.
 
 ## Voting the release candidate
 

@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <stdint.h>
 
@@ -115,7 +113,6 @@ namespace mesos {
 namespace internal {
 namespace master {
 
-using mesos::master::RoleInfo;
 using mesos::master::allocator::Allocator;
 
 
@@ -280,6 +277,7 @@ Master::Master(
     const Flags& _flags)
   : ProcessBase("master"),
     flags(_flags),
+    http(this),
     allocator(_allocator),
     registrar(_registrar),
     repairer(_repairer),
@@ -549,22 +547,22 @@ void Master::initialize()
               << flags.slave_removal_rate_limit.get();
   }
 
-  hashmap<string, RoleInfo> roleInfos;
-
-  // Add the default role.
-  RoleInfo roleInfo;
-  roleInfo.set_name("*");
-  roleInfos["*"] = roleInfo;
-
-  // Add other roles.
+  // If "--roles" is set, configure the role whitelist.
+  // TODO(neilc): Remove support for explicit roles in ~Mesos 0.32.
   if (flags.roles.isSome()) {
+    LOG(WARNING) << "The '--roles' flag is deprecated. This flag will be "
+                 << "removed in the future. See the Mesos 0.27 upgrade "
+                 << "notes for more information";
+
     vector<string> tokens = strings::tokenize(flags.roles.get(), ",");
 
+    roleWhitelist = hashset<string>();
     foreach (const std::string& role, tokens) {
-      RoleInfo roleInfo;
-      roleInfo.set_name(role);
-      roleInfos[role] = roleInfo;
+      roleWhitelist.get().insert(role);
     }
+
+    // The default role is always allowed.
+    roleWhitelist.get().insert("*");
   }
 
   // Add role weights.
@@ -576,7 +574,7 @@ void Master::initialize()
       if (pair.size() != 2) {
         EXIT(1) << "Invalid weight: '" << token << "'. --weights should"
           "be of the form 'role=weight,role=weight'\n";
-      } else if (!roleInfos.contains(pair[0])) {
+      } else if (!isWhitelistedRole(pair[0])) {
         EXIT(1) << "Invalid weight: '" << token << "'. " << pair[0]
                 << " is not a valid role.";
       }
@@ -587,14 +585,8 @@ void Master::initialize()
                 << "'. Weights must be positive.";
       }
 
-      roleInfos[pair[0]].set_weight(weight);
+      weights[pair[0]] = weight;
     }
-  }
-
-  foreachpair (const std::string& role,
-               const RoleInfo& roleInfo,
-               roleInfos) {
-    roles[role] = new Role(roleInfo);
   }
 
   // Verify the timeout is greater than zero.
@@ -609,7 +601,7 @@ void Master::initialize()
       flags.allocation_interval,
       defer(self(), &Master::offer, lambda::_1, lambda::_2),
       defer(self(), &Master::inverseOffer, lambda::_1, lambda::_2),
-      roleInfos);
+      weights);
 
   // Parse the whitelist. Passing Allocator::updateWhitelist()
   // callback is safe because we shut down the whitelistWatcher in
@@ -745,39 +737,55 @@ void Master::initialize()
       &AuthenticateMessage::pid);
 
   // Setup HTTP routes.
-  Http http = Http(this);
-
   route("/api/v1/scheduler",
         Http::SCHEDULER_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.scheduler(request);
         });
+  route("/create-volumes",
+        Http::CREATE_VOLUMES_HELP(),
+        [this](const process::http::Request& request) {
+          Http::log(request);
+          return http.createVolumes(request);
+        });
+  route("/destroy-volumes",
+        Http::DESTROY_VOLUMES_HELP(),
+        [this](const process::http::Request& request) {
+          Http::log(request);
+          return http.destroyVolumes(request);
+        });
+  route("/frameworks",
+        Http::FRAMEWORKS(),
+        [this](const process::http::Request& request) {
+          Http::log(request);
+          return http.frameworks(request);
+        });
   route("/flags",
         Http::FLAGS_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.flags(request);
         });
   route("/health",
         Http::HEALTH_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           return http.health(request);
         });
   route("/observe",
         Http::OBSERVE_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.observe(request);
         });
   route("/redirect",
         Http::REDIRECT_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           return http.redirect(request);
         });
   route("/reserve",
         Http::RESERVE_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.reserve(request);
         });
@@ -785,25 +793,25 @@ void Master::initialize()
   // deprecation cycle on 0.26.
   route("/roles.json",
         Http::ROLES_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.roles(request);
         });
   route("/roles",
         Http::ROLES_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.roles(request);
         });
   route("/teardown",
         Http::TEARDOWN_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.teardown(request);
         });
   route("/slaves",
         Http::SLAVES_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.slaves(request);
         });
@@ -811,19 +819,19 @@ void Master::initialize()
   // deprecation cycle on 0.26.
   route("/state.json",
         Http::STATE_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.state(request);
         });
   route("/state",
         Http::STATE_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.state(request);
         });
   route("/state-summary",
         Http::STATESUMMARY_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.stateSummary(request);
         });
@@ -831,45 +839,51 @@ void Master::initialize()
   // deprecation cycle.
   route("/tasks.json",
         Http::TASKS_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.tasks(request);
         });
   route("/tasks",
         Http::TASKS_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.tasks(request);
         });
   route("/maintenance/schedule",
         Http::MAINTENANCE_SCHEDULE_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.maintenanceSchedule(request);
         });
   route("/maintenance/status",
         Http::MAINTENANCE_STATUS_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.maintenanceStatus(request);
         });
   route("/machine/down",
         Http::MACHINE_DOWN_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.machineDown(request);
         });
   route("/machine/up",
         Http::MACHINE_UP_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.machineUp(request);
         });
   route("/unreserve",
         Http::UNRESERVE_HELP(),
-        [http](const process::http::Request& request) {
+        [this](const process::http::Request& request) {
           Http::log(request);
           return http.unreserve(request);
+        });
+  route("/quota",
+        Http::QUOTA_HELP(),
+        [this](const process::http::Request& request) {
+          Http::log(request);
+          return http.quota(request);
         });
 
   // Provide HTTP assets from a "webui" directory. This is either
@@ -1001,10 +1015,10 @@ void Master::finalize()
     future.discard();
   }
 
-  foreachvalue (Role* role, roles) {
+  foreachvalue (Role* role, activeRoles) {
     delete role;
   }
-  roles.clear();
+  activeRoles.clear();
 
   // NOTE: This is necessary during tests because we don't want the
   // timer to fire in a different test and invoke the callback.
@@ -1386,10 +1400,7 @@ Future<Nothing> Master::_recover(const Registry& registry)
     slaves.recovered.insert(slave.info().id());
   }
 
-  // Set up a timeout for slaves to re-register. This timeout is based
-  // on the maximum amount of time the SlaveObserver allows slaves to
-  // not respond to health checks.
-  // TODO(bmahler): Consider making this configurable.
+  // Set up a timeout for slaves to re-register.
   slaves.recoveredTimer =
     delay(flags.slave_reregister_timeout,
           self(),
@@ -1405,6 +1416,24 @@ Future<Nothing> Master::_recover(const Registry& registry)
   foreach (const Registry::Machine& machine, registry.machines().machines()) {
     machines[machine.info().id()] = Machine(machine.info());
   }
+
+  // Save the quotas for each role.
+  foreach (const Registry::Quota& quota, registry.quotas()) {
+    quotas[quota.info().role()] = Quota{quota.info()};
+  }
+
+  // We notify the allocator via the `recover()` call. This has to be
+  // done before the first agent reregisters and makes its resources
+  // available for allocation. This is necessary because at this point
+  // the allocator is already initialized and ready to perform
+  // allocations. An allocator may decide to hold off with allocation
+  // until after it restores a view of the cluster state.
+  int expectedAgentCount = registry.slaves().slaves().size();
+  allocator->recover(expectedAgentCount, quotas);
+
+  // TODO(alexr): Consider adding a sanity check: whether quotas are
+  // satisfiable given all recovering agents reregister. We may want
+  // to notify operators early if total quota cannot be met.
 
   // Recovery is now complete!
   LOG(INFO) << "Recovered " << registry.slaves().slaves().size() << " slaves"
@@ -1864,8 +1893,7 @@ void Master::subscribe(
 
   Option<Error> validationError = None();
 
-  // TODO(vinod): Deprecate this in favor of ACLs.
-  if (validationError.isNone() && !roles.contains(frameworkInfo.role())) {
+  if (validationError.isNone() && !isWhitelistedRole(frameworkInfo.role())) {
     validationError = Error("Role '" + frameworkInfo.role() + "' is not" +
                             " present in the master's --roles");
   }
@@ -2089,7 +2117,7 @@ void Master::_subscribe(
 
     // TODO(anand): We set 'pid' to UPID() for http frameworks
     // as 'pid' was made optional in 0.24.0. In 0.25.0, we
-    // no longer have to set pid here for http frameowrks.
+    // no longer have to set pid here for http frameworks.
     message.set_pid(UPID());
     send(slave->pid, message);
   }
@@ -2123,8 +2151,7 @@ void Master::subscribe(
 
   Option<Error> validationError = None();
 
-  // TODO(vinod): Deprecate this in favor of ACLs.
-  if (validationError.isNone() && !roles.contains(frameworkInfo.role())) {
+  if (validationError.isNone() && !isWhitelistedRole(frameworkInfo.role())) {
     validationError = Error("Role '" + frameworkInfo.role() + "' is not" +
                             " present in the master's --roles");
   }
@@ -2628,6 +2655,16 @@ void Master::suppress(Framework* framework)
 }
 
 
+bool Master::isWhitelistedRole(const string& name)
+{
+  if (roleWhitelist.isNone()) {
+    return true;
+  }
+
+  return roleWhitelist.get().contains(name);
+}
+
+
 void Master::launchTasks(
     const UPID& from,
     const FrameworkID& frameworkId,
@@ -2719,6 +2756,135 @@ Future<bool> Master::authorizeTask(
 }
 
 
+Future<bool> Master::authorizeReserveResources(
+    const Offer::Operation::Reserve& reserve,
+    const Option<string>& principal)
+{
+  if (authorizer.isNone()) {
+    return true; // Authorization is disabled.
+  }
+
+  mesos::ACL::ReserveResources request;
+
+  if (principal.isSome()) {
+    request.mutable_principals()->add_values(principal.get());
+  } else {
+    request.mutable_principals()->set_type(ACL::Entity::ANY);
+  }
+
+  // TODO(mpark): Determine what kinds of constraints we may want to
+  // enforce on resources. Currently, we simply use ANY.
+  request.mutable_resources()->set_type(ACL::Entity::ANY);
+
+  LOG(INFO) << "Authorizing principal '"
+            << (principal.isSome() ? principal.get() : "ANY")
+            << "' to reserve resources '" << reserve.resources() << "'";
+
+  return authorizer.get()->authorize(request);
+}
+
+
+Future<bool> Master::authorizeUnreserveResources(
+    const Offer::Operation::Unreserve& unreserve,
+    const Option<string>& principal)
+{
+  if (authorizer.isNone()) {
+    return true; // Authorization is disabled.
+  }
+
+  mesos::ACL::UnreserveResources request;
+
+  if (principal.isSome()) {
+    request.mutable_principals()->add_values(principal.get());
+  } else {
+    request.mutable_principals()->set_type(ACL::Entity::ANY);
+  }
+
+  foreach (const Resource& resource, unreserve.resources()) {
+    // NOTE: Since validation of this operation is performed after
+    // authorization, we must check here that this resource is
+    // dynamically reserved. If it isn't, the error will be caught
+    // during validation.
+    if (Resources::isDynamicallyReserved(resource)) {
+      request.mutable_reserver_principals()->add_values(
+          resource.reservation().principal());
+    }
+  }
+
+  LOG(INFO)
+    << "Authorizing principal '"
+    << (principal.isSome() ? principal.get() : "ANY")
+    << "' to unreserve resources '" << unreserve.resources() << "'";
+
+  return authorizer.get()->authorize(request);
+}
+
+
+Future<bool> Master::authorizeCreateVolume(
+    const Offer::Operation::Create& create,
+    const Option<string>& principal)
+{
+  if (authorizer.isNone()) {
+    return true; // Authorization is disabled.
+  }
+
+  mesos::ACL::CreateVolume request;
+
+  if (principal.isSome()) {
+    request.mutable_principals()->add_values(principal.get());
+  } else {
+    request.mutable_principals()->set_type(ACL::Entity::ANY);
+  }
+
+  // TODO(greggomann): Determine what `volume_types` we may want to
+  // allow/prevent creation of. Currently, we simply use ANY.
+  request.mutable_volume_types()->set_type(ACL::Entity::ANY);
+
+  LOG(INFO)
+    << "Authorizing principal '"
+    << (principal.isSome() ? principal.get() : "ANY")
+    << "' to create volumes";
+
+  return authorizer.get()->authorize(request);
+}
+
+
+Future<bool> Master::authorizeDestroyVolume(
+    const Offer::Operation::Destroy& destroy,
+    const Option<string>& principal)
+{
+  if (authorizer.isNone()) {
+    return true; // Authorization is disabled.
+  }
+
+  mesos::ACL::DestroyVolume request;
+
+  if (principal.isSome()) {
+    request.mutable_principals()->add_values(principal.get());
+  } else {
+    request.mutable_principals()->set_type(ACL::Entity::ANY);
+  }
+
+  foreach (const Resource& volume, destroy.volumes()) {
+    // NOTE: Since validation of this operation may be performed after
+    // authorization, we must check here that this resource is a persistent
+    // volume. If it isn't, the error will be caught during validation.
+    if (Resources::isPersistentVolume(volume)) {
+      request.mutable_creator_principals()->add_values(
+          volume.disk().persistence().principal());
+    }
+  }
+
+  LOG(INFO)
+    << "Authorizing principal '"
+    << (principal.isSome() ? principal.get() : "ANY")
+    << "' to destroy volumes '"
+    << stringify(destroy.volumes()) << "'";
+
+  return authorizer.get()->authorize(request);
+}
+
+
 Resources Master::addTask(
     const TaskInfo& task,
     Framework* framework,
@@ -2734,7 +2900,6 @@ Resources Master::addTask(
 
   // Determine if this task launches an executor, and if so make sure
   // the slave and framework state has been updated accordingly.
-  Option<ExecutorID> executorId;
 
   if (task.has_executor()) {
     // TODO(benh): Refactor this code into Slave::addTask.
@@ -2749,29 +2914,10 @@ Resources Master::addTask(
 
       resources += task.executor().resources();
     }
-
-    executorId = task.executor().executor_id();
   }
 
   // Add the task to the framework and slave.
-  Task* t = new Task();
-  t->mutable_framework_id()->MergeFrom(framework->id());
-  t->set_state(TASK_STAGING);
-  t->set_name(task.name());
-  t->mutable_task_id()->MergeFrom(task.task_id());
-  t->mutable_slave_id()->MergeFrom(task.slave_id());
-  t->mutable_resources()->MergeFrom(task.resources());
-
-  if (executorId.isSome()) {
-    t->mutable_executor_id()->MergeFrom(executorId.get());
-  }
-
-  if (task.has_labels()) {
-    t->mutable_labels()->MergeFrom(task.labels());
-  }
-  if (task.has_discovery()) {
-    t->mutable_discovery()->MergeFrom(task.discovery());
-  }
+  Task* t = new Task(protobuf::createTask(task, TASK_STAGING, framework->id()));
 
   slave->addTask(t);
   framework->addTask(t);
@@ -2909,33 +3055,85 @@ void Master::accept(
   LOG(INFO) << "Processing ACCEPT call for offers: " << accept.offer_ids()
             << " on slave " << *slave << " for framework " << *framework;
 
-  // If LAUNCH operation is included, authorize the tasks. A task is
-  // in 'framework->pendingTasks' before it is authorized.
-  //
-  // TODO(jieyu): Currently, we only do authorization for the LAUNCH
-  // operation. In the future, we might want to introduce
-  // authorizations for other offer operations as well.
-  //
-  // TODO(mpark): Add authorization logic for RESERVE and UNRESERVE
-  // when "reserve" and "unreserve" ACLs are being introduced.
   list<Future<bool>> futures;
   foreach (const Offer::Operation& operation, accept.operations()) {
-    if (operation.type() != Offer::Operation::LAUNCH) {
-      continue;
-    }
+    switch (operation.type()) {
+      case Offer::Operation::LAUNCH: {
+        // Authorize the tasks. A task is in 'framework->pendingTasks'
+        // before it is authorized.
+        foreach (const TaskInfo& task, operation.launch().task_infos()) {
+          futures.push_back(authorizeTask(task, framework));
 
-    foreach (const TaskInfo& task, operation.launch().task_infos()) {
-      futures.push_back(authorizeTask(task, framework));
+          // Add to pending tasks.
+          //
+          // NOTE: The task ID here hasn't been validated yet, but it
+          // doesn't matter. If the task ID is not valid, the task won't
+          // be launched anyway. If two tasks have the same ID, the second
+          // one will not be put into 'framework->pendingTasks', therefore
+          // will not be launched.
+          if (!framework->pendingTasks.contains(task.task_id())) {
+            framework->pendingTasks[task.task_id()] = task;
+          }
+        }
+        break;
+      }
 
-      // Add to pending tasks.
-      //
-      // NOTE: The task ID here hasn't been validated yet, but it
-      // doesn't matter. If the task ID is not valid, the task won't
-      // be launched anyway. If two tasks have the same ID, the second
-      // one will not be put into 'framework->pendingTasks', therefore
-      // will not be launched.
-      if (!framework->pendingTasks.contains(task.task_id())) {
-        framework->pendingTasks[task.task_id()] = task;
+      // NOTE: When handling RESERVE and UNRESERVE operations, authorization
+      // will proceed even if no principal is specified, although currently
+      // resources cannot be reserved or unreserved unless a principal is
+      // provided. Any RESERVE/UNRESERVE operation with no associated principal
+      // will be found invalid when `validate()` is called in `_accept()` below.
+
+      // The RESERVE operation allows a principal to reserve resources.
+      case Offer::Operation::RESERVE: {
+        Option<string> principal = framework->info.has_principal()
+          ? framework->info.principal()
+          : Option<string>::none();
+
+        futures.push_back(
+            authorizeReserveResources(
+                operation.reserve(), principal));
+
+        break;
+      }
+
+      // The UNRESERVE operation allows a principal to unreserve resources.
+      case Offer::Operation::UNRESERVE: {
+        Option<string> principal = framework->info.has_principal()
+          ? framework->info.principal()
+          : Option<string>::none();
+
+        futures.push_back(
+            authorizeUnreserveResources(
+                operation.unreserve(), principal));
+
+        break;
+      }
+
+      // The CREATE operation allows the creation of a persistent volume.
+      case Offer::Operation::CREATE: {
+        Option<string> principal = framework->info.has_principal()
+          ? framework->info.principal()
+          : Option<string>::none();
+
+        futures.push_back(
+            authorizeCreateVolume(
+                operation.create(), principal));
+
+        break;
+      }
+
+      // The DESTROY operation allows the destruction of a persistent volume.
+      case Offer::Operation::DESTROY: {
+        Option<string> principal = framework->info.has_principal()
+          ? framework->info.principal()
+          : Option<string>::none();
+
+        futures.push_back(
+            authorizeDestroyVolume(
+                operation.destroy(), principal));
+
+        break;
       }
     }
   }
@@ -3026,16 +3224,33 @@ void Master::_accept(
   // launched, we remove its resource from offered resources.
   Resources _offeredResources = offeredResources;
 
+  // The order of `authorizations` must match the order of the operations in
+  // `accept.operations()`, as they are iterated through simultaneously.
   CHECK_READY(_authorizations);
   list<Future<bool>> authorizations = _authorizations.get();
 
   foreach (const Offer::Operation& operation, accept.operations()) {
     switch (operation.type()) {
+      // The RESERVE operation allows a principal to reserve resources.
       case Offer::Operation::RESERVE: {
+        Future<bool> authorization = authorizations.front();
+        authorizations.pop_front();
+
+        CHECK(!authorization.isDiscarded() && !authorization.isFailed());
+
+        if (!authorization.get()) {
+          drop(framework,
+               operation,
+               "Not authorized to reserve resources as '" +
+                 framework->info.principal() + "'");
+          continue;
+        }
+
         Option<string> principal = framework->info.has_principal()
           ? framework->info.principal()
           : Option<string>::none();
 
+        // Make sure this reserve operation is valid.
         Option<Error> error = validation::operation::validate(
             operation.reserve(), framework->info.role(), principal);
 
@@ -3044,6 +3259,7 @@ void Master::_accept(
           continue;
         }
 
+        // Test the given operation on the included resources.
         Try<Resources> resources = _offeredResources.apply(operation);
         if (resources.isError()) {
           drop(framework, operation, resources.error());
@@ -3060,7 +3276,22 @@ void Master::_accept(
         break;
       }
 
+      // The UNRESERVE operation allows a principal to unreserve resources.
       case Offer::Operation::UNRESERVE: {
+        Future<bool> authorization = authorizations.front();
+        authorizations.pop_front();
+
+        CHECK(!authorization.isDiscarded() && !authorization.isFailed());
+
+        if (!authorization.get()) {
+          drop(framework,
+               operation,
+               "Not authorized to unreserve resources as '" +
+                 framework->info.principal() + "'");
+          continue;
+        }
+
+        // Make sure this unreserve operation is valid.
         Option<Error> error = validation::operation::validate(
             operation.unreserve(), framework->info.has_principal());
 
@@ -3069,6 +3300,7 @@ void Master::_accept(
           continue;
         }
 
+        // Test the given operation on the included resources.
         Try<Resources> resources = _offeredResources.apply(operation);
         if (resources.isError()) {
           drop(framework, operation, resources.error());
@@ -3086,9 +3318,33 @@ void Master::_accept(
       }
 
       case Offer::Operation::CREATE: {
+        Future<bool> authorization = authorizations.front();
+        authorizations.pop_front();
+
+        CHECK(!authorization.isDiscarded());
+
+        if (authorization.isFailed()) {
+          // TODO(greggomann): We may want to retry this failed authorization
+          // request rather than dropping it immediately.
+          drop(framework,
+               operation,
+               "Authorization of principal '" + framework->info.principal() +
+               "' to create persistent volumes failed: " +
+               authorization.failure());
+
+          continue;
+        } else if (!authorization.get()) {
+          drop(framework,
+               operation,
+               "Not authorized to create persistent volumes as '" +
+                 framework->info.principal() + "'");
+
+          continue;
+        }
+
+        // Make sure this create operation is valid.
         Option<Error> error = validation::operation::validate(
-            operation.create(),
-            slave->checkpointedResources);
+            operation.create(), slave->checkpointedResources);
 
         if (error.isSome()) {
           drop(framework, operation, error.get().message);
@@ -3112,9 +3368,33 @@ void Master::_accept(
       }
 
       case Offer::Operation::DESTROY: {
+        Future<bool> authorization = authorizations.front();
+        authorizations.pop_front();
+
+        CHECK(!authorization.isDiscarded());
+
+        if (authorization.isFailed()) {
+          // TODO(greggomann): We may want to retry this failed authorization
+          // request rather than dropping it immediately.
+          drop(framework,
+               operation,
+               "Authorization of principal '" + framework->info.principal() +
+               "' to destroy persistent volumes failed: " +
+               authorization.failure());
+
+          continue;
+        } else if (!authorization.get()) {
+          drop(framework,
+               operation,
+               "Not authorized to destroy persistent volumes as '" +
+                 framework->info.principal() + "'");
+
+          continue;
+        }
+
+        // Make sure this destroy operation is valid.
         Option<Error> error = validation::operation::validate(
-            operation.destroy(),
-            slave->checkpointedResources);
+            operation.destroy(), slave->checkpointedResources);
 
         if (error.isSome()) {
           drop(framework, operation, error.get().message);
@@ -3123,7 +3403,7 @@ void Master::_accept(
 
         Try<Resources> resources = _offeredResources.apply(operation);
         if (resources.isError()) {
-          drop(framework, operation, error.get().message);
+          drop(framework, operation, resources.error());
           continue;
         }
 
@@ -3153,7 +3433,6 @@ void Master::_accept(
           // Remove from pending tasks.
           framework->pendingTasks.erase(task.task_id());
 
-          // Check authorization result.
           CHECK(!authorization.isDiscarded());
 
           if (authorization.isFailed() || !authorization.get()) {
@@ -3246,7 +3525,7 @@ void Master::_accept(
 
             // TODO(anand): We set 'pid' to UPID() for http frameworks
             // as 'pid' was made optional in 0.24.0. In 0.25.0, we
-            // no longer have to set pid here for http frameowrks.
+            // no longer have to set pid here for http frameworks.
             message.set_pid(framework->pid.getOrElse(UPID()));
             message.mutable_task()->MergeFrom(task_);
 
@@ -3900,7 +4179,7 @@ void Master::_registerSlave(
         slaveInfo,
         pid,
         machineId,
-        version.empty() ? Option<string>::none() : version,
+        version,
         Clock::now(),
         checkpointedResources);
 
@@ -4141,7 +4420,7 @@ void Master::_reregisterSlave(
         slaveInfo,
         pid,
         machineId,
-        version.empty() ? Option<string>::none() : version,
+        version,
         Clock::now(),
         checkpointedResources,
         executorInfos,
@@ -4187,7 +4466,7 @@ void Master::__reregisterSlave(Slave* slave, const vector<Task>& tasks)
 
       // TODO(anand): We set 'pid' to UPID() for http frameworks
       // as 'pid' was made optional in 0.24.0. In 0.25.0, we
-      // no longer have to set pid here for http frameowrks.
+      // no longer have to set pid here for http frameworks.
       message.set_pid(framework->pid.getOrElse(UPID()));
 
       send(slave->pid, message);
@@ -4282,8 +4561,8 @@ void Master::updateSlave(
   // NOTE: We don't need to rescind inverse offers here as they are unrelated to
   // oversubscription.
 
-  slave->totalResources -= slave->totalResources.revocable();
-  slave->totalResources += oversubscribedResources.revocable();
+  slave->totalResources =
+    slave->totalResources.nonRevocable() + oversubscribedResources.revocable();
 
   // Now, update the allocator with the new estimate.
   allocator->updateSlave(slaveId, oversubscribedResources);
@@ -4346,7 +4625,7 @@ void Master::updateUnavailability(
         removeInverseOffer(inverseOffer, true); // Rescind!
       }
 
-      // We remove / resind all the offers first so that any calls to the
+      // We remove / rescind all the offers first so that any calls to the
       // allocator to modify its internal state are queued before the update of
       // the unavailability in the allocator. We do this so that the allocator's
       // state can start from a "clean slate" for the new unavailability.
@@ -4362,7 +4641,9 @@ void Master::updateUnavailability(
 
 // TODO(vinod): Since 0.22.0, we can use 'from' instead of 'pid'
 // because the status updates will be sent by the slave.
-void Master::statusUpdate(const StatusUpdate& update, const UPID& pid)
+//
+// TODO(vinod): Add a benchmark test for status update handling.
+void Master::statusUpdate(StatusUpdate update, const UPID& pid)
 {
   ++metrics->messages_status_update;
 
@@ -4404,6 +4685,15 @@ void Master::statusUpdate(const StatusUpdate& update, const UPID& pid)
   }
 
   LOG(INFO) << "Status update " << update << " from slave " << *slave;
+
+  // We ensure that the uuid of task status matches the update's uuid, in case
+  // the task status uuid is not set by the slave.
+  //
+  // TODO(vinod): This can be `CHECK(update.status().has_uuid())` from 0.27.0
+  // since a >= 0.26.0 slave will always correctly set task status uuid.
+  if (update.has_uuid()) {
+    update.mutable_status()->set_uuid(update.uuid());
+  }
 
   // Forward the update to the framework.
   forward(update, pid, framework);
@@ -4673,7 +4963,9 @@ void Master::_reconcileTasks(
           "Reconciliation: Latest task state",
           TaskStatus::REASON_RECONCILIATION,
           executorId,
-          protobuf::getTaskHealth(*task));
+          protobuf::getTaskHealth(*task),
+          None(),
+          protobuf::getTaskContainerStatus(*task));
 
       VLOG(1) << "Sending implicit reconciliation state "
               << update.status().state()
@@ -4748,7 +5040,9 @@ void Master::_reconcileTasks(
           "Reconciliation: Latest task state",
           TaskStatus::REASON_RECONCILIATION,
           executorId,
-          protobuf::getTaskHealth(*task));
+          protobuf::getTaskHealth(*task),
+          None(),
+          protobuf::getTaskContainerStatus(*task));
     } else if (slaveId.isSome() && slaves.registered.contains(slaveId.get())) {
       // (3) Task is unknown, slave is registered: TASK_LOST.
       update = protobuf::createStatusUpdate(
@@ -5010,9 +5304,9 @@ void Master::inverseOffer(
 
     InverseOffer* inverseOffer = new InverseOffer();
 
-    // We use the same id generator as regular offers so that we can have unique
-    // ids accross both. This way we can re-use some of the `OfferID` only
-    // messages.
+    // We use the same id generator as regular offers so that we can
+    // have unique ids across both. This way we can re-use some of the
+    // `OfferID` only messages.
     inverseOffer->mutable_id()->CopyFrom(newOfferId());
     inverseOffer->mutable_framework_id()->CopyFrom(framework->id());
     inverseOffer->mutable_slave_id()->CopyFrom(slave->id);
@@ -5226,51 +5520,27 @@ void Master::reconcile(
         LOG(WARNING) << "Task " << task->task_id()
                      << " of framework " << task->framework_id()
                      << " unknown to the slave " << *slave
-                     << " during re-registration"
-                     << (slave->version.isSome()
-                         ? ": reconciling with the slave"
-                         : ": sending TASK_LOST");
+                     << " during re-registration : reconciling with the slave";
 
-        if (slave->version.isSome()) {
-          // NOTE: Currently the slave doesn't look at the task state
-          // when it reconciles the task state; we include the correct
-          // state for correctness and consistency.
-          const TaskState& state = task->has_status_update_state()
-              ? task->status_update_state()
-              : task->state();
+        // NOTE: Currently the slave doesn't look at the task state
+        // when it reconciles the task state; we include the correct
+        // state for correctness and consistency.
+        const TaskState& state = task->has_status_update_state()
+            ? task->status_update_state()
+            : task->state();
 
-          TaskStatus* status = reconcile.add_statuses();
-          status->mutable_task_id()->CopyFrom(task->task_id());
-          status->mutable_slave_id()->CopyFrom(slave->id);
-          status->set_state(state);
-          status->set_source(TaskStatus::SOURCE_MASTER);
-          status->set_message("Reconciliation request");
-          status->set_reason(TaskStatus::REASON_RECONCILIATION);
-          status->set_timestamp(Clock::now().secs());
-        } else {
-          // TODO(bmahler): Remove this case in 0.22.0.
-          const StatusUpdate& update = protobuf::createStatusUpdate(
-              task->framework_id(),
-              slave->id,
-              task->task_id(),
-              TASK_LOST,
-              TaskStatus::SOURCE_MASTER,
-              None(),
-              "Task is unknown to the slave",
-              TaskStatus::REASON_TASK_UNKNOWN);
-
-          updateTask(task, update);
-          removeTask(task);
-
-          Framework* framework = getFramework(frameworkId);
-          if (framework != NULL) {
-            forward(update, UPID(), framework);
-          }
-        }
+        TaskStatus* status = reconcile.add_statuses();
+        status->mutable_task_id()->CopyFrom(task->task_id());
+        status->mutable_slave_id()->CopyFrom(slave->id);
+        status->set_state(state);
+        status->set_source(TaskStatus::SOURCE_MASTER);
+        status->set_message("Reconciliation request");
+        status->set_reason(TaskStatus::REASON_RECONCILIATION);
+        status->set_timestamp(Clock::now().secs());
       }
     }
 
-    if (slave->version.isSome() && reconcile.statuses_size() > 0) {
+    if (reconcile.statuses_size() > 0) {
       reregistered.add_reconciliations()->CopyFrom(reconcile);
     }
   }
@@ -5374,12 +5644,15 @@ void Master::addFramework(Framework* framework)
       .onAny(defer(self(), &Self::exited, framework->id(), http));
   }
 
-  // Enforced by Master::registerFramework.
-  CHECK(roles.contains(framework->info.role()))
-    << "Unknown role " << framework->info.role()
+  const string& role = framework->info.role();
+  CHECK(isWhitelistedRole(role))
+    << "Unknown role " << role
     << " of framework " << *framework;
 
-  roles[framework->info.role()]->addFramework(framework);
+  if (!activeRoles.contains(role)) {
+    activeRoles[role] = new Role();
+  }
+  activeRoles[role]->addFramework(framework);
 
   // There should be no offered resources yet!
   CHECK_EQ(Resources(), framework->totalOfferedResources);
@@ -5662,11 +5935,16 @@ void Master::removeFramework(Framework* framework)
   // The completedFramework buffer now owns the framework pointer.
   frameworks.completed.push_back(shared_ptr<Framework>(framework));
 
-  CHECK(roles.contains(framework->info.role()))
-    << "Unknown role " << framework->info.role()
+  const string& role = framework->info.role();
+  CHECK(activeRoles.contains(role))
+    << "Unknown role " << role
     << " of framework " << *framework;
 
-  roles[framework->info.role()]->removeFramework(framework);
+  activeRoles[role]->removeFramework(framework);
+  if (activeRoles[role]->frameworks.empty()) {
+    delete activeRoles[role];
+    activeRoles.erase(role);
+  }
 
   // TODO(anand): This only works for pid based frameworks. We would
   // need similar authentication logic for http frameworks.
@@ -6010,18 +6288,10 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
   // Get the unacknowledged status.
   const TaskStatus& status = update.status();
 
-  // Once a task's state has been transitioned to terminal state, no further
-  // terminal updates should result in a state change. These are the same
-  // semantics that are enforced by the slave.
-  if (protobuf::isTerminalState(task->state())) {
-    LOG(ERROR) << "Ignoring status update for the terminated task "
-               << task->task_id()
-               << " (" << task->state() << " -> " << status.state() << ")"
-               << " of framework " << task->framework_id();
-    return;
-  }
+  // NOTE: Refer to comments on `StatusUpdate` message in messages.proto for
+  // the difference between `update.latest_state()` and `status.state()`.
 
-  // Get the latest state.
+  // Updates from the slave have 'latest_state' set.
   Option<TaskState> latestState;
   if (update.has_latest_state()) {
     latestState = update.latest_state();
@@ -6031,24 +6301,30 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
   // transitioned to terminal state. Also set the latest state.
   bool terminated;
   if (latestState.isSome()) {
-    // This update must be from >= 0.21.0 slave.
     terminated = !protobuf::isTerminalState(task->state()) &&
                  protobuf::isTerminalState(latestState.get());
 
-    task->set_state(latestState.get());
+    // If the task has already transitioned to a terminal state,
+    // do not update its state.
+    if (!protobuf::isTerminalState(task->state())) {
+      task->set_state(latestState.get());
+    }
   } else {
-    // This update must be from a pre 0.21.0 slave or generated by the
-    // master.
     terminated = !protobuf::isTerminalState(task->state()) &&
                  protobuf::isTerminalState(status.state());
 
-    task->set_state(status.state());
+    // If the task has already transitioned to a terminal state, do not update
+    // its state. Note that we are being defensive here because this should not
+    // happen unless there is a bug in the master code.
+    if (!protobuf::isTerminalState(task->state())) {
+      task->set_state(status.state());
+    }
   }
 
   // Set the status update state and uuid for the task. Note that
   // master-generated updates are terminal and do not have a uuid
-  // (in which case the master also calls removeTask()).
-  if (update.has_uuid() && update.uuid() != "") {
+  // (in which case the master also calls `removeTask()`).
+  if (update.has_uuid()) {
     task->set_status_update_state(status.state());
     task->set_status_update_uuid(update.uuid());
   }
@@ -6068,12 +6344,10 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
   // MESOS-1746.
   task->mutable_statuses(task->statuses_size() - 1)->clear_data();
 
-  LOG(INFO) << "Updating the latest state of task " << task->task_id()
+  LOG(INFO) << "Updating the state of task " << task->task_id()
             << " of framework " << task->framework_id()
-            << " to " << task->state()
-            << (task->state() != status.state()
-                ? " (status update state: " + stringify(status.state()) + ")"
-                : "");
+            << " (latest state: " << task->state()
+            << ", status update state: " << status.state() << ")";
 
   // Once the task becomes terminal, we recover the resources.
   if (terminated) {
@@ -6563,7 +6837,7 @@ double Master::_resources_used(const string& name)
 
   foreachvalue (Slave* slave, slaves.registered) {
     foreachvalue (const Resources& resources, slave->usedResources) {
-      foreach (const Resource& resource, resources - resources.revocable()) {
+      foreach (const Resource& resource, resources.nonRevocable()) {
         if (resource.name() == name && resource.type() == Value::SCALAR) {
           used += resource.scalar().value();
         }

@@ -1,30 +1,28 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <unistd.h>
-
-#include <gmock/gmock.h>
 
 #include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <gmock/gmock.h>
 
 #include <mesos/executor.hpp>
 #include <mesos/scheduler.hpp>
@@ -83,10 +81,8 @@ using testing::AtMost;
 using testing::DoAll;
 using testing::Eq;
 using testing::Invoke;
-using testing::InvokeWithoutArgs;
 using testing::Return;
 using testing::SaveArg;
-using testing::Sequence;
 
 namespace mesos {
 namespace internal {
@@ -543,6 +539,9 @@ TEST_F(SlaveTest, GetExecutorInfo)
   FrameworkID frameworkId;
   frameworkId.set_value("20141010-221431-251662764-60288-32120-0000");
 
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.mutable_id()->CopyFrom(frameworkId);
+
   // Launch a task with the command executor.
   TaskInfo task;
   task.set_name("task");
@@ -560,14 +559,142 @@ TEST_F(SlaveTest, GetExecutorInfo)
 
   task.mutable_command()->MergeFrom(command);
 
-  const ExecutorInfo& executor = slave.getExecutorInfo(frameworkId, task);
+  const ExecutorInfo& executor = slave.getExecutorInfo(frameworkInfo, task);
 
   // Now assert that it actually is running mesos-executor without any
   // bleedover from the command we intend on running.
   EXPECT_TRUE(executor.command().shell());
-  EXPECT_FALSE(executor.command().has_container());
   EXPECT_EQ(0, executor.command().arguments_size());
   EXPECT_NE(string::npos, executor.command().value().find("mesos-executor"));
+}
+
+
+// Ensure getExecutorInfo for mesos-executor gets the ContainerInfo,
+// if present. This ensures the MesosContainerizer can get the
+// NetworkInfo even when using the command executor.
+TEST_F(SlaveTest, GetExecutorInfoForTaskWithContainer)
+{
+  TestContainerizer containerizer;
+  StandaloneMasterDetector detector;
+
+  MockSlave slave(CreateSlaveFlags(), &detector, &containerizer);
+
+  // Launch a task with the command executor and ContainerInfo with
+  // NetworkInfo.
+  TaskInfo task;
+  task.set_name("task");
+  task.mutable_task_id()->set_value("1");
+  task.mutable_slave_id()->set_value(
+      "20141010-221431-251662764-60288-12345-0001");
+  task.mutable_resources()->MergeFrom(
+      Resources::parse("cpus:0.1;mem:32").get());
+
+  CommandInfo command;
+  command.set_shell(false);
+  command.set_value("/bin/echo");
+  command.add_arguments("/bin/echo");
+  command.add_arguments("--author");
+
+  task.mutable_command()->MergeFrom(command);
+
+  ContainerInfo *container = task.mutable_container();
+  container->set_type(ContainerInfo::MESOS);
+
+  NetworkInfo *network = container->add_network_infos();
+  network->set_ip_address("4.3.2.1");
+  network->add_groups("public");
+
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.mutable_id()->set_value(
+      "20141010-221431-251662764-60288-12345-0000");
+  const ExecutorInfo& executor = slave.getExecutorInfo(frameworkInfo, task);
+
+  // Now assert that the executor has both the command and ContainerInfo
+  EXPECT_TRUE(executor.command().shell());
+  // CommandInfo.container is not included. In this test the ContainerInfo
+  // must be included in Executor.container (copied from TaskInfo.container).
+  EXPECT_TRUE(executor.has_container());
+
+  EXPECT_EQ("4.3.2.1", executor.container().network_infos(0).ip_address());
+  EXPECT_EQ(1, executor.container().network_infos(0).groups_size());
+  EXPECT_EQ("public", executor.container().network_infos(0).groups(0));
+}
+
+
+// This tests ensures that MesosContainerizer will launch a command
+// executor even if it contains a ContainerInfo in the TaskInfo.
+// Prior to 0.26.0, this was only used to launch Docker containers, so
+// MesosContainerizer would fail the launch.
+TEST_F(SlaveTest, LaunchTaskInfoWithContainerInfo)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  // Need flags for 'executor_registration_timeout'.
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "posix/cpu,posix/mem";
+
+  Fetcher fetcher;
+
+  Try<MesosContainerizer*> containerizer =
+    MesosContainerizer::create(flags, false, &fetcher);
+  CHECK_SOME(containerizer);
+
+  StandaloneMasterDetector detector;
+  MockSlave slave(flags, &detector, containerizer.get());
+
+  // Launch a task with the command executor and ContainerInfo with
+  // NetworkInfo.
+  TaskInfo task;
+  task.set_name("task");
+  task.mutable_task_id()->set_value("1");
+  task.mutable_slave_id()->set_value(
+      "20141010-221431-251662764-60288-12345-0001");
+  task.mutable_resources()->MergeFrom(
+      Resources::parse("cpus:0.1;mem:32").get());
+
+  CommandInfo command;
+  command.set_shell(false);
+  command.set_value("/bin/echo");
+  command.add_arguments("/bin/echo");
+  command.add_arguments("--author");
+
+  task.mutable_command()->MergeFrom(command);
+
+  ContainerID containerId;
+  containerId.set_value(UUID::random().toString());
+  ContainerInfo *container = task.mutable_container();
+  container->set_type(ContainerInfo::MESOS);
+
+  NetworkInfo *network = container->add_network_infos();
+  network->set_ip_address("4.3.2.1");
+  network->add_groups("public");
+
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.mutable_id()->set_value(
+      "20141010-221431-251662764-60288-12345-0000");
+  const ExecutorInfo& executor = slave.getExecutorInfo(frameworkInfo, task);
+
+  Future<bool> result;
+  SlaveID slaveID;
+  slaveID.set_value(UUID::random().toString());
+  result = containerizer.get()->launch(
+      containerId,
+      task,
+      executor,
+      "/tmp",
+      "test",
+      slaveID,
+      slave.self(),
+      false);
+  AWAIT_READY(result);
+
+  // TODO(spikecurtis): With agent capabilities (MESOS-3362), the
+  // Containerizer should fail this request since none of the listed
+  // isolators can handle NetworkInfo, which implies
+  // IP-per-container.
+  EXPECT_TRUE(result.get());
+  Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
 }
 
 
@@ -1415,7 +1542,7 @@ TEST_F(SlaveTest, ContainerUpdatedBeforeTaskReachesExecutor)
   // `containerizer->update` or `exec->launchTask`. We want to make
   // sure that containerizer update always finishes before the task is
   // sent to the executor.
-  Sequence sequence;
+  testing::Sequence sequence;
 
   EXPECT_CALL(containerizer, update(_, _))
     .InSequence(sequence)
@@ -2004,6 +2131,9 @@ TEST_F(SlaveTest, ContainerizerUsageFailure)
   ASSERT_EQ(1, usage.get().executors_size());
   EXPECT_FALSE(usage.get().executors(0).has_statistics());
 
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
   driver.stop();
   driver.join();
 
@@ -2011,6 +2141,127 @@ TEST_F(SlaveTest, ContainerizerUsageFailure)
   wait(slave);
 
   Shutdown();
+}
+
+
+// This test verifies that DiscoveryInfo and Port messages, set in TaskInfo,
+// are exposed over the slave state endpoint. The test launches a task with
+// the DiscoveryInfo and Port message fields populated. It then makes an HTTP
+// request to the state endpoint of the slave and retrieves the JSON data from
+// the endpoint. The test passes if the DiscoveryInfo and Port message data in
+// JSON matches the corresponding data set in the TaskInfo used to launch the
+// task.
+TEST_F(SlaveTest, DiscoveryInfoAndPorts)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+
+  Try<PID<Slave>> slave = StartSlave(&exec);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers.get().size());
+
+  TaskInfo task = createTask(offers.get()[0], "sleep 100", DEFAULT_EXECUTOR_ID);
+
+  Labels labels1;
+  labels1.add_labels()->CopyFrom(createLabel("ACTION", "port:7987 DENY"));
+
+  Labels labels2;
+  labels2.add_labels()->CopyFrom(createLabel("ACTION", "port:7789 PERMIT"));
+
+  Ports ports;
+  Port* port1 = ports.add_ports();
+  port1->set_number(80);
+  port1->mutable_labels()->CopyFrom(labels1);
+  port1->set_instance_port(2222);
+
+  Port* port2 = ports.add_ports();
+  port2->set_number(8081);
+  port2->mutable_labels()->CopyFrom(labels2);
+  port2->set_instance_port(2223);
+
+
+  DiscoveryInfo discovery;
+  discovery.set_name("test_discovery");
+  discovery.set_visibility(DiscoveryInfo::CLUSTER);
+  discovery.mutable_ports()->CopyFrom(ports);
+
+  IPAddress* vip1 = discovery.add_vips()->mutable_vip();
+  vip1->set_ip_address("10.0.0.1");
+
+  IPAddress* vip2 = discovery.add_vips()->mutable_vip();
+  vip2->set_ip_address("10.0.0.2");
+
+  task.mutable_discovery()->CopyFrom(discovery);
+
+  EXPECT_CALL(exec, registered(_, _, _, _));
+
+  Future<Nothing> launchTask;
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(FutureSatisfy(&launchTask));
+
+  driver.launchTasks(offers.get()[0].id(), {task});
+
+  AWAIT_READY(launchTask);
+
+  // Verify label key and value in slave state.json.
+  Future<process::http::Response> response =
+    process::http::get(slave.get(), "state.json");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
+  EXPECT_SOME_EQ(APPLICATION_JSON, response.get().headers.get("Content-Type"));
+
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+  ASSERT_SOME(parse);
+
+  Result<JSON::Object> discoveryResult = parse.get().find<JSON::Object>(
+      "frameworks[0].executors[0].tasks[0].discovery");
+  EXPECT_SOME(discoveryResult);
+
+  JSON::Object discoveryObject = discoveryResult.get();
+  EXPECT_EQ(JSON::Object(JSON::protobuf(discovery)), discoveryObject);
+
+  // Verify that the VIPs retrieved from state.json are the ones that were set.
+  Result<JSON::Object> vipResult1 = parse.get().find<JSON::Object>(
+      "frameworks[0].executors[0].tasks[0].discovery.vips[0]");
+  Result<JSON::Object> vipResult2 = parse.get().find<JSON::Object>(
+      "frameworks[0].executors[0].tasks[0].discovery.vips[1]");
+
+  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(discovery.vips(0))), vipResult1);
+  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(discovery.vips(1))), vipResult2);
+
+  // Verify that the ports retrieved from state.json are the ones that were set.
+  Result<JSON::Object> portResult1 = parse.get().find<JSON::Object>(
+      "frameworks[0].executors[0].tasks[0].discovery.ports.ports[0]");
+  Result<JSON::Object> portResult2 = parse.get().find<JSON::Object>(
+      "frameworks[0].executors[0].tasks[0].discovery.ports.ports[1]");
+
+  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(*port1)), portResult1);
+  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(*port2)), portResult2);
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
+
+  Shutdown(); // Must shutdown before 'containerizer' gets deallocated.
 }
 
 
@@ -2102,13 +2353,13 @@ TEST_F(SlaveTest, TaskLabels)
 
   // Verify the contents of 'foo:bar', 'bar:baz', and 'bar:qux' pairs.
   EXPECT_EQ(
-      JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))),
+      JSON::Value(JSON::protobuf(createLabel("foo", "bar"))),
       labelsObject.values[0]);
   EXPECT_EQ(
-      JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))),
+      JSON::Value(JSON::protobuf(createLabel("bar", "baz"))),
       labelsObject.values[1]);
   EXPECT_EQ(
-      JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))),
+      JSON::Value(JSON::protobuf(createLabel("bar", "qux"))),
       labelsObject.values[2]);
 
   EXPECT_CALL(exec, shutdown(_))
@@ -2204,13 +2455,13 @@ TEST_F(SlaveTest, TaskStatusLabels)
 
   // Verify the contents of 'foo:bar', 'bar:baz', and 'bar:qux' pairs.
   EXPECT_EQ(
-      JSON::Value(JSON::Protobuf(createLabel("foo", "bar"))),
+      JSON::Value(JSON::protobuf(createLabel("foo", "bar"))),
       labelsObject.values[0]);
   EXPECT_EQ(
-      JSON::Value(JSON::Protobuf(createLabel("bar", "baz"))),
+      JSON::Value(JSON::protobuf(createLabel("bar", "baz"))),
       labelsObject.values[1]);
   EXPECT_EQ(
-      JSON::Value(JSON::Protobuf(createLabel("bar", "qux"))),
+      JSON::Value(JSON::protobuf(createLabel("bar", "qux"))),
       labelsObject.values[2]);
 
   EXPECT_CALL(exec, shutdown(_))
@@ -2716,6 +2967,10 @@ TEST_F(SlaveTest, HTTPSchedulerSlaveRestart)
   ASSERT_SOME(slave);
 
   Clock::settle();
+
+  // Ensure the slave considers itself recovered.
+  Clock::advance(slave::EXECUTOR_REREGISTER_TIMEOUT);
+
   Clock::resume();
 
   AWAIT_READY(slaveReregisteredMessage);

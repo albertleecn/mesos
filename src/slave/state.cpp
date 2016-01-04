@@ -1,22 +1,18 @@
-/**
-* Licensed to the Apache Software Foundation (ASF) under one
-* or more contributor license agreements.  See the NOTICE file
-* distributed with this work for additional information
-* regarding copyright ownership.  The ASF licenses this file
-* to you under the Apache License, Version 2.0 (the
-* "License"); you may not use this file except in compliance
-* with the License.  You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
-
-#include <unistd.h>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <glog/logging.h>
 
@@ -24,15 +20,23 @@
 
 #include <process/pid.hpp>
 
+#include <stout/check.hpp>
 #include <stout/error.hpp>
 #include <stout/foreach.hpp>
 #include <stout/format.hpp>
 #include <stout/none.hpp>
+#include <stout/nothing.hpp>
 #include <stout/numify.hpp>
-#include <stout/os.hpp>
 #include <stout/path.hpp>
 #include <stout/protobuf.hpp>
 #include <stout/try.hpp>
+
+#include <stout/os/bootid.hpp>
+#include <stout/os/close.hpp>
+#include <stout/os/exists.hpp>
+#include <stout/os/ftruncate.hpp>
+#include <stout/os/read.hpp>
+#include <stout/os/realpath.hpp>
 
 #include "messages/messages.hpp"
 
@@ -502,37 +506,47 @@ Try<RunState> RunState::recover(
   path = paths::getLibprocessPidPath(
       rootDir, slaveId, frameworkId, executorId, containerId);
 
+  if (os::exists(path)) {
+    pid = os::read(path);
+
+    if (pid.isError()) {
+      message = "Failed to read executor libprocess pid from '" + path +
+                "': " + pid.error();
+
+      if (strict) {
+        return Error(message);
+      } else {
+        LOG(WARNING) << message;
+        state.errors++;
+        return state;
+      }
+    }
+
+    if (pid.get().empty()) {
+      // This could happen if the slave died after opening the file for
+      // writing but before it checkpointed anything.
+      LOG(WARNING) << "Found empty executor libprocess pid file '" << path
+                   << "'";
+      return state;
+    }
+
+    state.libprocessPid = process::UPID(pid.get());
+    state.http = false;
+
+    return state;
+  }
+
+  path = paths::getExecutorHttpMarkerPath(
+      rootDir, slaveId, frameworkId, executorId, containerId);
+
   if (!os::exists(path)) {
     // This could happen if the slave died before the executor
     // registered with the slave.
-    LOG(WARNING)
-      << "Failed to find executor libprocess pid file '" << path << "'";
+    LOG(WARNING) << "Failed to find executor libprocess pid/http marker file";
     return state;
   }
 
-  pid = os::read(path);
-
-  if (pid.isError()) {
-    message = "Failed to read executor libprocess pid from '" + path +
-              "': " + pid.error();
-
-    if (strict) {
-      return Error(message);
-    } else {
-      LOG(WARNING) << message;
-      state.errors++;
-      return state;
-    }
-  }
-
-  if (pid.get().empty()) {
-    // This could happen if the slave died after opening the file for
-    // writing but before it checkpointed anything.
-    LOG(WARNING) << "Found empty executor libprocess pid file '" << path << "'";
-    return state;
-  }
-
-  state.libprocessPid = process::UPID(pid.get());
+  state.http = true;
 
   return state;
 }
@@ -640,10 +654,13 @@ Try<TaskState> TaskState::recover(
   // NOTE: This is safe even though we ignore partial protobuf read
   // errors above, because the 'fd' is properly set to the end of the
   // last valid update by 'protobuf::read()'.
-  if (ftruncate(fd.get(), offset) != 0) {
+  Try<Nothing> truncated = os::ftruncate(fd.get(), offset);
+
+  if (truncated.isError()) {
     os::close(fd.get());
-    return ErrnoError(
-        "Failed to truncate status updates file '" + path + "'");
+    return Error(
+        "Failed to truncate status updates file '" + path +
+        "': " + truncated.error());
   }
 
   // After reading a non-corrupted updates file, 'record' should be
@@ -718,9 +735,13 @@ Try<ResourcesState> ResourcesState::recover(
   // NOTE: This is safe even though we ignore partial protobuf read
   // errors above, because the 'fd' is properly set to the end of the
   // last valid resource by 'protobuf::read()'.
-  if (ftruncate(fd.get(), offset) != 0) {
+  Try<Nothing> truncated = os::ftruncate(fd.get(), offset);
+
+  if (truncated.isError()) {
     os::close(fd.get());
-    return ErrnoError("Failed to truncate resources file '" + path + "'");
+    return Error(
+      "Failed to truncate resources file '" + path +
+      "': " + truncated.error());
   }
 
   // After reading a non-corrupted resources file, 'record' should be

@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <stdio.h>
 
@@ -148,8 +146,8 @@ public:
         mappedDirectory,
         task.resources() + task.executor().resources(),
         None(),
-        path::join(sandboxDirectory, "stdout"),
-        path::join(sandboxDirectory, "stderr"))
+        Subprocess::FD(STDOUT_FILENO),
+        Subprocess::FD(STDERR_FILENO))
       .onAny(defer(
         self(),
         &Self::reaped,
@@ -174,7 +172,13 @@ public:
 
             NetworkInfo* networkInfo =
               status.mutable_container_status()->add_network_infos();
+
+            // TODO(CD): Deprecated -- Remove after 0.27.0.
             networkInfo->set_ip_address(container.ipAddress.get());
+
+            NetworkInfo::IPAddress* ipAddress =
+              networkInfo->add_ip_addresses();
+            ipAddress->set_ip_address(container.ipAddress.get());
           }
           driver->sendStatusUpdate(status);
         }
@@ -192,7 +196,7 @@ public:
     shutdown(driver);
     if (healthPid != -1) {
       // Cleanup health check process.
-      ::kill(healthPid, SIGKILL);
+      os::killtree(healthPid, SIGKILL);
     }
   }
 
@@ -362,7 +366,7 @@ private:
           return;
       }
 
-      JSON::Object json = JSON::Protobuf(healthCheck);
+      JSON::Object json = JSON::protobuf(healthCheck);
 
       // Launch the subprocess using 'exec' style so that quotes can
       // be properly handled.

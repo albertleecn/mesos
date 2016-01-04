@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <list>
 #include <sstream>
@@ -34,11 +32,14 @@
 #include <stout/strings.hpp>
 
 #include <stout/os/shell.hpp>
+#include <stout/os/strerror.hpp>
 
 #include "linux/fs.hpp"
 #include "linux/ns.hpp"
 
 #include "slave/paths.hpp"
+
+#include "slave/containerizer/mesos/mount.hpp"
 
 #include "slave/containerizer/mesos/isolators/filesystem/linux.hpp"
 
@@ -310,7 +311,7 @@ Future<Option<ContainerPrepareInfo>> LinuxFilesystemIsolatorProcess::_prepare(
     const ExecutorInfo& executorInfo,
     const string& directory,
     const Option<string>& user,
-    const Option<string>& rootfs)
+    const Option<ProvisionInfo>& provisionInfo)
 {
   CHECK(executorInfo.has_container());
   CHECK_EQ(executorInfo.container().type(), ContainerInfo::MESOS);
@@ -333,15 +334,20 @@ Future<Option<ContainerPrepareInfo>> LinuxFilesystemIsolatorProcess::_prepare(
 
     futures.push_back(
         provisioner->provision(containerId, image)
-          .then([volume](const string& path) -> Future<Nothing> {
-            volume->set_host_path(path);
+          .then([volume](const ProvisionInfo& info) -> Future<Nothing> {
+            volume->set_host_path(info.rootfs);
             return Nothing();
           }));
   }
 
   return collect(futures)
     .then([=]() -> Future<Option<ContainerPrepareInfo>> {
-      return __prepare(containerId, *_executorInfo, directory, user, rootfs);
+      return __prepare(
+          containerId,
+          *_executorInfo,
+          directory,
+          user,
+          provisionInfo);
     });
 }
 
@@ -351,7 +357,7 @@ Future<Option<ContainerPrepareInfo>> LinuxFilesystemIsolatorProcess::__prepare(
     const ExecutorInfo& executorInfo,
     const string& directory,
     const Option<string>& user,
-    const Option<string>& rootfs)
+    const Option<ProvisionInfo>& provisionInfo)
 {
   CHECK(infos.contains(containerId));
 
@@ -360,7 +366,7 @@ Future<Option<ContainerPrepareInfo>> LinuxFilesystemIsolatorProcess::__prepare(
   ContainerPrepareInfo prepareInfo;
   prepareInfo.set_namespaces(CLONE_NEWNS);
 
-  if (rootfs.isSome()) {
+  if (provisionInfo.isSome()) {
     // If the container changes its root filesystem, we need to mount
     // the container's work directory into its root filesystem
     // (creating it if needed) so that the executor and the task can
@@ -372,18 +378,18 @@ Future<Option<ContainerPrepareInfo>> LinuxFilesystemIsolatorProcess::__prepare(
     // can update persistent volumes for the container.
 
     // This is the mount point of the work directory in the root filesystem.
-    const string sandbox = path::join(rootfs.get(), flags.sandbox_directory);
+    const string sandbox = path::join(
+        provisionInfo.get().rootfs,
+        flags.sandbox_directory);
 
     // Save the path 'sandbox' which will be used in 'cleanup()'.
     info->sandbox = sandbox;
 
-    if (!os::exists(sandbox)) {
-      Try<Nothing> mkdir = os::mkdir(sandbox);
-      if (mkdir.isError()) {
-        return Failure(
-            "Failed to create sandbox mount point at '" +
-            sandbox + "': " + mkdir.error());
-      }
+    Try<Nothing> mkdir = os::mkdir(sandbox);
+    if (mkdir.isError()) {
+      return Failure(
+          "Failed to create sandbox mount point at '" +
+          sandbox + "': " + mkdir.error());
     }
 
     LOG(INFO) << "Bind mounting work directory from '" << directory
@@ -428,14 +434,15 @@ Future<Option<ContainerPrepareInfo>> LinuxFilesystemIsolatorProcess::__prepare(
           "' as a shared mount: " + mount.error());
     }
 
-    prepareInfo.set_rootfs(rootfs.get());
+    prepareInfo.set_rootfs(provisionInfo.get().rootfs);
   }
 
   // Prepare the commands that will be run in the container's mount
   // namespace right after forking the executor process. We use these
   // commands to mount those volumes specified in the container info
   // so that they don't pollute the host mount namespace.
-  Try<string> _script = script(containerId, executorInfo, directory, rootfs);
+  Try<string> _script =
+    script(containerId, executorInfo, directory, provisionInfo);
   if (_script.isError()) {
     return Failure("Failed to generate isolation script: " + _script.error());
   }
@@ -454,7 +461,7 @@ Try<string> LinuxFilesystemIsolatorProcess::script(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
     const string& directory,
-    const Option<string>& rootfs)
+    const Option<ProvisionInfo>& provisionInfo)
 {
   ostringstream out;
   out << "#!/bin/sh\n";
@@ -462,7 +469,14 @@ Try<string> LinuxFilesystemIsolatorProcess::script(
 
   // Make sure mounts in the container mount namespace do not
   // propagate back to the host mount namespace.
-  out << "mount --make-rslave /\n";
+  // NOTE: We cannot simply run `mount --make-rslave /`, for more info
+  // please refer to comments in mount.hpp.
+  MesosContainerizerMount::Flags mountFlags;
+  mountFlags.operation = MesosContainerizerMount::MAKE_RSLAVE;
+  mountFlags.path = "/";
+  out << path::join(flags.launcher_dir, "mesos-containerizer") << " "
+      << MesosContainerizerMount::NAME << " "
+      << stringify(mountFlags) << "\n";
 
   // Try to unmount work directory mounts and persistent volume mounts
   // for other containers to release the extra references to them.
@@ -522,24 +536,24 @@ Try<string> LinuxFilesystemIsolatorProcess::script(
       // work directory because a user can potentially use a container
       // path like '../../abc'.
 
-      if (!os::exists(source)) {
-        Try<Nothing> mkdir = os::mkdir(source);
-        if (mkdir.isError()) {
-          return Error(
-              "Failed to create the source of the mount at '" +
-              source + "': " + mkdir.error());
-        }
-
-        // TODO(idownes): Consider setting ownership and mode.
+      Try<Nothing> mkdir = os::mkdir(source);
+      if (mkdir.isError()) {
+        return Error(
+            "Failed to create the source of the mount at '" +
+            source + "': " + mkdir.error());
       }
+
+      // TODO(idownes): Consider setting ownership and mode.
     }
 
     // Determine the target of the mount.
     string target;
 
     if (strings::startsWith(volume.container_path(), "/")) {
-      if (rootfs.isSome()) {
-        target = path::join(rootfs.get(), volume.container_path());
+      if (provisionInfo.isSome()) {
+        target = path::join(
+            provisionInfo.get().rootfs,
+            volume.container_path());
       } else {
         target = volume.container_path();
       }
@@ -555,8 +569,8 @@ Try<string> LinuxFilesystemIsolatorProcess::script(
       // 'rootfs' because a user can potentially use a container path
       // like '/../../abc'.
     } else {
-      if (rootfs.isSome()) {
-        target = path::join(rootfs.get(),
+      if (provisionInfo.isSome()) {
+        target = path::join(provisionInfo.get().rootfs,
                             flags.sandbox_directory,
                             volume.container_path());
       } else {
@@ -567,13 +581,11 @@ Try<string> LinuxFilesystemIsolatorProcess::script(
       // sandbox because a user can potentially use a container path
       // like '../../abc'.
 
-      if (!os::exists(target)) {
-        Try<Nothing> mkdir = os::mkdir(target);
-        if (mkdir.isError()) {
-          return Error(
-              "Failed to create the target of the mount at '" +
-              target + "': " + mkdir.error());
-        }
+      Try<Nothing> mkdir = os::mkdir(target);
+      if (mkdir.isError()) {
+        return Error(
+            "Failed to create the target of the mount at '" +
+            target + "': " + mkdir.error());
       }
     }
 
@@ -705,9 +717,8 @@ Future<Nothing> LinuxFilesystemIsolatorProcess::update(
     // user/group of the persistent volumes.
     struct stat s;
     if (::stat(info->directory.c_str(), &s) < 0) {
-      return Failure(
-          "Failed to get ownership for '" + info->directory +
-          "': " + strerror(errno));
+      return Failure("Failed to get ownership for '" + info->directory + "': " +
+                     os::strerror(errno));
     }
 
     LOG(INFO) << "Changing the ownership of the persistent volume at '"

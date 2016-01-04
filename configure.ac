@@ -18,7 +18,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.61])
-AC_INIT([mesos], [0.26.0])
+AC_INIT([mesos], [0.27.0])
 
 # Have autoconf setup some variables related to the system.
 AC_CANONICAL_HOST
@@ -298,6 +298,9 @@ case "${target_os}" in
   darwin*)
     OS_NAME=darwin
     ;;
+  freebsd*)
+    OS_NAME=freebsd
+    ;;
   *)
     AC_MSG_ERROR("Mesos is currently unsupported on your platform.")
 esac
@@ -305,6 +308,7 @@ esac
 
 # Used for conditionally including source files.
 AM_CONDITIONAL([OS_LINUX], [test "x$OS_NAME" = "xlinux"])
+AM_CONDITIONAL([OS_FREEBSD], [test "x$OS_NAME" = "xfreebsd"])
 
 
 # Default to gcc toolchain (we rely on some atomic builtins for now,
@@ -602,10 +606,21 @@ case "$host_os" in
       CXXFLAGS="$CXXFLAGS -stdlib=libc++"
     fi
 
-    # GTEST on OSX needs its own tr1 tuple.
+    # GTEST on OSX and FreeBSD needs its own tr1 tuple.
     CXXFLAGS="$CXXFLAGS -DGTEST_USE_OWN_TR1_TUPLE=1 -DGTEST_LANG_CXX11"
     ;;
+  freebsd* )
+    # If we're using clang, we need to pass -stdlib=libc++ too.
+    if test "x$ax_cv_cxx_compiler_vendor" = "xclang"; then
+      CXXFLAGS="$CXXFLAGS -stdlib=libc++"
+    fi
+
+    # FreeBSD needs GTEST_HAS_PTHREAD for this version of gmock/gtest and
+    # _WITH_GETLINE for getline().
+    CXXFLAGS="$CXXFLAGS -DGTEST_HAS_PTHREAD -D_WITH_GETLINE"
+    ;;
 esac
+
 
 # Also pass the flags to 3rdparty libraries.
 CONFIGURE_ARGS="$CONFIGURE_ARGS CXXFLAGS='$CXXFLAGS'"
@@ -616,7 +631,11 @@ AX_PTHREAD([], [AC_MSG_ERROR([failed to find pthreads])])
 
 
 # Check for libunwind, and link it in if present.
-AC_CHECK_LIB(unwind, backtrace, LIBS="$LIBS -lunwind")
+if test "x$OS_NAME" = "xfreebsd"; then
+  AC_CHECK_LIB(execinfo, backtrace, LIBS="$LIBS -lexecinfo")
+else
+  AC_CHECK_LIB(unwind, backtrace, LIBS="$LIBS -lunwind")
+fi
 
 
 # Check if zlib prefix path was provided, and if so, add it to
@@ -984,6 +1003,16 @@ __EOF__
     JAVA_JVM_LIBRARY=$dir/libjvm.dylib
   elif test "$OS_NAME" = "linux"; then
     for arch in amd64 i386 arm aarch64 ppc64 ppc64le s390 s390x; do
+      dir="$JAVA_HOME/jre/lib/$arch/server"
+      if test -e "$dir"; then
+	# Note that these are libtool specific flags.
+	JAVA_TEST_LDFLAGS="-L$dir -R$dir -Wl,-ljvm"
+	JAVA_JVM_LIBRARY=$dir/libjvm.so
+	break;
+      fi
+    done
+  elif test "$OS_NAME" = "freebsd"; then
+    for arch in amd64 i386 arm; do
       dir="$JAVA_HOME/jre/lib/$arch/server"
       if test -e "$dir"; then
 	# Note that these are libtool specific flags.
@@ -1419,12 +1448,21 @@ if test "x$without_bundled_protobuf" = "xyes" || \
   fi
 
   # Check for protobuf.
-  # TODO(jieyu): Symbol _init is not available for libs on OS X.
-  # Consider checking lib using AX_CXX_CHECK_LIB.
-  AC_CHECK_HEADERS([google/protobuf/message.h],
-                   [AC_CHECK_LIB([protobuf],
-                                 [_init],
-                                 [found_protobuf=yes])])
+
+  AC_CHECK_HEADERS([google/protobuf/message.h], [found_protobuf=yes],
+                   [found_protobuf=no])
+
+  if test "x$found_protobuf" = "xyes"; then
+    saved_LIBS="$LIBS"
+    LIBS="-lprotobuf $LIBS"
+    AC_LANG_PUSH([C++])
+    AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <google/protobuf/stubs/common.h>],
+                    [ google::protobuf::ShutdownProtobufLibrary(); ])],
+            [ found_protobuf=yes ],
+            [ found_protobuf=no ])
+    AC_LANG_POP()
+    LIBS="$saved_LIBS"
+  fi
 
   if test "x$found_protobuf" = "xyes"; then
     with_bundled_protobuf=no

@@ -101,6 +101,150 @@ int main(int argc, char** argv)
 ---->
 
 
+### `defer`
+
+Objects like `Future` allow attaching callbacks that get executed
+_synchronously_ on certain events, such as the completion of a future
+(e.g., `Future::then` and `Future::onReady`) or the failure of a
+future (e.g., `Future::onFailed`). It's usually desireable, however, to
+execute these callbacks _asynchronously_, and `defer` provides a mechanism
+to do so.
+
+`defer` is similar to [`dispatch`](#dispatch), but rather than
+enqueing the execution of a method or function on the specified
+process immediately (i.e., synchronously), it returns a `Deferred`,
+which is a callable object that only after getting _invoked_ will
+dispatch the method or function on the specified process. Said another
+way, using `defer` is a way to _defer_ a `dispatch`.
+
+As an example, consider the following function, which spawns a process
+and registers two callbacks on it, one using `defer` and another
+without it:
+
+~~~{.cpp}
+using namespace process;
+
+void foo()
+{
+  ProcessBase process;
+  spawn(process);
+
+  Deferred<void(int)> deferred = defer(
+      process,
+      [](int i) {
+        // Invoked _asynchronously_ using `process` as the
+        // execution context.
+      });
+
+  Promise<int> promise;
+
+  promise.future().then(deferred);
+
+  promise.future().then([](int i) {
+    // Invoked synchronously from the execution context of
+    // the thread that completes the future!
+  });
+
+  // Executes both callbacks synchronously, which _dispatches_
+  // the deferred lambda to run asynchronously in the execution
+  // context of `process` but invokes the other lambda immediately.
+  promise.set(42);
+
+  terminate(process);
+}
+~~~
+
+As another example, consider this excerpt from the Mesos project's
+`src/master/master.cpp`:
+
+~~~{.cpp}
+// Start contending to be a leading master and detecting the current leader.
+// NOTE: `.onAny` passes the relevant future to its callback as a parameter, and
+// `lambda::_1` facilitates this when using `defer`.
+contender->contend()
+  .onAny(defer(self(), &Master::contended, lambda::_1));
+~~~
+
+Why use `defer` in this context rather than just executing
+`Master::detected` synchronously? To answer this, we need to remember
+that when the promise associated with the future returned from
+`contender->contend()` is completed that will synchronously invoke all
+registered callbacks (i.e., the `Future::onAny` one in the example
+above), _which may be in a different process_! Without using `defer`
+the process responsible for executing `contender->contend()` will
+potentially cause `&Master::contended` to get executed simultaneously
+(i.e., on a different thread) than the `Master` process! This creates
+the potential for a data race in which two threads access members of
+`Master` concurrently. Instead, using `defer` (with `self()`) will
+dispatch the method _back_ to the `Master` process to be executed at a
+later point in time within the single-threaded execution context of
+the `Master`. Using `defer` here precisely allows us to capture these
+semantics.
+
+A natural question that folks often ask is whether or not we ever
+_don't_ want to use `defer(self(), ...)`, or even just 'defer`. In
+some circumstances, you actually don't need to defer back to your own
+process, but you often want to defer. A good example of that is
+handling HTTP requests. Consider this example:
+
+~~~{.cpp}
+using namespace process;
+
+using std::string;
+
+class HttpProcess : public Process<HttpProcess>
+{
+public:
+  virtual void initialize()
+  {
+    route("/route", None(), [](const http::Request& request) {
+      return functionWhichReturnsAFutureOfString()
+        .then(defer(self(), [](const string& s) {
+          return http::OK("String returned in body: " + s);
+        }));
+    });
+  }
+};
+~~~
+
+Now, while this is totally legal and correct code, the callback
+executed after `functionWhichReturnsAFutureOfString` is completed
+_does not_ need to be executed within the execution context of
+`HttpProcess` because it doesn't require any state from `HttpProcess`!
+In this case, rather than forcing the execution of the callback within
+the execution context of `HttpProcess`, which will block other
+callbacks _that must_ be executed by `HttpProcess`, we can simply just
+run this lambda using an execution context that libprocess can pick
+for us (from a pool of threads). We do so by removing `self()` as the
+first argument to `defer`:
+
+~~~{.cpp}
+using namespace process;
+
+using std::string;
+
+class HttpProcess : public Process<HttpProcess>
+{
+public:
+  virtual void initialize()
+  {
+    route("/route", None(), [](const http::Request& request) {
+      return functionWhichReturnsAFutureOfString()
+        .then(defer([](const string& s) {
+          return http::OK("String returned in body: " + s);
+        }));
+    });
+  }
+};
+~~~
+
+_Note that even in this example_ we still want to use `defer`! Why?
+Because otherwise we are blocking the execution context (i.e.,
+process, thread, etc) that is _completing_ the future because it is
+synchronously executing the callbacks! Instead, we want to let the
+callback get executed asynchronously by using `defer.`
+
+
 ### `ID`
 
 Generates a unique identifier string given a prefix. This is used to
@@ -183,7 +327,7 @@ int main(int argc, char** argv)
 ~~~
 
 Note that the templated type of the future must be the exact
-same as the promise, you can not create a covariant or
+same as the promise: you cannot create a covariant or
 contravariant future. Unlike `Promise`, a `Future` can be both
 copied and assigned:
 
@@ -315,67 +459,194 @@ int main(int argc, char** argv)
 ~~~
 
 
-### `defer`
-
-`defer` allows the caller to postpone the decision whether to [dispatch](#dispatch) something by creating a callable object which can perform the dispatch at a later point in time.
-
-~~~{.cpp}
-using namespace process;
-
-class SomeProcess : public Process<SomeProcess>
-{
-public:
-  void merge()
-  {
-    queue.get()
-      .then(defer(self(), [] (int i) {
-        ...;
-      }));
-  }
-
-private:
-  Queue<int> queue;
-};
-~~~
 -->
 
----
+## `HTTP`
 
-## HTTP
+libprocess provides facilities for communicating between actors via HTTP
+messages. With the advent of the HTTP API, HTTP is becoming the preferred mode
+of communication.
 
 ### `route`
 
-`route` installs an http endpoint onto a process.
+`route` installs an HTTP endpoint onto a process. Let's define a simple process
+that installs an endpoint upon initialization:
 
-<!---
 ~~~{.cpp}
 using namespace process;
 using namespace process::http;
 
-class QueueProcess : public Process<QueueProcess>
+class HttpProcess : public Process<HttpProcess>
 {
-public:
-  QueueProcess() : ProcessBase("queue") {}
-
-  virtual void initialize() {
-    route("/enqueue", [] (Request request)
-    {
-      // Parse argument from 'request.query' or 'request.body.
-      enqueue(arg);
-      return OK();
+protected:
+  virtual void initialize()
+  {
+    route("/testing", None(), [](const Request& request) {
+      return testing(request.query);
     });
   }
 };
 
-// $ curl localhost:1234/queue/enqueue?value=42
+
+class Http
+{
+public:
+  Http() : process(new HttpProcess())
+  {
+    spawn(process.get());
+  }
+
+  virtual ~Http()
+  {
+    terminate(process.get());
+    wait(process.get());
+  }
+
+  Owned<HttpProcess> process;
+};
 ~~~
----->
 
----
+Now if our program instantiates this class, we can do something like:
+`$ curl localhost:1234/testing?value=42`
 
-## Testing
+Note that the port at which this endpoint can be reached is the port libprocess
+has bound to, which is determined by the `LIBPROCESS_PORT` environment variable.
+In the case of the Mesos master or agent, this environment variable is set
+according to the `--port` command-line flag.
 
----
+### `get`
+
+`get` will hit an HTTP endpoint with a GET request and return a `Future`
+containing the response. We can pass it either a libprocess `UPID` or a `URL`.
+Here's an example hitting the endpoint assuming we have a `UPID` named `upid`:
+
+~~~{.cpp}
+Future<Response> future = get(upid, "testing");
+~~~
+
+Or let's assume our serving process has been set up on a remote server and we
+want to hit its endpoint. We'll construct a `URL` for the address and then call
+`get`:
+
+~~~{.cpp}
+URL url = URL("http", "hostname", 1234, "/testing");
+
+Future<Response> future = get(url);
+~~~
+
+### `post` and `requestDelete`
+
+The `post` and `requestDelete` functions will similarly send POST and DELETE
+requests to an HTTP endpoint. Their invocation is analogous to `get`.
+
+### `Connection`
+
+A `Connection` represents a connection to an HTTP server. `connect`
+can be used to connect to a server, and returns a `Future` containing the
+`Connection`. Let's open a connection to a server and send some requests:
+
+~~~{.cpp}
+Future<Connection> connect = connect(url);
+
+connect.await();
+
+Connection connection = connect.get();
+
+Request request;
+request.method = "GET";
+request.url = url;
+request.body = "Amazing prose goes here.";
+request.keepAlive = true;
+
+Future<Response> response = connection.send(request);
+~~~
+
+It's also worth noting that if multiple requests are sent in succession on a
+`Connection`, they will be automatically pipelined.
+
+## Clock Management and Timeouts
+
+Asynchronous programs often use timeouts, e.g., because a process that initiates
+an asynchronous operation wants to take action if the operation hasn't completed
+within a certain time bound. To facilitate this, libprocess provides a set of
+abstractions that simplify writing timeout logic. Importantly, test code has the
+ability to manipulate the clock, in order to ensure that timeout logic is
+exercised (without needing to block the test program until the appropriate
+amount of system time has elapsed).
+
+To invoke a function after a certain amount of time has elapsed, use `delay`:
+
+~~~{.cpp}
+using namespace process;
+
+class DelayedProcess : public Process<DelayedProcess>
+{
+public:
+  void action(const string& name)
+  {
+    LOG(INFO) << "hello, " << name;
+
+    promise.set(Nothing());
+  }
+
+  Promise<Nothing> promise;
+};
+
+
+int main()
+{
+  DelayedProcess process;
+
+  spawn(process);
+
+  LOG(INFO) << "Starting to wait";
+
+  delay(Seconds(5), process.self(), &DelayedProcess::action, "Neil");
+
+  AWAIT_READY(process.promise.future());
+
+  LOG(INFO) << "Done waiting";
+
+  terminate(process);
+  wait(process);
+
+  return 0;
+}
+~~~
+
+This invokes the `action` function after (at least) five seconds of time
+have elapsed. When writing unit tests for this code, blocking the test for five
+seconds is undesirable. To avoid this, we can use `Clock::advance`:
+
+~~~{.cpp}
+
+int main()
+{
+  DelayedProcess process;
+
+  spawn(process);
+
+  LOG(INFO) << "Starting to wait";
+
+  Clock::pause();
+
+  delay(Seconds(5), process.self(), &DelayedProcess::action, "Neil");
+
+  Clock::advance(Seconds(5));
+
+  AWAIT_READY(process.promise.future());
+
+  LOG(INFO) << "Done waiting";
+
+  terminate(process);
+  wait(process);
+
+  Clock::resume();
+
+  return 0;
+}
+~~~
+
 
 ## Miscellaneous Primitives
 

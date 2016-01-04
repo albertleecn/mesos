@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <signal.h> // For sigaction(), sigemptyset().
 #include <string.h> // For strsignal().
@@ -87,9 +85,6 @@ inline void handler(int signal, siginfo_t *siginfo, void *context)
     // a stack trace.
     os::signals::reset(signal);
     raise(signal);
-  } else if (signal == SIGPIPE) {
-    RAW_LOG(WARNING, "Received signal SIGPIPE; escalating to SIGABRT");
-    raise(SIGABRT);
   } else {
     RAW_LOG(FATAL, "Unexpected signal in signal handler: %d", signal);
   }
@@ -192,13 +187,6 @@ void initialize(
     // The SA_SIGINFO flag tells sigaction() to use
     // the sa_sigaction field, not sa_handler.
     action.sa_flags = SA_SIGINFO;
-
-    // Set up the SIGPIPE signal handler to escalate to SIGABRT
-    // in order to have the glog handler catch it and print all
-    // of its lovely information.
-    if (sigaction(SIGPIPE, &action, NULL) < 0) {
-      PLOG(FATAL) << "Failed to set sigaction";
-    }
 
     // We also do not want SIGTERM to dump a stacktrace, as this
     // can imply that we crashed, when we were in fact terminated

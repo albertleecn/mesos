@@ -1,27 +1,25 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <vector>
 
 #include <mesos/resources.hpp>
 #include <mesos/scheduler.hpp>
 
+#include <process/clock.hpp>
 #include <process/gtest.hpp>
 
 #include <stout/gtest.hpp>
@@ -44,6 +42,7 @@ using mesos::internal::master::Master;
 
 using mesos::internal::slave::Fetcher;
 using mesos::internal::slave::MesosContainerizer;
+using mesos::internal::slave::MesosContainerizerProcess;
 using mesos::internal::slave::Slave;
 
 using std::vector;
@@ -133,16 +132,16 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
 
   ContainerID containerId = *(containers.get().begin());
 
+  // Wait a while for some memory pressure events to occur.
   Duration waited = Duration::zero();
   do {
     Future<ResourceStatistics> usage = containerizer.get()->usage(containerId);
     AWAIT_READY(usage);
 
     if (usage.get().mem_low_pressure_counter() > 0) {
-      EXPECT_GE(usage.get().mem_low_pressure_counter(),
-                usage.get().mem_medium_pressure_counter());
-      EXPECT_GE(usage.get().mem_medium_pressure_counter(),
-                usage.get().mem_critical_pressure_counter());
+      // We will check the correctness of the memory pressure counters
+      // later, because the memory-hammering task is still active
+      // and potentially incrementing these counters.
       break;
     }
 
@@ -151,6 +150,23 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_Statistics)
   } while (waited < Seconds(5));
 
   EXPECT_LE(waited, Seconds(5));
+
+  // Stop the memory-hammering task.
+  driver.killTask(task.task_id());
+
+  // Process any queued up events through before proceeding.
+  process::Clock::pause();
+  process::Clock::settle();
+  process::Clock::resume();
+
+  // Now check the correctness of the memory pressure counters.
+  Future<ResourceStatistics> usage = containerizer.get()->usage(containerId);
+  AWAIT_READY(usage);
+
+  EXPECT_GE(usage.get().mem_low_pressure_counter(),
+            usage.get().mem_medium_pressure_counter());
+  EXPECT_GE(usage.get().mem_medium_pressure_counter(),
+            usage.get().mem_critical_pressure_counter());
 
   driver.stop();
   driver.join();
@@ -227,34 +243,21 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
   Stop(slave.get());
   delete containerizer1.get();
 
-  Future<Nothing> _recover = FUTURE_DISPATCH(_, &Slave::_recover);
-
-  Future<SlaveReregisteredMessage> slaveReregisteredMessage =
-    FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
+  // Set up so we can wait until the new slave updates the container's
+  // resources (this occurs after the executor has re-registered).
+  Future<Nothing> update =
+    FUTURE_DISPATCH(_, &MesosContainerizerProcess::update);
 
   // Use the same flags.
   Try<MesosContainerizer*> containerizer2 =
     MesosContainerizer::create(flags, true, &fetcher);
-
   ASSERT_SOME(containerizer2);
 
   slave = StartSlave(containerizer2.get(), flags);
   ASSERT_SOME(slave);
 
-  Clock::pause();
-
-  AWAIT_READY(_recover);
-
-  // Wait for slave to schedule reregister timeout.
-  Clock::settle();
-
-  // Ensure the slave considers itself recovered.
-  Clock::advance(slave::EXECUTOR_REREGISTER_TIMEOUT);
-
-  Clock::resume();
-
-  // Wait for the slave to re-register.
-  AWAIT_READY(slaveReregisteredMessage);
+  // Wait until the containerizer is updated.
+  AWAIT_READY(update);
 
   Future<hashset<ContainerID>> containers = containerizer2.get()->containers();
   AWAIT_READY(containers);
@@ -262,16 +265,16 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
 
   ContainerID containerId = *(containers.get().begin());
 
+  // Wait a while for some memory pressure events to occur.
   Duration waited = Duration::zero();
   do {
     Future<ResourceStatistics> usage = containerizer2.get()->usage(containerId);
     AWAIT_READY(usage);
 
     if (usage.get().mem_low_pressure_counter() > 0) {
-      EXPECT_GE(usage.get().mem_low_pressure_counter(),
-                usage.get().mem_medium_pressure_counter());
-      EXPECT_GE(usage.get().mem_medium_pressure_counter(),
-                usage.get().mem_critical_pressure_counter());
+      // We will check the correctness of the memory pressure counters
+      // later, because the memory-hammering task is still active
+      // and potentially incrementing these counters.
       break;
     }
 
@@ -280,6 +283,23 @@ TEST_F(MemoryPressureMesosTest, CGROUPS_ROOT_SlaveRecovery)
   } while (waited < Seconds(5));
 
   EXPECT_LE(waited, Seconds(5));
+
+  // Stop the memory-hammering task.
+  driver.killTask(task.task_id());
+
+  // Process any queued up events through before proceeding.
+  process::Clock::pause();
+  process::Clock::settle();
+  process::Clock::resume();
+
+  // Now check the correctness of the memory pressure counters.
+  Future<ResourceStatistics> usage = containerizer2.get()->usage(containerId);
+  AWAIT_READY(usage);
+
+  EXPECT_GE(usage.get().mem_low_pressure_counter(),
+            usage.get().mem_medium_pressure_counter());
+  EXPECT_GE(usage.get().mem_medium_pressure_counter(),
+            usage.get().mem_critical_pressure_counter());
 
   driver.stop();
   driver.join();

@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <mesos/type_utils.hpp>
 
@@ -22,9 +20,6 @@
 #include <process/defer.hpp>
 #include <process/dispatch.hpp>
 #include <process/process.hpp>
-
-#include <process/metrics/counter.hpp>
-#include <process/metrics/metrics.hpp>
 
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
@@ -51,62 +46,6 @@ using mesos::slave::ContainerState;
 namespace mesos {
 namespace internal {
 namespace slave {
-
-class ProvisionerProcess : public Process<ProvisionerProcess>
-{
-public:
-  ProvisionerProcess(
-      const Flags& flags,
-      const string& rootDir,
-      const hashmap<Image::Type, Owned<Store>>& stores,
-      const hashmap<string, Owned<Backend>>& backends);
-
-  Future<Nothing> recover(
-      const list<ContainerState>& states,
-      const hashset<ContainerID>& orphans);
-
-  Future<string> provision(
-      const ContainerID& containerId,
-      const Image& image);
-
-  Future<bool> destroy(const ContainerID& containerId);
-
-private:
-  Future<string> _provision(
-      const ContainerID& containerId,
-      const vector<string>& layers);
-
-  Future<bool> _destroy(const ContainerID& containerId);
-
-  const Flags flags;
-
-  // Absolute path to the provisioner root directory. It can be
-  // derived from '--work_dir' but we keep a separate copy here
-  // because we converted it into an absolute path so managed rootfs
-  // paths match the ones in 'mountinfo' (important if mount-based
-  // backends are used).
-  const string rootDir;
-
-  const hashmap<Image::Type, Owned<Store>> stores;
-  const hashmap<string, Owned<Backend>> backends;
-
-  struct Info
-  {
-    // Mappings: backend -> {rootfsId, ...}
-    hashmap<string, hashset<string>> rootfses;
-  };
-
-  hashmap<ContainerID, Owned<Info>> infos;
-
-  struct Metrics
-  {
-    Metrics();
-    ~Metrics();
-
-    process::metrics::Counter remove_container_errors;
-  } metrics;
-};
-
 
 Try<Owned<Provisioner>> Provisioner::create(
     const Flags& flags,
@@ -183,7 +122,7 @@ Future<Nothing> Provisioner::recover(
 }
 
 
-Future<string> Provisioner::provision(
+Future<ProvisionInfo> Provisioner::provision(
     const ContainerID& containerId,
     const Image& image)
 {
@@ -311,7 +250,7 @@ Future<Nothing> ProvisionerProcess::recover(
 }
 
 
-Future<string> ProvisionerProcess::provision(
+Future<ProvisionInfo> ProvisionerProcess::provision(
     const ContainerID& containerId,
     const Image& image)
 {
@@ -327,9 +266,9 @@ Future<string> ProvisionerProcess::provision(
 }
 
 
-Future<string> ProvisionerProcess::_provision(
+Future<ProvisionInfo> ProvisionerProcess::_provision(
     const ContainerID& containerId,
-    const vector<string>& layers)
+    const ImageInfo& ImageInfo)
 {
   // TODO(jieyu): Choose a backend smartly. For instance, if there is
   // only one layer returned from the store. prefer to use bind
@@ -356,8 +295,10 @@ Future<string> ProvisionerProcess::_provision(
 
   infos[containerId]->rootfses[backend].insert(rootfsId);
 
-  return backends.get(backend).get()->provision(layers, rootfs)
-    .then([rootfs]() -> Future<string> { return rootfs; });
+  return backends.get(backend).get()->provision(ImageInfo.layers, rootfs)
+    .then([rootfs, ImageInfo]() -> Future<ProvisionInfo> {
+      return ProvisionInfo{rootfs, ImageInfo.runtimeConfig};
+    });
 }
 
 

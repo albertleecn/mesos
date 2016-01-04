@@ -1,26 +1,22 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#include <signal.h>
-
-#include <gtest/gtest.h>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <string>
+
+#include <gtest/gtest.h>
 
 #include <process/process.hpp>
 
@@ -28,8 +24,6 @@
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
 #include <stout/try.hpp>
-
-#include <stout/os/signals.hpp>
 
 #include "logging/logging.hpp"
 
@@ -86,14 +80,6 @@ int main(int argc, char** argv)
 
   // Initialize logging.
   logging::initialize(argv[0], flags, true);
-
-  // We reset the signal handler setup by 'logging::initialize()'
-  // because some Mesos tests run an in-process ZooKeeper which
-  // results in SIGPIPE during ZooKeeeper server shutdown. See
-  // MESOS-1729 for details. This is ok because if a non-ZooKeeper
-  // test throws a SIGPIPE the default handler will still terminate
-  // the process, thus not masking SIGPIPE issues elsewhere.
-  os::signals::reset(SIGPIPE);
 
   // Initialize gmock/gtest.
   testing::InitGoogleTest(&argc, argv);

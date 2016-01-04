@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #ifndef __PROCESS_PROCESS_HPP__
 #define __PROCESS_PROCESS_HPP__
@@ -39,6 +37,9 @@
 #include <stout/thread_local.hpp>
 
 namespace process {
+
+// Forward declaration.
+class Sequence;
 
 namespace firewall {
 
@@ -237,6 +238,52 @@ protected:
   }
 
   /**
+   * Any function which takes a `process::http::Request` and an
+   * `Option<std::string>` principal and returns a
+   * `process::http::Response`.
+   *
+   * If the authentication principal string is set, the realm
+   * requires authentication and authentication succeeded. If
+   * it is not set, the realm does not require authentication.
+   *
+   * The default visit implementation for HTTP events invokes
+   * installed HTTP handlers.
+   *
+   * @see process::ProcessBase::route
+   */
+  // TODO(arojas): Consider introducing an `authentication::Principal` type.
+  typedef lambda::function<Future<http::Response>(
+      const http::Request&, const Option<std::string>&)>
+      AuthenticatedHttpRequestHandler;
+
+  // TODO(arojas): Consider introducing an `authentication::Realm` type.
+  void route(
+      const std::string& name,
+      const std::string& realm,
+      const Option<std::string>& help,
+      const AuthenticatedHttpRequestHandler& handler);
+
+  /**
+   * @copydoc process::ProcessBase::route
+   */
+  template <typename T>
+  void route(
+      const std::string& name,
+      const std::string& realm,
+      const Option<std::string>& help,
+      Future<http::Response> (T::*method)(
+          const http::Request&,
+          const Option<std::string>&))
+  {
+    // Note that we use dynamic_cast here so a process can use
+    // multiple inheritance if it sees so fit (e.g., to implement
+    // multiple callback interfaces).
+    AuthenticatedHttpRequestHandler handler =
+      lambda::bind(method, dynamic_cast<T*>(this), lambda::_1, lambda::_2);
+    route(name, realm, help, handler);
+  }
+
+  /**
    * Sets up the default HTTP request handler to provide the static
    * asset(s) at the specified _absolute_ path for the specified name.
    *
@@ -312,10 +359,37 @@ private:
   // Delegates for messages.
   std::map<std::string, UPID> delegates;
 
+  // Definition of an HTTP endpoint. The endpoint can be
+  // associated with an authentication realm, in which case:
+  //
+  //  (1) `realm` and `authenticatedHandler` will be set.
+  //      Libprocess will perform HTTP authentication for
+  //      all requests to this endpoint (by default during
+  //      HttpEvent visitation). The authentication principal
+  //      will be passed to the `authenticatedHandler`.
+  //
+  //  Otherwise, if the endpoint is not associated with an
+  //  authentication realm:
+  //
+  //  (2) Only `handler` will be set, and no authentication
+  //      takes place.
+  struct HttpEndpoint
+  {
+    Option<HttpRequestHandler> handler;
+
+    Option<std::string> realm;
+    Option<AuthenticatedHttpRequestHandler> authenticatedHandler;
+  };
+
   // Handlers for messages and HTTP requests.
   struct {
     std::map<std::string, MessageHandler> message;
-    std::map<std::string, HttpRequestHandler> http;
+    std::map<std::string, HttpEndpoint> http;
+
+    // Used for delivering HTTP requests in the correct order.
+    // Initialized lazily to avoid ProcessBase requiring
+    // another Process!
+    Owned<Sequence> httpSequence;
   } handlers;
 
   // Definition of a static asset.

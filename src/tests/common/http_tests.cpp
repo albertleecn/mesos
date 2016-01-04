@@ -1,24 +1,22 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#include <gtest/gtest.h>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <vector>
+
+#include <gtest/gtest.h>
 
 #include <mesos/mesos.hpp>
 #include <mesos/resources.hpp>
@@ -37,6 +35,7 @@ using namespace mesos::internal;
 
 using std::vector;
 
+using mesos::internal::protobuf::createLabel;
 using mesos::internal::protobuf::createTask;
 
 // TODO(bmahler): Add tests for other JSON models.
@@ -71,11 +70,32 @@ TEST(HTTPTest, ModelTask)
 
   statuses.push_back(status);
 
+  Labels labels;
+  labels.add_labels()->CopyFrom(createLabel("ACTION", "port:7987 DENY"));
+
+  Ports ports;
+  Port* port = ports.add_ports();
+  port->set_number(80);
+  port->set_instance_port(8081);
+  port->mutable_labels()->CopyFrom(labels);
+
+  DiscoveryInfo discovery;
+  discovery.set_visibility(DiscoveryInfo::CLUSTER);
+  discovery.set_name("discover");
+  discovery.mutable_ports()->CopyFrom(ports);
+
+  IPAddress* vip1 = discovery.add_vips()->mutable_vip();
+  vip1->set_ip_address("10.0.0.1");
+
+  IPAddress* vip2 = discovery.add_vips()->mutable_vip();
+  vip2->set_ip_address("10.0.0.2");
+
   TaskInfo task;
   task.set_name("task");
   task.mutable_task_id()->CopyFrom(taskId);
   task.mutable_slave_id()->CopyFrom(slaveId);
   task.mutable_command()->set_value("echo hello");
+  task.mutable_discovery()->CopyFrom(discovery);
 
   Task task_ = createTask(task, state, frameworkId);
   task_.add_statuses()->CopyFrom(statuses[0]);
@@ -103,7 +123,47 @@ TEST(HTTPTest, ModelTask)
       "      \"state\":\"TASK_RUNNING\","
       "      \"timestamp\":0"
       "    }"
-      "  ]"
+      "  ],"
+      " \"discovery\":"
+      " {"
+      "   \"name\":\"discover\","
+      "   \"ports\":"
+      "   {"
+      "     \"ports\":"
+      "     ["
+      "       {"
+      "         \"number\":80,"
+      "         \"labels\":"
+      "         {"
+      "           \"labels\":"
+      "           ["
+      "             {"
+      "              \"key\":\"ACTION\","
+      "              \"value\":\"port:7987 DENY\""
+      "             }"
+      "           ]"
+      "         },"
+      "         \"instance_port\":8081"
+      "       }"
+      "     ]"
+      "   },"
+      "   \"vips\":"
+      "    ["
+      "      {"
+      "        \"vip\" :"
+      "         {"
+      "           \"ip_address\":\"10.0.0.1\""
+      "         }"
+      "      },"
+      "      {"
+      "        \"vip\" :"
+      "         { "
+      "           \"ip_address\":\"10.0.0.2\""
+      "         }"
+      "      }"
+      "    ],"
+      "   \"visibility\":\"CLUSTER\""
+      " }"
       "}");
 
   ASSERT_SOME(expected);
@@ -183,6 +243,42 @@ TEST(HTTP, ModelRoleResources)
       "    \"mem\":512,"
       "    \"disk\":1024"
       "  }"
+      "}");
+
+  ASSERT_SOME(expected);
+  EXPECT_EQ(expected.get(), object);
+}
+
+// This test ensures we don't break the API when it comes to JSON
+// representation of NetworkInfo.
+TEST(HTTP, SerializeNetworkInfo)
+{
+  NetworkInfo networkInfo;
+  NetworkInfo::IPAddress* address = networkInfo.add_ip_addresses();
+  address->set_protocol(NetworkInfo::IPv4);
+  address->set_ip_address("10.0.0.1");
+  networkInfo.set_protocol(NetworkInfo::IPv6);
+  networkInfo.set_ip_address("10.0.0.2");
+  networkInfo.add_groups("foo");
+  networkInfo.add_groups("bar");
+
+  JSON::Value object = JSON::protobuf(networkInfo);
+
+  Try<JSON::Value> expected = JSON::parse(
+      "{"
+      "  \"ip_addresses\":"
+      "  ["
+      "    {"
+      "      \"protocol\": \"IPv4\","
+      "      \"ip_address\": \"10.0.0.1\""
+      "    }"
+      "  ],"
+      "  \"protocol\": \"IPv6\","
+      "  \"ip_address\": \"10.0.0.2\","
+      "  \"groups\": ["
+      "    \"foo\","
+      "    \"bar\""
+      "  ]"
       "}");
 
   ASSERT_SOME(expected);

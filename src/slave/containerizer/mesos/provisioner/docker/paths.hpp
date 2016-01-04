@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __PROVISIONER_DOCKER_PATHS_HPP__
 #define __PROVISIONER_DOCKER_PATHS_HPP__
@@ -34,15 +32,21 @@ namespace paths {
  * The Docker store file system layout is as follows:
  * Image store dir ('--docker_store_dir' slave flag)
  *    |--staging
+ *       |-- repositories(containing all images info as JSON)
  *       |-- <temp_dir_archive>
  *           |-- <layer_id>
  *               |-- rootfs
+ *               |-- json(manifest)
+ *               |-- VERSION
  *    |--layers
  *       |--<layer_id>
- *           |--rootfs
+ *           |-- rootfs
+ *           |-- json(manifest)
+ *           |-- VERSION
  *    |--storedImages (file holding on cached images)
  */
 
+// TODO(gilbert): Clean up any unused method after refactoring.
 std::string getStagingDir(const std::string& storeDir);
 
 
@@ -78,6 +82,11 @@ std::string getImageArchiveLayerRootfsPath(
 
 
 std::string getImageLayerPath(
+    const std::string& storeDir,
+    const std::string& layerId);
+
+
+std::string getImageLayerManifestPath(
     const std::string& storeDir,
     const std::string& layerId);
 

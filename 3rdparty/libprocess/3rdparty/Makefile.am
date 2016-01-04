@@ -39,7 +39,6 @@ LIBEV = libev-$(LIBEV_VERSION)
 PROTOBUF = protobuf-$(PROTOBUF_VERSION)
 PICOJSON = picojson-$(PICOJSON_VERSION)
 
-
 EXTRA_DIST =			\
   $(BOOST).tar.gz		\
   $(GLOG).tar.gz		\
@@ -125,6 +124,10 @@ endif
 # gets unarchived first.
 BUILT_SOURCES += $(nodist_libgmock_la_SOURCES)
 
+GLOG_LDFLAGS = # Initialize to empty
+if OS_FREEBSD
+  GLOG_LDFLAGS += "LDFLAGS='-L/usr/local/lib -lexecinfo'"
+endif
 
 if WITH_BUNDLED_GLOG
 # NOTE: We explicitely set GTEST_CONFIG=no so that we don't attempt to
@@ -133,7 +136,7 @@ if WITH_BUNDLED_GLOG
 # when building with clang).
 $(GLOG)/libglog.la: $(GLOG)-stamp
 	cd $(GLOG) && ./configure GTEST_CONFIG=no $(CONFIGURE_ARGS) && \
-          $(MAKE) $(AM_MAKEFLAGS)
+          $(MAKE) $(AM_MAKEFLAGS) $(GLOG_LDFLAGS)
 endif
 
 if HAS_GPERFTOOLS
@@ -159,7 +162,6 @@ stout_tests_SOURCES =				\
   $(STOUT)/tests/bits_tests.cpp			\
   $(STOUT)/tests/bytes_tests.cpp		\
   $(STOUT)/tests/cache_tests.cpp		\
-  $(STOUT)/tests/svn_tests.cpp			\
   $(STOUT)/tests/duration_tests.cpp		\
   $(STOUT)/tests/dynamiclibrary_tests.cpp	\
   $(STOUT)/tests/error_tests.cpp		\
@@ -175,8 +177,12 @@ stout_tests_SOURCES =				\
   $(STOUT)/tests/main.cpp			\
   $(STOUT)/tests/multimap_tests.cpp		\
   $(STOUT)/tests/none_tests.cpp			\
+  $(STOUT)/tests/numify_tests.cpp		\
   $(STOUT)/tests/option_tests.cpp		\
   $(STOUT)/tests/os_tests.cpp			\
+  $(STOUT)/tests/os/sendfile_tests.cpp		\
+  $(STOUT)/tests/os/signals_tests.cpp		\
+  $(STOUT)/tests/os/strerror_tests.cpp		\
   $(STOUT)/tests/path_tests.cpp			\
   $(STOUT)/tests/protobuf_tests.cpp		\
   $(STOUT)/tests/protobuf_tests.pb.cc		\
@@ -184,12 +190,11 @@ stout_tests_SOURCES =				\
   $(STOUT)/tests/protobuf_tests.proto		\
   $(STOUT)/tests/recordio_tests.cpp		\
   $(STOUT)/tests/result_tests.cpp		\
-  $(STOUT)/tests/os/sendfile_tests.cpp		\
-  $(STOUT)/tests/os/signals_tests.cpp		\
   $(STOUT)/tests/set_tests.cpp			\
   $(STOUT)/tests/some_tests.cpp			\
   $(STOUT)/tests/strings_tests.cpp		\
   $(STOUT)/tests/subcommand_tests.cpp		\
+  $(STOUT)/tests/svn_tests.cpp			\
   $(STOUT)/tests/try_tests.cpp			\
   $(STOUT)/tests/uuid_tests.cpp			\
   $(STOUT)/tests/version_tests.cpp
@@ -208,8 +213,11 @@ if WITH_BUNDLED_GMOCK
   stout_tests_CPPFLAGS += -I$(GMOCK)/include
 endif
 
+# We use "-isystem" instead of "-I" to add Boost to the include search
+# path. This disables compiler warnings inside Boost headers since we
+# can't easily fix them. See MESOS-3799.
 if WITH_BUNDLED_BOOST
-  stout_tests_CPPFLAGS += -I$(BOOST)
+  stout_tests_CPPFLAGS += -isystem $(BOOST)
 endif
 
 if WITH_BUNDLED_PICOJSON
@@ -218,6 +226,11 @@ if WITH_BUNDLED_PICOJSON
   # Enable the INT64 support for PicoJSON.
   stout_tests_CPPFLAGS += -DPICOJSON_USE_INT64
   stout_tests_CPPFLAGS += -D__STDC_FORMAT_MACROS
+
+  # Stout depends on <picojson.h>. Install picojson.h into $PREFIX/include
+  # but don't add it to the source tarball.
+  nodist_include_HEADERS = $(PICOJSON)/picojson.h
+  $(PICOJSON)/picojson.h: $(PICOJSON)-stamp
 endif
 
 if WITH_BUNDLED_GLOG
@@ -231,10 +244,14 @@ stout_tests_LDADD =			\
   libgmock.la				\
   $(LIBGLOG)				\
   $(LIBPROTOBUF)			\
-  -ldl					\
   -lsvn_subr-1				\
   -lsvn_delta-1				\
   -lapr-1
+
+# FreeBSD makes the dynamic linking interface available in libc
+if !OS_FREEBSD
+  stout_tests_LDADD += -ldl
+endif
 
 # We use a check-local target for now to avoid the parallel test
 # runner that ships with newer versions of autotools.

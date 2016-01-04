@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <unistd.h>
 
@@ -277,28 +275,47 @@ TEST_F(FetcherTest, RelativeFilePath)
 class HttpProcess : public Process<HttpProcess>
 {
 public:
-  HttpProcess()
+  HttpProcess() {}
+
+  MOCK_METHOD1(test, Future<http::Response>(const http::Request&));
+
+protected:
+  virtual void initialize()
   {
     route("/test", None(), &HttpProcess::test);
   }
+};
 
-  MOCK_METHOD1(test, Future<http::Response>(const http::Request&));
+
+class Http
+{
+public:
+  Http() : process(new HttpProcess())
+  {
+    spawn(process.get());
+  }
+
+  ~Http()
+  {
+    terminate(process.get());
+    wait(process.get());
+  }
+
+  Owned<HttpProcess> process;
 };
 
 
 TEST_F(FetcherTest, OSNetUriTest)
 {
-  HttpProcess process;
+  Http http;
 
-  spawn(process);
-
-  const network::Address& address = process.self().address;
+  const network::Address& address = http.process->self().address;
 
   process::http::URL url(
       "http",
       address.ip,
       address.port,
-      path::join(process.self().id, "test"));
+      path::join(http.process->self().id, "test"));
 
   string localFile = path::join(os::getcwd(), "test");
   EXPECT_FALSE(os::exists(localFile));
@@ -317,7 +334,7 @@ TEST_F(FetcherTest, OSNetUriTest)
   Fetcher fetcher;
   SlaveID slaveId;
 
-  EXPECT_CALL(process, test(_))
+  EXPECT_CALL(*http.process, test(_))
     .WillOnce(Return(http::OK()));
 
   Future<Nothing> fetch = fetcher.fetch(
@@ -335,17 +352,15 @@ TEST_F(FetcherTest, OSNetUriTest)
 // TODO(hartem): This test case should be merged with the previous one.
 TEST_F(FetcherTest, OSNetUriSpaceTest)
 {
-  HttpProcess process;
+  Http http;
 
-  spawn(process);
-
-  const network::Address& address = process.self().address;
+  const network::Address& address = http.process->self().address;
 
   process::http::URL url(
       "http",
       address.ip,
       address.port,
-      path::join(process.self().id, "test"));
+      path::join(http.process->self().id, "test"));
 
   string localFile = path::join(os::getcwd(), "test");
   EXPECT_FALSE(os::exists(localFile));
@@ -367,7 +382,7 @@ TEST_F(FetcherTest, OSNetUriSpaceTest)
   SlaveID slaveId;
 
   // Verify that the intended endpoint is hit.
-  EXPECT_CALL(process, test(_))
+  EXPECT_CALL(*http.process, test(_))
     .WillOnce(Return(http::OK()));
 
   Future<Nothing> fetch = fetcher.fetch(
@@ -492,7 +507,7 @@ TEST_F(FetcherTest, NoExtractExecutable)
 TEST_F(FetcherTest, ExtractNotExecutable)
 {
   // First construct a temporary file that can be fetched and archive
-  // with tar  gzip.
+  // with tar gzip.
   Try<string> path = os::mktemp();
 
   ASSERT_SOME(path);
@@ -502,7 +517,10 @@ TEST_F(FetcherTest, ExtractNotExecutable)
   // TODO(benh): Update os::tar so that we can capture or ignore
   // stdout/stderr output.
 
-  ASSERT_SOME(os::tar(path.get(), path.get() + ".tar.gz"));
+  // Create an uncompressed archive (see MESOS-3579), but with
+  // extension `.tar.gz` to verify we can unpack files such names.
+  ASSERT_SOME(os::shell(
+      "tar cf '" + path.get() + ".tar.gz' '" + path.get() + "' 2>&1"));
 
   ContainerID containerId;
   containerId.set_value(UUID::random().toString());
@@ -535,6 +553,49 @@ TEST_F(FetcherTest, ExtractNotExecutable)
   EXPECT_FALSE(permissions.get().owner.x);
   EXPECT_FALSE(permissions.get().group.x);
   EXPECT_FALSE(permissions.get().others.x);
+
+  ASSERT_SOME(os::rm(path.get()));
+}
+
+// Tests extracting tar file with extension .tar.
+TEST_F(FetcherTest, ExtractTar)
+{
+  // First construct a temporary file that can be fetched and archive
+  // with tar.
+  Try<string> path = os::mktemp();
+  ASSERT_SOME(path);
+
+  ASSERT_SOME(os::write(path.get(), "hello tar"));
+
+  // TODO(benh): Update os::tar so that we can capture or ignore
+  // stdout/stderr output.
+
+  // Create an uncompressed archive (see MESOS-3579).
+  ASSERT_SOME(os::shell(
+      "tar cf '" + path.get() + ".tar' '" + path.get() + "' 2>&1"));
+
+  ContainerID containerId;
+  containerId.set_value(UUID::random().toString());
+
+  CommandInfo commandInfo;
+  CommandInfo::URI* uri = commandInfo.add_uris();
+  uri->set_value(path.get() + ".tar");
+  uri->set_extract(true);
+
+  slave::Flags flags;
+  flags.launcher_dir = path::join(tests::flags.build_dir, "src");
+
+  Fetcher fetcher;
+  SlaveID slaveId;
+
+  Future<Nothing> fetch = fetcher.fetch(
+      containerId, commandInfo, os::getcwd(), None(), slaveId, flags);
+
+  AWAIT_READY(fetch);
+
+  ASSERT_TRUE(os::exists(path::join(".", path.get())));
+
+  ASSERT_SOME_EQ("hello tar", os::read(path::join(".", path.get())));
 
   ASSERT_SOME(os::rm(path.get()));
 }
@@ -599,11 +660,18 @@ TEST_F(FetcherTest, HdfsURI)
 
   const string& proof = path::join(hadoopPath, "proof");
 
-  // This acts exactly as "hadoop" for testing purposes.
+  // This acts exactly as "hadoop" for testing purposes. On some platforms, the
+  // "hadoop" wrapper command will emit a warning that Hadoop installation has
+  // no native code support. We always emit that here to make sure it is parsed
+  // correctly.
   string mockHadoopScript =
     "#!/usr/bin/env bash\n"
     "\n"
     "touch " + proof + "\n"
+    "\n"
+    "now=$(date '+%y/%m/%d %I:%M:%S')\n"
+    "echo \"$now WARN util.NativeCodeLoader: "
+      "Unable to load native-hadoop library for your platform...\" 1>&2\n"
     "\n"
     "if [[ 'version' == $1 ]]; then\n"
     "  echo $0 'for Mesos testing'\n"

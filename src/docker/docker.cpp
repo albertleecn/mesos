@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <map>
 #include <vector>
@@ -333,29 +331,75 @@ Try<Docker::Image> Docker::Image::create(const JSON::Object& json)
     return Error("Unable to find 'ContainerConfig.Entrypoint'");
   }
 
-  if (entrypoint.get().is<JSON::Null>()) {
-    return Docker::Image(None());
-  }
+  Option<vector<string>> entrypointOption = None();
 
-  if (!entrypoint.get().is<JSON::Array>()) {
-    return Error("Unexpected type found for 'ContainerConfig.Entrypoint'");
-  }
-
-  const vector<JSON::Value>& values = entrypoint.get().as<JSON::Array>().values;
-  if (values.size() == 0) {
-    return Docker::Image(None());
-  }
-
-  vector<string> result;
-
-  foreach (const JSON::Value& value, values) {
-    if (!value.is<JSON::String>()) {
-      return Error("Expecting 'ContainerConfig.EntryPoint' array of strings");
+  if (!entrypoint.get().is<JSON::Null>()) {
+    if (!entrypoint.get().is<JSON::Array>()) {
+      return Error("Unexpected type found for 'ContainerConfig.Entrypoint'");
     }
-    result.push_back(value.as<JSON::String>().value);
+
+    const vector<JSON::Value>& values =
+        entrypoint.get().as<JSON::Array>().values;
+    if (values.size() != 0) {
+      vector<string> result;
+
+      foreach (const JSON::Value& value, values) {
+        if (!value.is<JSON::String>()) {
+          return Error("Expecting entrypoint value to be type string");
+        }
+        result.push_back(value.as<JSON::String>().value);
+      }
+
+      entrypointOption = result;
+    }
   }
 
-  return Docker::Image(result);
+  Result<JSON::Value> env =
+    json.find<JSON::Value>("ContainerConfig.Env");
+
+  if (env.isError()) {
+    return Error("Failed to find 'ContainerConfig.Env': " +
+                 env.error());
+  } else if (env.isNone()) {
+    return Error("Unable to find 'ContainerConfig.Env'");
+  }
+
+  Option<map<string, string>> envOption = None();
+
+  if (!env.get().is<JSON::Null>()) {
+    if (!env.get().is<JSON::Array>()) {
+      return Error("Unexpected type found for 'ContainerConfig.Env'");
+    }
+
+    const vector<JSON::Value>& values = env.get().as<JSON::Array>().values;
+    if (values.size() != 0) {
+      map<string, string> result;
+
+      foreach (const JSON::Value& value, values) {
+        if (!value.is<JSON::String>()) {
+          return Error("Expecting environment value to be type string");
+        }
+
+        const std::vector<std::string> tokens =
+            strings::tokenize(value.as<JSON::String>().value, "=");
+
+        if (tokens.size() != 2) {
+          return Error("Unexpected Env format for 'ContainerConfig.Env'");
+        }
+
+        if (result.count(tokens[0])) {
+          return Error("Unexpected duplicate environment variables '"
+                        + tokens[0] + "'");
+        }
+
+        result[tokens[0]] = tokens[1];
+      }
+
+      envOption = result;
+    }
+  }
+
+  return Docker::Image(entrypointOption, envOption);
 }
 
 
@@ -367,8 +411,8 @@ Future<Nothing> Docker::run(
     const string& mappedDirectory,
     const Option<Resources>& resources,
     const Option<map<string, string>>& env,
-    const Option<string>& stdoutPath,
-    const Option<string>& stderrPath) const
+    const process::Subprocess::IO& stdout,
+    const process::Subprocess::IO& stderr) const
 {
   if (!containerInfo.has_docker()) {
     return Failure("No docker info found in container info");
@@ -430,13 +474,16 @@ Future<Nothing> Docker::run(
   foreach (const Volume& volume, containerInfo.volumes()) {
     string volumeConfig = volume.container_path();
     if (volume.has_host_path()) {
-      if (!strings::startsWith(volume.host_path(), "/")) {
-        // Support mapping relative paths from the sandbox.
+      if (!strings::startsWith(volume.host_path(), "/") &&
+          !dockerInfo.has_volume_driver()) {
+        // When volume dirver is empty and host path is a relative path, mapping
+        // host path from the sandbox.
         volumeConfig =
           path::join(sandboxDirectory, volume.host_path()) + ":" + volumeConfig;
       } else {
         volumeConfig = volume.host_path() + ":" + volumeConfig;
       }
+
       if (volume.has_mode()) {
         switch (volume.mode()) {
           case Volume::RW: volumeConfig += ":rw"; break;
@@ -455,6 +502,10 @@ Future<Nothing> Docker::run(
   // Mapping sandbox directory into the container mapped directory.
   argv.push_back("-v");
   argv.push_back(sandboxDirectory + ":" + mappedDirectory);
+
+  if (dockerInfo.has_volume_driver()) {
+    argv.push_back("--volume-driver=" + dockerInfo.volume_driver());
+  }
 
   const string& image = dockerInfo.image();
 
@@ -572,22 +623,12 @@ Future<Nothing> Docker::run(
   // URI downloads.
   environment["HOME"] = sandboxDirectory;
 
-  Subprocess::IO stdoutIo = Subprocess::PIPE();
-  Subprocess::IO stderrIo = Subprocess::PIPE();
-  if (stdoutPath.isSome()) {
-    stdoutIo = Subprocess::PATH(stdoutPath.get());
-  }
-
-  if (stderrPath.isSome()) {
-    stderrIo = Subprocess::PATH(stderrPath.get());
-  }
-
   Try<Subprocess> s = subprocess(
       path,
       argv,
       Subprocess::PATH("/dev/null"),
-      stdoutIo,
-      stderrIo,
+      stdout,
+      stderr,
       None(),
       environment);
 

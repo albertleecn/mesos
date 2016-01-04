@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __MASTER_ALLOCATOR_MESOS_HIERARCHICAL_HPP__
 #define __MASTER_ALLOCATOR_MESOS_HIERARCHICAL_HPP__
@@ -72,9 +70,11 @@ public:
       const std::function<Sorter*()>& _frameworkSorterFactory)
     : ProcessBase(process::ID::generate("hierarchical-allocator")),
       initialized(false),
+      paused(true),
       metrics(*this),
       roleSorterFactory(_roleSorterFactory),
       frameworkSorterFactory(_frameworkSorterFactory),
+      quotaRoleSorter(NULL),
       roleSorter(NULL) {}
 
   virtual ~HierarchicalAllocatorProcess() {}
@@ -93,7 +93,11 @@ public:
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
-      const hashmap<std::string, mesos::master::RoleInfo>& roles);
+      const hashmap<std::string, double>& weights);
+
+  void recover(
+      const int _expectedAgentCount,
+      const hashmap<std::string, Quota>& quotas);
 
   void addFramework(
       const FrameworkID& frameworkId,
@@ -176,10 +180,21 @@ public:
   void reviveOffers(
       const FrameworkID& frameworkId);
 
+  void setQuota(
+      const std::string& role,
+      const mesos::quota::QuotaInfo& quota);
+
+  void removeQuota(
+      const std::string& role);
+
 protected:
   // Useful typedefs for dispatch/delay/defer to self()/this.
   typedef HierarchicalAllocatorProcess Self;
   typedef HierarchicalAllocatorProcess This;
+
+  // Helpers for pausing and resuming allocation.
+  void pause();
+  void resume();
 
   // Callback for doing batch allocations.
   void batch();
@@ -208,6 +223,9 @@ protected:
       const SlaveID& slaveId,
       InverseOfferFilter* inverseOfferFilter);
 
+  // Returns the weight of the specified role name.
+  double roleWeight(const std::string& name);
+
   // Checks whether the slave is whitelisted.
   bool isWhitelisted(const SlaveID& slaveId);
 
@@ -227,6 +245,10 @@ protected:
   bool allocatable(const Resources& resources);
 
   bool initialized;
+  bool paused;
+
+  // Recovery data.
+  Option<int> expectedAgentCount;
 
   Duration allocationInterval;
 
@@ -327,7 +349,7 @@ protected:
       // master being invalidated, and new offers being sent out.
       hashmap<FrameworkID, mesos::master::InverseOfferStatus> statuses;
 
-      // Represent the "unit of accounting" for maintenance. When a
+      // Represents the "unit of accounting" for maintenance. When a
       // `FrameworkID` is present in the hashset it means an inverse offer has
       // been sent out. When it is not present it means no offer is currently
       // outstanding.
@@ -342,7 +364,23 @@ protected:
 
   hashmap<SlaveID, Slave> slaves;
 
-  hashmap<std::string, mesos::master::RoleInfo> roles;
+  // Number of registered frameworks for each role. When a role's active
+  // count drops to zero, it is removed from this map; the role is also
+  // removed from `roleSorter` and its `frameworkSorter` is deleted.
+  hashmap<std::string, int> activeRoles;
+
+  // Configured weight for each role, if any; if a role does not
+  // appear here, it has the default weight of 1.
+  hashmap<std::string, double> weights;
+
+  // Configured quota for each role, if any. Setting quota for a role
+  // changes the order that the role's frameworks are offered
+  // resources. Quota comes before fair share, hence setting quota moves
+  // the role's frameworks towards the front of the allocation queue.
+  //
+  // NOTE: We currently associate quota with roles, but this may
+  // change in the future.
+  hashmap<std::string, mesos::quota::QuotaInfo> quotas;
 
   // Slaves to send offers for.
   Option<hashset<std::string>> whitelist;
@@ -362,6 +400,20 @@ protected:
   // oversubscribed resources.
   const std::function<Sorter*()> roleSorterFactory;
   const std::function<Sorter*()> frameworkSorterFactory;
+
+  // A dedicated sorter for roles for which quota is set. Quota'ed roles
+  // belong to an extra allocation group and have resources allocated up
+  // to their alloted quota prior to non-quota'ed roles.
+  //
+  // Note that a role appears in `quotaRoleSorter` if it has a quota
+  // (even if no frameworks are currently registered in that role). In
+  // contrast, `roleSorter` only contains entries for roles with one or
+  // more registered frameworks.
+  //
+  // NOTE: This sorter counts only unreserved non-revocable resources.
+  // TODO(alexr): Consider including dynamically reserved resources.
+  Sorter* quotaRoleSorter;
+
   Sorter* roleSorter;
   hashmap<std::string, Sorter*> frameworkSorters;
 };
@@ -383,7 +435,6 @@ public:
           []() -> Sorter* { return new RoleSorter(); },
           []() -> Sorter* { return new FrameworkSorter(); }) {}
 };
-
 
 } // namespace allocator {
 } // namespace master {

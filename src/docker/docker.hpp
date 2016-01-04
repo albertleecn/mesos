@@ -1,25 +1,24 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __DOCKER_HPP__
 #define __DOCKER_HPP__
 
 #include <list>
+#include <map>
 #include <string>
 
 #include <process/future.hpp>
@@ -45,9 +44,9 @@ class Docker
 public:
   // Create Docker abstraction and optionally validate docker.
   static Try<Docker*> create(
-    const std::string& path,
-    const std::string& socket,
-    bool validate = true);
+      const std::string& path,
+      const std::string& socket,
+      bool validate = true);
 
   virtual ~Docker() {}
 
@@ -101,9 +100,13 @@ public:
 
     Option<std::vector<std::string>> entrypoint;
 
+    Option<std::map<std::string, std::string>> environment;
+
   private:
-    Image(const Option<std::vector<std::string>>& _entrypoint)
-      : entrypoint(_entrypoint) {}
+    Image(const Option<std::vector<std::string>>& _entrypoint,
+          const Option<std::map<std::string, std::string>>& _environment)
+      : entrypoint(_entrypoint),
+        environment(_environment) {}
   };
 
   // Performs 'docker run IMAGE'.
@@ -115,8 +118,9 @@ public:
       const std::string& mappedDirectory,
       const Option<mesos::Resources>& resources = None(),
       const Option<std::map<std::string, std::string>>& env = None(),
-      const Option<std::string>& stdoutPath = None(),
-      const Option<std::string>& stderrPath = None()) const;
+      const process::Subprocess::IO& stdout = process::Subprocess::PIPE(),
+      const process::Subprocess::IO& stderr = process::Subprocess::PIPE())
+    const;
 
   // Returns the current docker version.
   virtual process::Future<Version> version() const;
@@ -166,7 +170,7 @@ protected:
   // Uses the specified path to the Docker CLI tool.
   Docker(const std::string& _path,
          const std::string& _socket)
-       : path(_path), socket("unix://" + _socket) {};
+       : path(_path), socket("unix://" + _socket) {}
 
 private:
   static process::Future<Nothing> _run(

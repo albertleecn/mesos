@@ -1,28 +1,28 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <map>
+#include <ostream>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <mesos/attributes.hpp>
+#include <mesos/http.hpp>
 #include <mesos/resources.hpp>
 
 #include <stout/foreach.hpp>
@@ -35,11 +35,27 @@
 #include "messages/messages.hpp"
 
 using std::map;
+using std::ostream;
 using std::set;
 using std::string;
 using std::vector;
 
 namespace mesos {
+
+ostream& operator<<(ostream& stream, ContentType contentType)
+{
+  switch (contentType) {
+    case ContentType::PROTOBUF: {
+      return stream << APPLICATION_PROTOBUF;
+    }
+    case ContentType::JSON: {
+      return stream << APPLICATION_JSON;
+    }
+  }
+
+  UNREACHABLE();
+}
+
 namespace internal {
 
 string serialize(
@@ -51,7 +67,7 @@ string serialize(
       return message.SerializeAsString();
     }
     case ContentType::JSON: {
-      JSON::Object object = JSON::Protobuf(message);
+      JSON::Object object = JSON::protobuf(message);
       return stringify(object);
     }
   }
@@ -93,7 +109,7 @@ JSON::Object model(const Resources& resources)
   object.values["disk"] = 0;
 
   // Model non-revocable resources.
-  Resources nonRevocable = resources - resources.revocable();
+  Resources nonRevocable = resources.nonRevocable();
 
   foreachpair (
       const string& name, const Value::Type& type, nonRevocable.types()) {
@@ -153,12 +169,7 @@ JSON::Object model(const Attributes& attributes)
 
 JSON::Array model(const Labels& labels)
 {
-  JSON::Array array;
-  array.values.reserve(labels.labels().size()); // MESOS-2353.
-  foreach (const Label& label, labels.labels()) {
-    array.values.push_back(JSON::Protobuf(label));
-  }
-  return array;
+  return JSON::protobuf(labels.labels());
 }
 
 
@@ -181,6 +192,15 @@ JSON::Object model(const NetworkInfo& info)
 
   if (info.has_labels()) {
     object.values["labels"] = std::move(model(info.labels()));
+  }
+
+  if (info.ip_addresses().size() > 0) {
+    JSON::Array array;
+    array.values.reserve(info.ip_addresses().size()); // MESOS-2353.
+    foreach (const NetworkInfo::IPAddress& ipAddress, info.ip_addresses()) {
+      array.values.push_back(JSON::protobuf(ipAddress));
+    }
+    object.values["ip_addresses"] = std::move(array);
   }
 
   return object;
@@ -217,6 +237,10 @@ JSON::Object model(const TaskStatus& status)
 
   if (status.has_container_status()) {
     object.values["container_status"] = model(status.container_status());
+  }
+
+  if (status.has_healthy()) {
+    object.values["healthy"] = status.healthy();
   }
 
   return object;
@@ -256,7 +280,11 @@ JSON::Object model(const Task& task)
   }
 
   if (task.has_discovery()) {
-    object.values["discovery"] = JSON::Protobuf(task.discovery());
+    object.values["discovery"] = JSON::protobuf(task.discovery());
+  }
+
+  if (task.has_container()) {
+    object.values["container"] = JSON::protobuf(task.container());
   }
 
   return object;
@@ -314,7 +342,6 @@ JSON::Object model(const ExecutorInfo& executorInfo)
   JSON::Object object;
   object.values["executor_id"] = executorInfo.executor_id().value();
   object.values["name"] = executorInfo.name();
-  object.values["data"] = executorInfo.data();
   object.values["framework_id"] = executorInfo.framework_id().value();
   object.values["command"] = model(executorInfo.command());
   object.values["resources"] = model(executorInfo.resources());
@@ -359,12 +386,15 @@ JSON::Object model(
   }
 
   if (task.has_discovery()) {
-    object.values["discovery"] = JSON::Protobuf(task.discovery());
+    object.values["discovery"] = JSON::protobuf(task.discovery());
+  }
+
+  if (task.has_container()) {
+    object.values["container"] = JSON::protobuf(task.container());
   }
 
   return object;
 }
-
 
 }  // namespace internal {
 }  // namespace mesos {

@@ -1,24 +1,23 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -98,6 +97,7 @@ using process::metrics::internal::MetricsProcess;
 
 using std::list;
 using std::map;
+using std::set;
 using std::string;
 using std::vector;
 
@@ -182,6 +182,10 @@ JSON::Object model(const Framework& framework)
   object.values["unregistered_time"] = framework.unregisteredTime.secs();
   object.values["active"] = framework.active;
 
+  if (framework.info.has_principal()) {
+    object.values["principal"] = framework.info.principal();
+  }
+
   // TODO(bmahler): Consider deprecating this in favor of the split
   // used and offered resources added in 'summarize'.
   object.values["resources"] =
@@ -259,14 +263,7 @@ JSON::Object model(const Framework& framework)
 
   // Model all of the labels associated with a framework.
   if (framework.info.has_labels()) {
-    JSON::Array array;
-    const mesos::Labels labels = framework.info.labels();
-    array.values.reserve(labels.labels_size());
-
-    foreach (const Label& label, labels.labels()) {
-      array.values.push_back(JSON::Protobuf(label));
-    }
-    object.values["labels"] = std::move(array);
+    object.values["labels"] = model(framework.info.labels());
   }
 
   return object;
@@ -295,6 +292,8 @@ JSON::Object summarize(const Slave& slave)
 
   object.values["attributes"] = model(slave.info.attributes());
   object.values["active"] = slave.active;
+  object.values["version"] = slave.version;
+
   return object;
 }
 
@@ -305,28 +304,6 @@ JSON::Object summarize(const Slave& slave)
 JSON::Object model(const Slave& slave)
 {
   return summarize(slave);
-}
-
-
-// Returns a JSON object modeled after a Role.
-JSON::Object model(const Role& role)
-{
-  JSON::Object object;
-  object.values["name"] = role.info.name();
-  object.values["weight"] = role.info.weight();
-  object.values["resources"] = model(role.resources());
-
-  {
-    JSON::Array array;
-
-    foreachkey (const FrameworkID& frameworkId, role.frameworks) {
-      array.values.push_back(frameworkId.value());
-    }
-
-    object.values["frameworks"] = std::move(array);
-  }
-
-  return object;
 }
 
 
@@ -384,7 +361,7 @@ Future<Response> Master::Http::scheduler(const Request& request) const
 
   if (request.method != "POST") {
     return MethodNotAllowed(
-        "Expecting a 'POST' request, received '" + request.method + "'");
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
   }
 
   v1::scheduler::Call v1Call;
@@ -525,6 +502,251 @@ Future<Response> Master::Http::scheduler(const Request& request) const
 }
 
 
+string Master::Http::CREATE_VOLUMES_HELP()
+{
+  return HELP(
+    TLDR(
+        "Create persistent volumes on reserved resources."),
+    DESCRIPTION(
+        "Returns 200 OK if volume creation was successful.",
+        "Please provide \"slaveId\" and \"volumes\" values designating ",
+        "the volumes to be created."
+      ));
+}
+
+
+static Resources removeDiskInfos(const Resources& resources)
+{
+  Resources result = resources;
+
+  foreach (Resource& resource, result) {
+    resource.clear_disk();
+  }
+
+  return result;
+}
+
+
+Future<Response> Master::Http::createVolumes(const Request& request) const
+{
+  if (request.method != "POST") {
+    return MethodNotAllowed(
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
+  }
+
+  Result<Credential> credential = authenticate(request);
+  if (credential.isError()) {
+    return Unauthorized("Mesos master", credential.error());
+  }
+
+  // Parse the query string in the request body.
+  Try<hashmap<string, string>> decode =
+    process::http::query::decode(request.body);
+
+  if (decode.isError()) {
+    return BadRequest("Unable to decode query string: " + decode.error());
+  }
+
+  const hashmap<string, string>& values = decode.get();
+
+  if (values.get("slaveId").isNone()) {
+    return BadRequest("Missing 'slaveId' query parameter");
+  }
+
+  SlaveID slaveId;
+  slaveId.set_value(values.get("slaveId").get());
+
+  Slave* slave = master->slaves.registered.get(slaveId);
+  if (slave == NULL) {
+    return BadRequest("No slave found with specified ID");
+  }
+
+  if (values.get("volumes").isNone()) {
+    return BadRequest("Missing 'volumes' query parameter");
+  }
+
+  Try<JSON::Array> parse =
+    JSON::parse<JSON::Array>(values.get("volumes").get());
+
+  if (parse.isError()) {
+    return BadRequest(
+        "Error in parsing 'volumes' query parameter: " + parse.error());
+  }
+
+  Resources volumes;
+  foreach (const JSON::Value& value, parse.get().values) {
+    Try<Resource> volume = ::protobuf::parse<Resource>(value);
+    if (volume.isError()) {
+      return BadRequest(
+          "Error in parsing 'volumes' query parameter: " + volume.error());
+    }
+    volumes += volume.get();
+  }
+
+  // Create an offer operation.
+  Offer::Operation operation;
+  operation.set_type(Offer::Operation::CREATE);
+  operation.mutable_create()->mutable_volumes()->CopyFrom(volumes);
+
+  Option<Error> validate = validation::operation::validate(
+      operation.create(), slave->checkpointedResources);
+
+  if (validate.isSome()) {
+    return BadRequest("Invalid CREATE operation: " + validate.get().message);
+  }
+
+  // TODO(neilc): Add a create-volumes ACL for authorization.
+
+  // The resources required for this operation are equivalent to the
+  // volumes specified by the user minus any DiskInfo (DiskInfo will
+  // be created when this operation is applied).
+  return _operation(slaveId, removeDiskInfos(volumes), operation);
+}
+
+
+string Master::Http::DESTROY_VOLUMES_HELP()
+{
+  return HELP(
+    TLDR(
+        "Destroy persistent volumes."),
+    DESCRIPTION(
+        "Returns 200 OK if volume deletion was successful.",
+        "Please provide \"slaveId\" and \"volumes\" values designating "
+        "the volumes to be destroyed."));
+}
+
+
+Future<Response> Master::Http::destroyVolumes(const Request& request) const
+{
+  if (request.method != "POST") {
+    return MethodNotAllowed(
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
+  }
+
+  Result<Credential> credential = authenticate(request);
+  if (credential.isError()) {
+    return Unauthorized("Mesos master", credential.error());
+  }
+
+  // Parse the query string in the request body.
+  Try<hashmap<string, string>> decode =
+    process::http::query::decode(request.body);
+
+  if (decode.isError()) {
+    return BadRequest("Unable to decode query string: " + decode.error());
+  }
+
+  const hashmap<string, string>& values = decode.get();
+
+  if (values.get("slaveId").isNone()) {
+    return BadRequest("Missing 'slaveId' query parameter");
+  }
+
+  SlaveID slaveId;
+  slaveId.set_value(values.get("slaveId").get());
+
+  Slave* slave = master->slaves.registered.get(slaveId);
+  if (slave == NULL) {
+    return BadRequest("No slave found with specified ID");
+  }
+
+  if (values.get("volumes").isNone()) {
+    return BadRequest("Missing 'volumes' query parameter");
+  }
+
+  Try<JSON::Array> parse =
+    JSON::parse<JSON::Array>(values.get("volumes").get());
+
+  if (parse.isError()) {
+    return BadRequest(
+        "Error in parsing 'volumes' query parameter: " + parse.error());
+  }
+
+  Resources volumes;
+  foreach (const JSON::Value& value, parse.get().values) {
+    Try<Resource> volume = ::protobuf::parse<Resource>(value);
+    if (volume.isError()) {
+      return BadRequest(
+          "Error in parsing 'volumes' query parameter: " + volume.error());
+    }
+    volumes += volume.get();
+  }
+
+  // Create an offer operation.
+  Offer::Operation operation;
+  operation.set_type(Offer::Operation::DESTROY);
+  operation.mutable_destroy()->mutable_volumes()->CopyFrom(volumes);
+
+  Option<Error> validate = validation::operation::validate(
+      operation.destroy(), slave->checkpointedResources);
+
+  if (validate.isSome()) {
+    return BadRequest("Invalid DESTROY operation: " + validate.get().message);
+  }
+
+  // TODO(neilc): Add a destroy-volumes ACL for authorization.
+
+  return _operation(slaveId, volumes, operation);
+}
+
+
+string Master::Http::FRAMEWORKS()
+{
+  return HELP(TLDR("Exposes the frameworks info."));
+}
+
+
+Future<Response> Master::Http::frameworks(const Request& request) const
+{
+  JSON::Object object;
+
+  // Model all of the frameworks.
+  {
+    JSON::Array array;
+    array.values.reserve(master->frameworks.registered.size()); // MESOS-2353.
+
+    foreachvalue (Framework* framework, master->frameworks.registered) {
+      array.values.push_back(model(*framework));
+    }
+
+    object.values["frameworks"] = std::move(array);
+  }
+
+  // Model all of the completed frameworks.
+  {
+    JSON::Array array;
+    array.values.reserve(master->frameworks.completed.size()); // MESOS-2353.
+
+    foreach (const std::shared_ptr<Framework>& framework,
+             master->frameworks.completed) {
+      array.values.push_back(model(*framework));
+    }
+
+    object.values["completed_frameworks"] = std::move(array);
+  }
+
+  // Model all currently unregistered frameworks.
+  // This could happen when the framework has yet to re-register
+  // after master failover.
+  {
+    JSON::Array array;
+
+    // Find unregistered frameworks.
+    foreachvalue (const Slave* slave, master->slaves.registered) {
+      foreachkey (const FrameworkID& frameworkId, slave->tasks) {
+        if (!master->frameworks.registered.contains(frameworkId)) {
+          array.values.push_back(frameworkId.value());
+        }
+      }
+    }
+
+    object.values["unregistered_frameworks"] = std::move(array);
+  }
+
+  return OK(object, request.url.query.get("jsonp"));
+}
+
+
 string Master::Http::FLAGS_HELP()
 {
   return HELP(TLDR("Exposes the master's flag configuration."));
@@ -592,7 +814,7 @@ Try<string> getFormValue(
   Option<string> value = values.get(key);
 
   if (value.isNone()) {
-    return Error("Missing value for '" + key + "'.");
+    return Error("Missing value for '" + key + "'");
   }
 
   // HTTP decode the value.
@@ -603,7 +825,7 @@ Try<string> getFormValue(
 
   // Treat empty string as an error.
   if (decodedValue.isSome() && decodedValue.get().empty()) {
-    return Error("Empty string for '" + key + "'.");
+    return Error("Empty string for '" + key + "'");
   }
 
   return decodedValue.get();
@@ -621,7 +843,7 @@ Future<Response> Master::Http::observe(const Request& request) const
 
   hashmap<string, string> values = decode.get();
 
-  // Build up a JSON object of the values we recieved and send them back
+  // Build up a JSON object of the values we received and send them back
   // down the wire as JSON for validation / confirmation.
   JSON::Object response;
 
@@ -724,7 +946,8 @@ string Master::Http::RESERVE_HELP()
 Future<Response> Master::Http::reserve(const Request& request) const
 {
   if (request.method != "POST") {
-    return BadRequest("Expecting POST");
+    return MethodNotAllowed(
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
   }
 
   Result<Credential> credential = authenticate(request);
@@ -784,16 +1007,25 @@ Future<Response> Master::Http::reserve(const Request& request) const
   Option<string> principal =
     credential.isSome() ? credential.get().principal() : Option<string>::none();
 
-  Option<Error> validate =
-    validation::operation::validate(operation.reserve(), None(), principal);
+  Option<Error> error = validation::operation::validate(
+      operation.reserve(), None(), principal);
 
-  if (validate.isSome()) {
-    return BadRequest("Invalid RESERVE operation: " + validate.get().message);
+  if (error.isSome()) {
+    return BadRequest("Invalid RESERVE operation: " + error.get().message);
   }
 
-  // TODO(mpark): Add a reserve ACL for authorization.
+  return master->authorizeReserveResources(operation.reserve(), principal)
+    .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
+      if (!authorized) {
+        return Unauthorized("Mesos master");
+      }
 
-  return _operation(slaveId, resources.flatten(), operation);
+      // NOTE: `flatten()` is important. To make a dynamic reservation,
+      // we want to ensure that the required resources are available
+      // and unreserved; `flatten()` removes the role and
+      // ReservationInfo from the resources.
+      return _operation(slaveId, resources.flatten(), operation);
+    }));
 }
 
 
@@ -823,8 +1055,42 @@ Future<Response> Master::Http::slaves(const Request& request) const
     object.values["slaves"] = std::move(array);
   }
 
-
   return OK(object, request.url.query.get("jsonp"));
+}
+
+
+string Master::Http::QUOTA_HELP()
+{
+  return HELP(
+    TLDR(
+        "Sets quota for a role."),
+    DESCRIPTION(
+        "POST: Validates the request body as JSON",
+        " and sets quota for a role."));
+}
+
+
+Future<Response> Master::Http::quota(const Request& request) const
+{
+  // Dispatch based on HTTP method to separate `QuotaHandler`.
+  if (request.method == "GET") {
+    return quotaHandler.status(request);
+  }
+
+  if (request.method == "POST") {
+    return quotaHandler.set(request);
+  }
+
+  if (request.method == "DELETE") {
+    return quotaHandler.remove(request);
+  }
+
+  // TODO(joerg84): Add update logic for PUT requests
+  // once Quota supports updates.
+
+  return MethodNotAllowed(
+      {"GET", "POST", "DELETE"},
+      "Expecting 'GET', 'POST' or 'DELETE', received '" + request.method + "'");
 }
 
 
@@ -1246,10 +1512,51 @@ string Master::Http::ROLES_HELP()
 {
   return HELP(
     TLDR(
-        "Information about roles that the master is configured with."),
+        "Information about roles."),
     DESCRIPTION(
-        "This endpoint gives information about the roles that are assigned",
-        "to frameworks and resources as a JSON object."));
+        "This endpoint provides information about roles as a JSON object."
+        "It returns information about every role that is on the role"
+        "whitelist (if enabled), has one or more registered frameworks,"
+        "or has a non-default weight or quota. For each role, it returns"
+        "the weight, total allocated resources, and registered frameworks."));
+}
+
+
+// Returns a JSON object modeled after a role.
+JSON::Object model(
+    const string& name,
+    Option<double> weight,
+    Option<Role*> _role)
+{
+  JSON::Object object;
+  object.values["name"] = name;
+
+  if (weight.isSome()) {
+    object.values["weight"] = weight.get();
+  } else {
+    object.values["weight"] = 1.0; // Default weight.
+  }
+
+  if (_role.isNone()) {
+    object.values["resources"] = model(Resources());
+    object.values["frameworks"] = JSON::Array();
+  } else {
+    Role* role = _role.get();
+
+    object.values["resources"] = model(role->resources());
+
+    {
+      JSON::Array array;
+
+      foreachkey (const FrameworkID& frameworkId, role->frameworks) {
+        array.values.push_back(frameworkId.value());
+      }
+
+      object.values["frameworks"] = std::move(array);
+    }
+  }
+
+  return object;
 }
 
 
@@ -1257,11 +1564,48 @@ Future<Response> Master::Http::roles(const Request& request) const
 {
   JSON::Object object;
 
-  // Model all of the roles.
+  // Compute the role names to return results for. When an explicit
+  // role whitelist has been configured, we use that list of names.
+  // When using implicit roles, the right behavior is a bit more
+  // subtle. There are no constraints on possible role names, so we
+  // instead list all the "interesting" roles: the default role ("*"),
+  // all roles with one or more registered frameworks, and all roles
+  // with a non-default weight or quota.
+  //
+  // NOTE: we use a `std::set` to store the role names to ensure a
+  // deterministic output order.
+  set<string> roleList;
+  if (master->roleWhitelist.isSome()) {
+    const hashset<string>& whitelist = master->roleWhitelist.get();
+    roleList.insert(whitelist.begin(), whitelist.end());
+  } else {
+    roleList.insert("*"); // Default role.
+    roleList.insert(
+        master->activeRoles.keys().begin(),
+        master->activeRoles.keys().end());
+    roleList.insert(
+        master->weights.keys().begin(),
+        master->weights.keys().end());
+    roleList.insert(
+        master->quotas.keys().begin(),
+        master->quotas.keys().end());
+  }
+
   {
     JSON::Array array;
-    foreachvalue (Role* role, master->roles) {
-      array.values.push_back(model(*role));
+
+    foreach (const string& name, roleList) {
+      Option<double> weight = None();
+      if (master->weights.contains(name)) {
+        weight = master->weights[name];
+      }
+
+      Option<Role*> role = None();
+      if (master->activeRoles.contains(name)) {
+        role = master->activeRoles[name];
+      }
+
+      array.values.push_back(model(name, weight, role));
     }
 
     object.values["roles"] = std::move(array);
@@ -1287,7 +1631,8 @@ string Master::Http::TEARDOWN_HELP()
 Future<Response> Master::Http::teardown(const Request& request) const
 {
   if (request.method != "POST") {
-    return BadRequest("Expecting POST");
+    return MethodNotAllowed(
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
   }
 
   Result<Credential> credential = authenticate(request);
@@ -1339,22 +1684,18 @@ Future<Response> Master::Http::teardown(const Request& request) const
     shutdown.mutable_framework_principals()->set_type(ACL::Entity::ANY);
   }
 
-  lambda::function<Future<Response>(bool)> _teardown =
-    lambda::bind(&Master::Http::_teardown, this, id, lambda::_1);
-
   return master->authorizer.get()->authorize(shutdown)
-    .then(defer(master->self(), _teardown));
+    .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
+      if (!authorized) {
+        return Unauthorized("Mesos master");
+      }
+      return _teardown(id);
+    }));
 }
 
 
-Future<Response> Master::Http::_teardown(
-    const FrameworkID& id,
-    bool authorized) const
+Future<Response> Master::Http::_teardown(const FrameworkID& id) const
 {
-  if (!authorized) {
-    return Unauthorized("Mesos master");
-  }
-
   Framework* framework = master->getFramework(id);
 
   if (framework == NULL) {
@@ -1443,7 +1784,7 @@ Future<Response> Master::Http::tasks(const Request& request) const
   // TODO(nnielsen): Currently, formatting errors in offset and/or limit
   // will silently be ignored. This could be reported to the user instead.
 
-  // Construct framework list with both active and completed framwworks.
+  // Construct framework list with both active and completed frameworks.
   vector<const Framework*> frameworks;
   foreachvalue (Framework* framework, master->frameworks.registered) {
     frameworks.push_back(framework);
@@ -1508,7 +1849,9 @@ string Master::Http::MAINTENANCE_SCHEDULE_HELP()
 Future<Response> Master::Http::maintenanceSchedule(const Request& request) const
 {
   if (request.method != "GET" && request.method != "POST") {
-    return BadRequest("Expecting GET or POST, got '" + request.method + "'");
+    return MethodNotAllowed(
+        {"GET", "POST"},
+        "Expecting 'GET' or 'POST', received '" + request.method + "'");
   }
 
   // JSON-ify and return the current maintenance schedule.
@@ -1519,7 +1862,7 @@ Future<Response> Master::Http::maintenanceSchedule(const Request& request) const
         mesos::maintenance::Schedule() :
         master->maintenance.schedules.front();
 
-    return OK(JSON::Protobuf(schedule), request.url.query.get("jsonp"));
+    return OK(JSON::protobuf(schedule), request.url.query.get("jsonp"));
   }
 
   // Parse the POST body as JSON.
@@ -1626,7 +1969,8 @@ string Master::Http::MACHINE_DOWN_HELP()
 Future<Response> Master::Http::machineDown(const Request& request) const
 {
   if (request.method != "POST") {
-    return BadRequest("Expecting POST, got '" + request.method + "'");
+    return MethodNotAllowed(
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
   }
 
   // Parse the POST body as JSON.
@@ -1652,13 +1996,13 @@ Future<Response> Master::Http::machineDown(const Request& request) const
   foreach (const MachineID& id, ids.get()) {
     if (!master->machines.contains(id)) {
       return BadRequest(
-          "Machine '" + stringify(JSON::Protobuf(id)) +
+          "Machine '" + stringify(JSON::protobuf(id)) +
             "' is not part of a maintenance schedule");
     }
 
     if (master->machines[id].info.mode() != MachineInfo::DRAINING) {
       return BadRequest(
-          "Machine '" + stringify(JSON::Protobuf(id)) +
+          "Machine '" + stringify(JSON::protobuf(id)) +
             "' is not in DRAINING mode and cannot be brought down");
     }
   }
@@ -1728,7 +2072,8 @@ string Master::Http::MACHINE_UP_HELP()
 Future<Response> Master::Http::machineUp(const Request& request) const
 {
   if (request.method != "POST") {
-    return BadRequest("Expecting POST, got '" + request.method + "'");
+    return MethodNotAllowed(
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
   }
 
   // Parse the POST body as JSON.
@@ -1753,13 +2098,13 @@ Future<Response> Master::Http::machineUp(const Request& request) const
   foreach (const MachineID& id, ids.get()) {
     if (!master->machines.contains(id)) {
       return BadRequest(
-          "Machine '" + stringify(JSON::Protobuf(id)) +
+          "Machine '" + stringify(JSON::protobuf(id)) +
             "' is not part of a maintenance schedule");
     }
 
     if (master->machines[id].info.mode() != MachineInfo::DOWN) {
       return BadRequest(
-          "Machine '" + stringify(JSON::Protobuf(id)) +
+          "Machine '" + stringify(JSON::protobuf(id)) +
             "' is not in DOWN mode and cannot be brought up");
     }
   }
@@ -1831,7 +2176,8 @@ string Master::Http::MAINTENANCE_STATUS_HELP()
 Future<Response> Master::Http::maintenanceStatus(const Request& request) const
 {
   if (request.method != "GET") {
-    return BadRequest("Expecting GET, got '" + request.method + "'");
+    return MethodNotAllowed(
+        {"GET"}, "Expecting 'GET', received '" + request.method + "'");
   }
 
   return master->allocator->getInverseOfferStatuses()
@@ -1883,7 +2229,7 @@ Future<Response> Master::Http::maintenanceStatus(const Request& request) const
       }
     }
 
-    return OK(JSON::Protobuf(status), request.url.query.get("jsonp"));
+    return OK(JSON::protobuf(status), request.url.query.get("jsonp"));
   }));
 }
 
@@ -1903,7 +2249,8 @@ string Master::Http::UNRESERVE_HELP()
 Future<Response> Master::Http::unreserve(const Request& request) const
 {
   if (request.method != "POST") {
-    return BadRequest("Expecting POST");
+    return MethodNotAllowed(
+        {"POST"}, "Expecting 'POST', received '" + request.method + "'");
   }
 
   Result<Credential> credential = authenticate(request);
@@ -1960,16 +2307,25 @@ Future<Response> Master::Http::unreserve(const Request& request) const
   operation.set_type(Offer::Operation::UNRESERVE);
   operation.mutable_unreserve()->mutable_resources()->CopyFrom(resources);
 
-  Option<Error> validate =
-    validation::operation::validate(operation.unreserve(), credential.isSome());
+  Option<string> principal =
+    credential.isSome() ? credential.get().principal() : Option<string>::none();
 
-  if (validate.isSome()) {
-    return BadRequest("Invalid UNRESERVE operation: " + validate.get().message);
+  Option<Error> error = validation::operation::validate(
+      operation.unreserve(), principal.isSome());
+
+  if (error.isSome()) {
+    return BadRequest(
+        "Invalid UNRESERVE operation: " + error.get().message);
   }
 
-  // TODO(mpark): Add a unreserve ACL for authorization.
+  return master->authorizeUnreserveResources(operation.unreserve(), principal)
+    .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
+      if (!authorized) {
+        return Unauthorized("Mesos master");
+      }
 
-  return _operation(slaveId, resources, operation);
+      return _operation(slaveId, resources, operation);
+    }));
 }
 
 
@@ -2017,7 +2373,7 @@ Result<Credential> Master::Http::authenticate(const Request& request) const
 
 Future<Response> Master::Http::_operation(
     const SlaveID& slaveId,
-    Resources remaining,
+    Resources required,
     const Offer::Operation& operation) const
 {
   Slave* slave = master->slaves.registered.get(slaveId);
@@ -2033,16 +2389,16 @@ Future<Response> Master::Http::_operation(
   // the race between the allocator scheduling an 'allocate' call to
   // itself vs master's request to schedule 'updateAvailable'.
   // We greedily rescind one offer at time until we've rescinded
-  // enough offers to cover for 'resources'.
+  // enough offers to cover 'operation'.
   foreach (Offer* offer, utils::copy(slave->offers)) {
     // If rescinding the offer would not contribute to satisfying
-    // the remaining resources, skip it.
-    if (remaining == remaining - offer->resources()) {
+    // the required resources, skip it.
+    if (required == required - offer->resources()) {
       continue;
     }
 
     recovered += offer->resources();
-    remaining -= offer->resources();
+    required -= offer->resources();
 
     // We explicitly pass 'Filters()' which has a default 'refuse_sec'
     // of 5 seconds rather than 'None()' here, so that we can
@@ -2055,15 +2411,14 @@ Future<Response> Master::Http::_operation(
 
     master->removeOffer(offer, true); // Rescind!
 
-    // If we've rescinded enough offers to cover for 'resources',
-    // we're done.
+    // If we've rescinded enough offers to cover 'operation', we're done.
     Try<Resources> updatedRecovered = recovered.apply(operation);
     if (updatedRecovered.isSome()) {
       break;
     }
   }
 
-  // Propogate the 'Future<Nothing>' as 'Future<Response>' where
+  // Propagate the 'Future<Nothing>' as 'Future<Response>' where
   // 'Nothing' -> 'OK' and Failed -> 'Conflict'.
   return master->apply(slave, operation)
     .then([]() -> Response { return OK(); })

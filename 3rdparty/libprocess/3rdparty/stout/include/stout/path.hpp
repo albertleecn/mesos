@@ -1,16 +1,15 @@
-/**
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef __STOUT_PATH_HPP__
 #define __STOUT_PATH_HPP__
 
@@ -19,6 +18,52 @@
 #include <vector>
 
 #include <stout/strings.hpp>
+
+namespace path {
+
+// Base case.
+inline std::string join(const std::string& path1, const std::string& path2)
+{
+  return strings::remove(path1, "/", strings::SUFFIX) + "/" +
+         strings::remove(path2, "/", strings::PREFIX);
+}
+
+
+template <typename... Paths>
+inline std::string join(
+    const std::string& path1,
+    const std::string& path2,
+    Paths&&... paths)
+{
+  return join(path1, join(path2, std::forward<Paths>(paths)...));
+}
+
+
+inline std::string join(const std::vector<std::string>& paths)
+{
+  if (paths.empty()) {
+    return "";
+  }
+
+  std::string result = paths[0];
+  for (size_t i = 1; i < paths.size(); ++i) {
+    result = join(result, paths[i]);
+  }
+  return result;
+}
+
+
+inline bool absolute(const std::string& path)
+{
+  if (path.empty() || path[0] != '/') {
+    return false;
+  }
+
+  return true;
+}
+
+} // namespace path {
+
 
 /**
  * Represents a POSIX file systems path and offers common path
@@ -30,8 +75,8 @@ public:
   explicit Path(const std::string& path)
     : value(strings::remove(path, "file://", strings::PREFIX)) {}
 
-  // TODO(cmaloney): Add more useful operations such as 'absolute()',
-  // 'directoryname()', 'filename()', etc.
+  // TODO(cmaloney): Add more useful operations such as 'directoryname()',
+  // 'filename()', etc.
 
   /**
    * Extracts the component following the final '/'. Trailing '/'
@@ -148,6 +193,41 @@ public:
     return value.substr(0, end + 1);
   }
 
+  /**
+   * Returns the file extension of the path, including the dot.
+   *
+   * Returns None if the basename contains no dots, or consists
+   * entirely of dots (i.e. '.', '..').
+   *
+   * Examples:
+   *
+   *   path         | extension
+   *   ----------   | -----------
+   *   "a.txt"      |  ".txt"
+   *   "a.tar.gz"   |  ".gz"
+   *   ".bashrc"    |  ".bashrc"
+   *   "a"          |  None
+   *   "."          |  None
+   *   ".."         |  None
+   */
+  inline Option<std::string> extension() const
+  {
+    std::string _basename = basename();
+    size_t index = _basename.rfind(".");
+
+    if (_basename == "." || _basename == ".." || index == std::string::npos) {
+      return None();
+    }
+
+    return _basename.substr(index);
+  }
+
+  // Checks whether the path is absolute.
+  inline bool absolute() const
+  {
+    return path::absolute(value);
+  }
+
   // Implicit conversion from Path to string.
   operator std::string() const
   {
@@ -164,41 +244,5 @@ inline std::ostream& operator<<(
 {
   return stream << path.value;
 }
-
-
-namespace path {
-
-// Base case.
-inline std::string join(const std::string& path1, const std::string& path2)
-{
-  return strings::remove(path1, "/", strings::SUFFIX) + "/" +
-         strings::remove(path2, "/", strings::PREFIX);
-}
-
-
-template <typename... Paths>
-inline std::string join(
-    const std::string& path1,
-    const std::string& path2,
-    Paths&&... paths)
-{
-  return join(path1, join(path2, std::forward<Paths>(paths)...));
-}
-
-
-inline std::string join(const std::vector<std::string>& paths)
-{
-  if (paths.empty()) {
-    return "";
-  }
-
-  std::string result = paths[0];
-  for (size_t i = 1; i < paths.size(); ++i) {
-    result = join(result, paths[i]);
-  }
-  return result;
-}
-
-} // namespace path {
 
 #endif // __STOUT_PATH_HPP__

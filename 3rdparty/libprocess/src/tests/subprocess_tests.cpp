@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <signal.h>
 
@@ -145,9 +143,9 @@ TEST_F(SubprocessTest, PipeOutput)
   // Standard out.
   Try<Subprocess> s = subprocess(
       "echo hello",
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE());
+      Subprocess::FD(STDERR_FILENO));
 
   ASSERT_SOME(s);
   ASSERT_SOME(s.get().out());
@@ -171,8 +169,8 @@ TEST_F(SubprocessTest, PipeOutput)
   // Standard error.
   s = subprocess(
       "echo hello 1>&2",
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
+      Subprocess::FD(STDOUT_FILENO),
       Subprocess::PIPE());
 
   ASSERT_SOME(s);
@@ -202,7 +200,7 @@ TEST_F(SubprocessTest, PipeInput)
       "read word ; echo $word",
       Subprocess::PIPE(),
       Subprocess::PIPE(),
-      Subprocess::PIPE());
+      Subprocess::FD(STDERR_FILENO));
 
   ASSERT_SOME(s);
   ASSERT_SOME(s.get().in());
@@ -232,9 +230,9 @@ TEST_F(SubprocessTest, PipeRedirect)
 {
   Try<Subprocess> s = subprocess(
       "echo 'hello world'",
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE());
+      Subprocess::FD(STDERR_FILENO));
 
   ASSERT_SOME(s);
 
@@ -252,6 +250,9 @@ TEST_F(SubprocessTest, PipeRedirect)
   ASSERT_SOME(s.get().out());
   ASSERT_SOME(os::nonblock(s.get().out().get()));
   AWAIT_READY(io::redirect(s.get().out().get(), fd.get()));
+
+  // Close our copy of the fd.
+  EXPECT_SOME(os::close(fd.get()));
 
   // Advance time until the internal reaper reaps the subprocess.
   Clock::pause();
@@ -283,9 +284,9 @@ TEST_F(SubprocessTest, PathOutput)
   // Standard out.
   Try<Subprocess> s = subprocess(
       "echo hello",
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PATH(out),
-      Subprocess::PIPE());
+      Subprocess::FD(STDERR_FILENO));
 
   ASSERT_SOME(s);
 
@@ -311,8 +312,8 @@ TEST_F(SubprocessTest, PathOutput)
   // Standard error.
   s = subprocess(
       "echo hello 1>&2",
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
+      Subprocess::FD(STDOUT_FILENO),
       Subprocess::PATH(err));
 
   ASSERT_SOME(s);
@@ -348,7 +349,7 @@ TEST_F(SubprocessTest, PathInput)
       "read word ; echo $word",
       Subprocess::PATH(in),
       Subprocess::PIPE(),
-      Subprocess::PIPE());
+      Subprocess::FD(STDERR_FILENO));
 
   ASSERT_SOME(s);
   ASSERT_SOME(s.get().out());
@@ -386,9 +387,9 @@ TEST_F(SubprocessTest, FdOutput)
 
   Try<Subprocess> s = subprocess(
       "echo hello",
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::FD(outFd.get()),
-      Subprocess::PIPE());
+      Subprocess::FD(STDERR_FILENO));
 
   ASSERT_SOME(os::close(outFd.get()));
   ASSERT_SOME(s);
@@ -422,8 +423,8 @@ TEST_F(SubprocessTest, FdOutput)
 
   s = subprocess(
       "echo hello 1>&2",
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
+      Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(errFd.get()));
 
   ASSERT_SOME(os::close(errFd.get()));
@@ -463,7 +464,7 @@ TEST_F(SubprocessTest, FdInput)
       "read word ; echo $word",
       Subprocess::FD(inFd.get()),
       Subprocess::PIPE(),
-      Subprocess::PIPE());
+      Subprocess::FD(STDERR_FILENO));
 
   ASSERT_SOME(os::close(inFd.get()));
 
@@ -570,9 +571,9 @@ TEST_F(SubprocessTest, Flags)
   Try<Subprocess> s = subprocess(
       "/bin/echo",
       vector<string>(1, "echo"),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PATH(out),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDERR_FILENO),
       flags);
 
   ASSERT_SOME(s);
@@ -634,9 +635,9 @@ TEST_F(SubprocessTest, Environment)
 
   Try<Subprocess> s = subprocess(
       "echo $MESSAGE",
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDERR_FILENO),
       environment);
 
   ASSERT_SOME(s);
@@ -665,9 +666,9 @@ TEST_F(SubprocessTest, Environment)
 
   s = subprocess(
       "echo $MESSAGE0 $MESSAGE1",
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDERR_FILENO),
       environment);
 
   ASSERT_SOME(s);
@@ -699,9 +700,9 @@ TEST_F(SubprocessTest, EnvironmentWithSpaces)
 
   Try<Subprocess> s = subprocess(
       "echo $MESSAGE",
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDERR_FILENO),
       environment);
 
   ASSERT_SOME(s);
@@ -733,9 +734,9 @@ TEST_F(SubprocessTest, EnvironmentWithSpacesAndQuotes)
 
   Try<Subprocess> s = subprocess(
       "echo $MESSAGE",
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDERR_FILENO),
       environment);
 
   ASSERT_SOME(s);
@@ -770,9 +771,9 @@ TEST_F(SubprocessTest, EnvironmentOverride)
 
   Try<Subprocess> s = subprocess(
       "echo $MESSAGE1 $MESSAGE2",
+      Subprocess::FD(STDIN_FILENO),
       Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDERR_FILENO),
       environment);
 
   ASSERT_SOME(s);
@@ -815,9 +816,9 @@ TEST_F(SubprocessTest, Setup)
   // chdir().
   Try<Subprocess> s = subprocess(
       "echo hello world > file",
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
+      Subprocess::FD(STDOUT_FILENO),
+      Subprocess::FD(STDERR_FILENO),
       None(),
       lambda::bind(&setupChdir, directory.get()));
 
@@ -854,9 +855,9 @@ TEST_F(SubprocessTest, SetupStatus)
   // Exit 0 && setup 1.
   Try<Subprocess> s = subprocess(
       "exit 0",
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
+      Subprocess::FD(STDOUT_FILENO),
+      Subprocess::FD(STDERR_FILENO),
       None(),
       lambda::bind(&setupStatus, 1));
 
@@ -882,9 +883,9 @@ TEST_F(SubprocessTest, SetupStatus)
   // Exit 1 && setup 0.
   s = subprocess(
       "exit 1",
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
-      Subprocess::PIPE(),
+      Subprocess::FD(STDIN_FILENO),
+      Subprocess::FD(STDOUT_FILENO),
+      Subprocess::FD(STDERR_FILENO),
       None(),
       lambda::bind(&setupStatus, 0));
 

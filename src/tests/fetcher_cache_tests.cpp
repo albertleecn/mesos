@@ -1,29 +1,27 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <unistd.h>
-
-#include <gmock/gmock.h>
 
 #include <list>
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include <gmock/gmock.h>
 
 #include <mesos/executor.hpp>
 #include <mesos/scheduler.hpp>
@@ -59,6 +57,8 @@
 #include "tests/containerizer.hpp"
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
+
+using mesos::fetcher::FetcherInfo;
 
 using mesos::internal::master::Master;
 
@@ -279,13 +279,13 @@ void FetcherCacheTest::startSlave()
   ASSERT_SOME(create);
   containerizer = create.get();
 
+  Future<SlaveRegisteredMessage> slaveRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+
   Try<PID<Slave>> pid = StartSlave(containerizer, flags);
   ASSERT_SOME(pid);
   slavePid = pid.get();
 
-  // Obtain the slave ID.
-  Future<SlaveRegisteredMessage> slaveRegisteredMessage =
-    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
   AWAIT_READY(slaveRegisteredMessage);
   slaveId = slaveRegisteredMessage.get().slave_id();
 
@@ -324,7 +324,9 @@ void FetcherCacheTest::setupArchiveAsset()
 
   const string cwd = os::getcwd();
   ASSERT_SOME(os::chdir(assetsDirectory));
-  ASSERT_SOME(os::tar(ARCHIVED_COMMAND_NAME, ARCHIVE_NAME));
+  // Create an uncompressed archive (see MESOS-3579).
+  ASSERT_SOME(os::shell(
+      "tar cf '" + ARCHIVE_NAME + "' '" + ARCHIVED_COMMAND_NAME + "' 2>&1"));
   ASSERT_SOME(os::chdir(cwd));
   archivePath = path::join(assetsDirectory, ARCHIVE_NAME);
 

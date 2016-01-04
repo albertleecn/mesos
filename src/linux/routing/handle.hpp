@@ -1,29 +1,29 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __LINUX_ROUTING_HANDLE_HPP__
 #define __LINUX_ROUTING_HANDLE_HPP__
 
 #include <stdint.h>
 
-#include <ostream>
+#include <iosfwd>
 
 #include <netlink/route/tc.h>
+
+#include <stout/try.hpp>
 
 namespace routing {
 
@@ -59,6 +59,8 @@ public:
     return handle != that.handle;
   }
 
+  static Try<Handle> parse(const std::string& str);
+
   constexpr uint16_t primary() const { return handle >> 16; }
   constexpr uint16_t secondary() const { return handle & 0x0000ffff; }
   constexpr uint32_t get() const { return handle; }
@@ -68,11 +70,7 @@ protected:
 };
 
 
-inline std::ostream& operator<<(std::ostream& out, const Handle& handle)
-{
-  out << std::hex << handle.primary() << ":" << handle.secondary() << std::dec;
-  return out;
-}
+std::ostream& operator<<(std::ostream& out, const Handle& handle);
 
 
 // Packets flowing from the device driver to the network stack are

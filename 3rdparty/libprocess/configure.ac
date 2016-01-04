@@ -190,6 +190,9 @@ case "${target_os}" in
   darwin*)
     OS_NAME=darwin
     ;;
+  freebsd*)
+    OS_NAME=freebsd
+    ;;
   *)
     ;;
 esac
@@ -204,8 +207,13 @@ fi
 # build stout/tests/proc_tests.cpp on Linux).
 AM_CONDITIONAL([OS_LINUX], [test "x$OS_NAME" = "xlinux"])
 
+AM_CONDITIONAL([OS_FREEBSD], [test "x$OS_NAME" = "xfreebsd"])
+
+# We use "-isystem" instead of "-I" to add Boost to the include search
+# path. This disables compiler warnings inside Boost headers since we
+# can't easily fix them. See MESOS-3799.
 if test -n "`echo $with_boost`"; then
-  CPPFLAGS="$CPPFLAGS -I${with_boost}/include"
+  CPPFLAGS="$CPPFLAGS -isystem ${with_boost}/include"
 fi
 
 if test -n "`echo $with_picojson`"; then
@@ -531,13 +539,20 @@ if test "x$without_bundled_protobuf" = "xyes" || \
     PROTOBUFPREFIX="/usr"
   fi
 
-  # Check for protobuf.
-  # TODO(jieyu): Symbol _init is not available for libs on OS X.
-  # Consider checking lib using AX_CXX_CHECK_LIB.
-  AC_CHECK_HEADERS([google/protobuf/message.h],
-                   [AC_CHECK_LIB([protobuf],
-                                 [_init],
-                                 [found_protobuf=yes])])
+  AC_CHECK_HEADERS([google/protobuf/message.h], [found_protobuf=yes],
+                   [found_protobuf=no])
+
+  if test "x$found_protobuf" = "xyes"; then
+    saved_LIBS="$LIBS"
+    LIBS="-lprotobuf $LIBS"
+    AC_LANG_PUSH([C++])
+    AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <google/protobuf/stubs/common.h>],
+                    [ google::protobuf::ShutdownProtobufLibrary(); ])],
+            [ found_protobuf=yes ],
+            [ found_protobuf=no ])
+    AC_LANG_POP()
+    LIBS="$saved_LIBS"
+  fi
 
   if test "x$found_protobuf" = "xyes"; then
     with_bundled_protobuf=no
@@ -813,7 +828,18 @@ case "$host_os" in
     # GTEST on OSX needs its own tr1 tuple.
     CXXFLAGS="$CXXFLAGS -DGTEST_USE_OWN_TR1_TUPLE=1 -DGTEST_LANG_CXX11"
     ;;
+  freebsd* )
+    # If we're using clang, we need to pass -stdlib=libc++ too.
+    if test "x$ax_cv_cxx_compiler_vendor" = "xclang"; then
+      CXXFLAGS="$CXXFLAGS -stdlib=libc++"
+    fi
+
+    # FreeBSD needs GTEST_HAS_PTHREAD for this version of gmock/gtest and
+    # _WITH_GETLINE for getline()
+    CXXFLAGS="$CXXFLAGS -DGTEST_HAS_PTHREAD -D_WITH_GETLINE"
+    ;;
 esac
+
 
 # Also pass the flags to 3rdparty libraries.
 CONFIGURE_ARGS="$CONFIGURE_ARGS CXXFLAGS='$CXXFLAGS'"
@@ -839,12 +865,14 @@ you can get away without it by doing --without-zlib.
 fi
 
 
-AC_CHECK_LIB([dl], [dlopen], [],
-	     [AC_MSG_ERROR([cannot find libdl
+if test "x$OS_NAME" != "xfreebsd"; then
+    AC_CHECK_LIB([dl], [dlopen], [],
+             [AC_MSG_ERROR([cannot find libdl
 -------------------------------------------------------------------
 libdl was not found, and is required for compilation.
 -------------------------------------------------------------------
-])])
+    ])])
+fi
 
 
 AC_OUTPUT

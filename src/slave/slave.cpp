@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <errno.h>
 #include <signal.h>
@@ -88,6 +86,8 @@
 #include "slave/paths.hpp"
 #include "slave/slave.hpp"
 #include "slave/status_update_manager.hpp"
+
+using mesos::executor::Call;
 
 using mesos::slave::QoSController;
 using mesos::slave::QoSCorrection;
@@ -585,7 +585,7 @@ void Slave::initialize()
   action.sa_sigaction = signalHandler;
 
   if (sigaction(SIGUSR1, &action, NULL) < 0) {
-    EXIT(1) << "Failed to set sigaction: " << strerror(errno);
+    EXIT(1) << "Failed to set sigaction: " << os::strerror(errno);
   }
 
   // Do recovery.
@@ -643,13 +643,21 @@ void Slave::shutdown(const UPID& from, const string& message)
     LOG(INFO) << "Slave asked to shut down by " << from
               << (message.empty() ? "" : " because '" + message + "'");
   } else if (info.has_id()) {
-    LOG(INFO) << message << "; unregistering and shutting down";
+    if (message.empty()) {
+      LOG(INFO) << "Unregistering and shutting down";
+    } else {
+      LOG(INFO) << message << "; unregistering and shutting down";
+    }
 
     UnregisterSlaveMessage message_;
     message_.mutable_slave_id()->MergeFrom(info.id());
     send(master.get(), message_);
   } else {
-    LOG(INFO) << message << "; shutting down";
+    if (message.empty()) {
+      LOG(INFO) << "Shutting down";
+    } else {
+      LOG(INFO) << message << "; shutting down";
+    }
   }
 
   state = TERMINATING;
@@ -1335,6 +1343,9 @@ void Slave::runTask(
 
     framework = new Framework(this, frameworkInfo, frameworkPid);
     frameworks[frameworkId] = framework;
+    if (frameworkInfo.checkpoint()) {
+      framework->checkpointFramework();
+    }
 
     // Is this same framework in completedFrameworks? If so, move the completed
     // executors to this framework and remove it from that list.
@@ -1351,7 +1362,7 @@ void Slave::runTask(
     }
   }
 
-  const ExecutorInfo executorInfo = getExecutorInfo(frameworkId, task);
+  const ExecutorInfo executorInfo = getExecutorInfo(frameworkInfo, task);
   const ExecutorID& executorId = executorInfo.executor_id();
 
   if (HookManager::hooksAvailable()) {
@@ -1410,7 +1421,7 @@ void Slave::_runTask(
     return;
   }
 
-  const ExecutorInfo executorInfo = getExecutorInfo(frameworkId, task);
+  const ExecutorInfo executorInfo = getExecutorInfo(frameworkInfo, task);
   const ExecutorID& executorId = executorInfo.executor_id();
 
   if (framework->pending.contains(executorId) &&
@@ -1618,7 +1629,7 @@ void Slave::_runTask(
 
       // Queue task if the executor has not yet registered.
       LOG(INFO) << "Queuing task '" << task.task_id()
-                << "' for executor '" << *executor << "'";
+                << "' for executor " << *executor;
 
       executor->queuedTasks[task.task_id()] = task;
       break;
@@ -1631,7 +1642,7 @@ void Slave::_runTask(
       // Queue task until the containerizer is updated with new
       // resource limits (MESOS-998).
       LOG(INFO) << "Queuing task '" << task.task_id()
-                << "' for executor '" << *executor << "'";
+                << "' for executor " << *executor;
 
       executor->queuedTasks[task.task_id()] = task;
 
@@ -1658,7 +1669,7 @@ void Slave::_runTask(
       break;
     }
     default:
-      LOG(FATAL) << "Executor '" << *executor << " is in unexpected state "
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
                  << executor->state;
       break;
   }
@@ -1783,7 +1794,7 @@ void Slave::runTasks(
     executor->addTask(task);
 
     LOG(INFO) << "Sending queued task '" << task.task_id()
-              << "' to executor '" << *executor << "'";
+              << "' to executor " << *executor;
 
     RunTaskMessage message;
     message.mutable_framework()->MergeFrom(framework->info);
@@ -1971,8 +1982,8 @@ void Slave::killTask(
       break;
     }
     default:
-      LOG(FATAL) << "Executor '" << *executor
-                 << "' is in unexpected state " << executor->state;
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                 << executor->state;
       break;
   }
 }
@@ -2132,8 +2143,8 @@ void Slave::schedulerMessage(
       break;
     }
     default:
-      LOG(FATAL) << "Executor '" << *executor
-                 << "' is in unexpected state " << executor->state;
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                 << executor->state;
       break;
   }
 }
@@ -2389,6 +2400,176 @@ void Slave::_statusUpdateAcknowledgement(
 }
 
 
+void Slave::subscribe(
+    HttpConnection http,
+    const Call::Subscribe& subscribe,
+    Framework* framework,
+    Executor* executor)
+{
+  CHECK_NOTNULL(framework);
+  CHECK_NOTNULL(executor);
+
+  LOG(INFO) << "Received Subscribe request for HTTP executor " << *executor;
+
+  CHECK(state == DISCONNECTED || state == RUNNING ||
+        state == TERMINATING) << state;
+
+  if (state == TERMINATING) {
+    LOG(WARNING) << "Shutting down executor " << *executor << " as the slave "
+                 << "is terminating";
+    http.send(ShutdownExecutorMessage());
+    http.close();
+    return;
+  }
+
+  CHECK(framework->state == Framework::RUNNING ||
+        framework->state == Framework::TERMINATING)
+    << framework->state;
+
+  if (framework->state == Framework::TERMINATING) {
+    LOG(WARNING) << "Shutting down executor " << *executor << " as the "
+                 << "framework is terminating";
+    http.send(ShutdownExecutorMessage());
+    http.close();
+    return;
+  }
+
+  switch (executor->state) {
+    case Executor::TERMINATING:
+    case Executor::TERMINATED:
+      // TERMINATED is possible if the executor forks, the parent process
+      // terminates and the child process (driver) tries to register!
+      LOG(WARNING) << "Shutting down executor " << *executor
+                   << " because it is in unexpected state " << executor->state;
+      http.send(ShutdownExecutorMessage());
+      http.close();
+      break;
+    case Executor::RUNNING:
+    case Executor::REGISTERING: {
+      // Close the earlier connection if one existed. This can even
+      // be a retried Subscribe request from an already connected
+      // executor.
+      if (executor->http.isSome()) {
+        LOG(WARNING) << "Closing already existing HTTP connection from "
+                     << "executor " << *executor;
+        executor->http->close();
+      }
+
+      executor->state = Executor::RUNNING;
+
+      // Save the connection for the executor.
+      executor->http = http;
+      executor->pid = None();
+
+      if (framework->info.checkpoint()) {
+        // Write a marker file to indicate that this executor
+        // is HTTP based.
+        const string path = paths::getExecutorHttpMarkerPath(
+            metaDir,
+            info.id(),
+            framework->id(),
+            executor->id,
+            executor->containerId);
+
+        LOG(INFO) << "Creating a marker file for HTTP based executor "
+                  << *executor << " at path '" << path << "'";
+        CHECK_SOME(os::touch(path));
+      }
+
+      // Tell executor it's registered and give it any queued tasks.
+      ExecutorRegisteredMessage message;
+      message.mutable_executor_info()->MergeFrom(executor->info);
+      message.mutable_framework_id()->MergeFrom(framework->id());
+      message.mutable_framework_info()->MergeFrom(framework->info);
+      message.mutable_slave_id()->MergeFrom(info.id());
+      message.mutable_slave_info()->MergeFrom(info);
+      executor->send(message);
+
+      // Handle all the pending updates.
+      // The status update manager might have already checkpointed some
+      // of these pending updates (for example, if the slave died right
+      // after it checkpointed the update but before it could send the
+      // ACK to the executor). This is ok because the status update
+      // manager correctly handles duplicate updates.
+      foreach (const Call::Update& update, subscribe.updates()) {
+        // NOTE: This also updates the executor's resources!
+        statusUpdate(protobuf::createStatusUpdate(
+            framework->id(),
+            update.status(),
+            info.id()),
+            None());
+      }
+
+      // Update the resource limits for the container. Note that the
+      // resource limits include the currently queued tasks because we
+      // want the container to have enough resources to hold the
+      // upcoming tasks.
+      Resources resources = executor->resources;
+
+      // TODO(jieyu): Use foreachvalue instead once LinkedHashmap
+      // supports it.
+      foreach (const TaskInfo& task, executor->queuedTasks.values()) {
+        resources += task.resources();
+      }
+
+      containerizer->update(executor->containerId, resources)
+        .onAny(defer(self(),
+                     &Self::runTasks,
+                     lambda::_1,
+                     framework->id(),
+                     executor->id,
+                     executor->containerId,
+                     executor->queuedTasks.values()));
+
+      hashmap<TaskID, TaskInfo> unackedTasks;
+      foreach (const TaskInfo& task, subscribe.tasks()) {
+        unackedTasks[task.task_id()] = task;
+      }
+
+      // Now, if there is any task still in STAGING state and not in
+      // unacknowledged 'tasks' known to the executor, the slave must
+      // have died before the executor received the task! We should
+      // transition it to TASK_LOST. We only consider/store
+      // unacknowledged 'tasks' at the executor driver because if a
+      // task has been acknowledged, the slave must have received
+      // an update for that task and transitioned it out of STAGING!
+      // TODO(vinod): Consider checkpointing 'TaskInfo' instead of
+      // 'Task' so that we can relaunch such tasks! Currently we
+      // don't do it because 'TaskInfo.data' could be huge.
+      // TODO(vinod): Use foreachvalue instead once LinkedHashmap
+      // supports it.
+      foreach (Task* task, executor->launchedTasks.values()) {
+        if (task->state() == TASK_STAGING &&
+            !unackedTasks.contains(task->task_id())) {
+          LOG(INFO) << "Transitioning STAGED task " << task->task_id()
+                    << " to LOST because it is unknown to the executor "
+                    << executor->id;
+
+          const StatusUpdate update = protobuf::createStatusUpdate(
+              framework->id(),
+              info.id(),
+              task->task_id(),
+              TASK_LOST,
+              TaskStatus::SOURCE_SLAVE,
+              UUID::random(),
+              "Task launched during slave restart",
+              TaskStatus::REASON_SLAVE_RESTARTED,
+              executor->id);
+
+          statusUpdate(update, UPID());
+        }
+      }
+
+      break;
+    }
+    default:
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                 << executor->state;
+      break;
+  }
+}
+
+
 void Slave::registerExecutor(
     const UPID& from,
     const FrameworkID& frameworkId,
@@ -2466,6 +2647,7 @@ void Slave::registerExecutor(
 
       // Save the pid for the executor.
       executor->pid = from;
+      link(from);
 
       if (framework->info.checkpoint()) {
         // TODO(vinod): This checkpointing should be done
@@ -2516,8 +2698,8 @@ void Slave::registerExecutor(
       break;
     }
     default:
-      LOG(FATAL) << "Executor " << *executor
-                 << " is in unexpected state " << executor->state;
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                 << executor->state;
       break;
   }
 }
@@ -2580,6 +2762,7 @@ void Slave::reregisterExecutor(
       executor->state = Executor::RUNNING;
 
       executor->pid = from; // Update the pid.
+      link(from);
 
       // Send re-registration message to the executor.
       ExecutorReregisteredMessage message;
@@ -2648,8 +2831,8 @@ void Slave::reregisterExecutor(
       break;
     }
     default:
-      LOG(FATAL) << "Executor " << *executor
-                 << " is in unexpected state " << executor->state;
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                 << executor->state;
       break;
   }
 }
@@ -2727,8 +2910,8 @@ void Slave::reregisterExecutorTimeout()
           break;
         }
         default:
-          LOG(FATAL) << "Executor " << *executor
-                     << " is in unexpected state " << executor->state;
+          LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                     << executor->state;
           break;
       }
     }
@@ -2749,9 +2932,10 @@ void Slave::reregisterExecutorTimeout()
 // reliable delivery of status updates. Since executor driver caches
 // unacked updates it is important that whoever sent the update gets
 // acknowledgement for it.
-void Slave::statusUpdate(StatusUpdate update, const UPID& pid)
+void Slave::statusUpdate(StatusUpdate update, const Option<UPID>& pid)
 {
-  LOG(INFO) << "Handling status update " << update << " from " << pid;
+  LOG(INFO) << "Handling status update " << update
+            << (pid.isSome() ? " from " + stringify(pid.get()) : "");
 
   CHECK(state == RECOVERING || state == DISCONNECTED ||
         state == RUNNING || state == TERMINATING)
@@ -2778,7 +2962,8 @@ void Slave::statusUpdate(StatusUpdate update, const UPID& pid)
   if (update.has_executor_id()) {
     if (update.status().has_executor_id() &&
         update.status().executor_id() != update.executor_id()) {
-      LOG(WARNING) << "Executor ID mismatch in status update from " << pid
+      LOG(WARNING) << "Executor ID mismatch in status update"
+                   << (pid.isSome() ? " from " + stringify(pid.get()) : "")
                    << "; overwriting received '"
                    << update.status().executor_id() << "' with expected'"
                    << update.executor_id() << "'";
@@ -2832,10 +3017,16 @@ void Slave::statusUpdate(StatusUpdate update, const UPID& pid)
     update.mutable_status()->mutable_container_status();
   if (containerStatus->network_infos().size() == 0) {
     NetworkInfo* networkInfo = containerStatus->add_network_infos();
+
+    // TODO(CD): Deprecated -- Remove after 0.27.0.
     networkInfo->set_ip_address(stringify(self().address.ip));
+
+    NetworkInfo::IPAddress* ipAddress =
+      networkInfo->add_ip_addresses();
+    ipAddress->set_ip_address(stringify(self().address.ip));
   }
 
-  TaskStatus status = update.status();
+  const TaskStatus& status = update.status();
 
   Executor* executor = framework->getExecutor(status.task_id());
   if (executor == NULL) {
@@ -2884,10 +3075,11 @@ void Slave::statusUpdate(StatusUpdate update, const UPID& pid)
 
   // TODO(vinod): Revisit these semantics when we disallow executors
   // from sending updates for tasks that belong to other executors.
-  if (pid != UPID() &&
+  if (pid.isSome() &&
+      pid != UPID() &&
       executor->pid.isSome() &&
-      executor->pid.get() != pid) {
-    LOG(WARNING) << "Received status update " << update << " from " << pid
+      executor->pid != pid) {
+    LOG(WARNING) << "Received status update " << update << " from " << pid.get()
                  << " on behalf of a different executor '" << executor->id
                  << "' (" << executor->pid.get() << ")";
   }
@@ -2940,7 +3132,7 @@ void Slave::statusUpdate(StatusUpdate update, const UPID& pid)
 void Slave::_statusUpdate(
     const Option<Future<Nothing>>& future,
     const StatusUpdate& update,
-    const UPID& pid,
+    const Option<UPID>& pid,
     const ExecutorID& executorId,
     const ContainerID& containerId,
     bool checkpoint)
@@ -2984,25 +3176,49 @@ void Slave::_statusUpdate(
 void Slave::__statusUpdate(
     const Future<Nothing>& future,
     const StatusUpdate& update,
-    const UPID& pid)
+    const Option<UPID>& pid)
 {
   CHECK_READY(future) << "Failed to handle status update " << update;
 
   VLOG(1) << "Status update manager successfully handled status update "
           << update;
 
+  if (pid == UPID()) {
+    return;
+  }
+
+  StatusUpdateAcknowledgementMessage message;
+  message.mutable_framework_id()->MergeFrom(update.framework_id());
+  message.mutable_slave_id()->MergeFrom(update.slave_id());
+  message.mutable_task_id()->MergeFrom(update.status().task_id());
+  message.set_uuid(update.uuid());
+
   // Status update manager successfully handled the status update.
   // Acknowledge the executor, if we have a valid pid.
-  if (pid != UPID()) {
+  if (pid.isSome()) {
     LOG(INFO) << "Sending acknowledgement for status update " << update
-              << " to " << pid;
-    StatusUpdateAcknowledgementMessage message;
-    message.mutable_framework_id()->MergeFrom(update.framework_id());
-    message.mutable_slave_id()->MergeFrom(update.slave_id());
-    message.mutable_task_id()->MergeFrom(update.status().task_id());
-    message.set_uuid(update.uuid());
+              << " to " << pid.get();
 
-    send(pid, message);
+    send(pid.get(), message);
+  } else {
+    // Acknowledge the HTTP based executor.
+    Framework* framework = getFramework(update.framework_id());
+    if (framework == NULL) {
+      LOG(WARNING) << "Ignoring sending acknowledgement for status update "
+                   << update << " of unknown framework";
+      return;
+    }
+
+    Executor* executor = framework->getExecutor(update.status().task_id());
+    if (executor == NULL) {
+      // Refer to the comments in 'statusUpdate()' on when this can
+      // happen.
+      LOG(WARNING) << "Ignoring sending acknowledgement for status update "
+                   << update << " of unknown executor";
+      return;
+    }
+
+    executor->send(message);
   }
 }
 
@@ -3021,6 +3237,15 @@ void Slave::forward(StatusUpdate update)
                  << " is in " << state << " state";
     return;
   }
+
+  // Ensure that task status uuid is set even if this update was sent by the
+  // status update manager after recovering a pre 0.23.x slave/executor driver's
+  // updates. This allows us to simplify the master code (in >= 0.27.0) to
+  // assume the uuid is always set for retryable updates.
+  CHECK(update.has_uuid())
+    << "Expecting updates without 'uuid' to have been rejected";
+
+  update.mutable_status()->set_uuid(update.uuid());
 
   // Update the status update state of the task and include the latest
   // state of the task in the status update.
@@ -3041,9 +3266,6 @@ void Slave::forward(StatusUpdate update)
       }
 
       if (task != NULL) {
-        CHECK(update.has_uuid())
-          << "Expecting updates without 'uuid' to have been rejected";
-
         // We set the status update state of the task here because in
         // steady state master updates the status update state of the
         // task when it receives this update. If the master fails over,
@@ -3226,7 +3448,7 @@ Executor* Slave::getExecutor(
 
 
 ExecutorInfo Slave::getExecutorInfo(
-    const FrameworkID& frameworkId,
+    const FrameworkInfo& frameworkInfo,
     const TaskInfo& task)
 {
   CHECK_NE(task.has_executor(), task.has_command())
@@ -3238,14 +3460,39 @@ ExecutorInfo Slave::getExecutorInfo(
 
     // Command executors share the same id as the task.
     executor.mutable_executor_id()->set_value(task.task_id().value());
-    executor.mutable_framework_id()->CopyFrom(frameworkId);
+    executor.mutable_framework_id()->CopyFrom(frameworkInfo.id());
 
-    if (task.has_container() &&
-        task.container().type() != ContainerInfo::MESOS) {
+    if (task.has_container()) {
       // Store the container info in the executor info so it will
       // be checkpointed. This allows the correct containerizer to
       // recover this task on restart.
       executor.mutable_container()->CopyFrom(task.container());
+    }
+
+    bool hasRootfs = task.has_container() &&
+                     task.container().type() == ContainerInfo::MESOS &&
+                     task.container().mesos().has_image();
+
+    if (hasRootfs) {
+      ContainerInfo* container = executor.mutable_container();
+
+      // For command-tasks, we are now copying the entire `task.container` into
+      // the `executorInfo`. Thus, `executor.container` now has the image if
+      // `task.container` had one. However, in case of rootfs, we want to run
+      // the command executor in the host filesystem and prepare/mount the image
+      // into the container as a volume (command executor will use pivot_root to
+      // mount the image). For this reason, we need to strip the image in
+      // `executor.container.mesos`.
+      container->mutable_mesos()->clear_image();
+
+      container->set_type(ContainerInfo::MESOS);
+      Volume* volume = container->add_volumes();
+      volume->mutable_image()->CopyFrom(task.container().mesos().image());
+      volume->set_container_path(COMMAND_EXECUTOR_ROOTFS_CONTAINER_PATH);
+      volume->set_mode(Volume::RW);
+      // We need to set the executor user as root as it needs to
+      // perform chroot (even when switch_user is set to false).
+      executor.mutable_command()->set_user("root");
     }
 
     // Prepare an executor name which includes information on the
@@ -3296,12 +3543,11 @@ ExecutorInfo Slave::getExecutorInfo(
           task.command().environment());
     }
 
-    if (task.command().has_container()) {
-      executor.mutable_command()->mutable_container()->MergeFrom(
-          task.command().container());
-    }
-
-    if (task.command().has_user()) {
+    // We skip setting the user for the command executor that has
+    // a rootfs image since we need root permissions to chroot.
+    // We assume command executor will change to the correct user
+    // later on.
+    if (!hasRootfs && task.command().has_user()) {
       executor.mutable_command()->set_user(task.command().user());
     }
 
@@ -3314,6 +3560,31 @@ ExecutorInfo Slave::getExecutorInfo(
     executor.mutable_command()->set_shell(true);
 
     if (path.isSome()) {
+      if (hasRootfs) {
+        executor.mutable_command()->set_shell(false);
+        executor.mutable_command()->add_arguments("mesos-executor");
+        executor.mutable_command()->add_arguments(
+            "--sandbox_directory=" + flags.sandbox_directory);
+
+        // NOTE: if switch_user flag is false and the slave runs under
+        // a non-root user, the task will be rejected by the Posix
+        // filesystem isolator. Linux filesystem isolator requires slave
+        // to have root permission.
+        if (flags.switch_user) {
+          Option<string> user;
+          if (task.command().has_user()) {
+            user = task.command().user();
+          } else if (frameworkInfo.has_user()) {
+            user = frameworkInfo.user();
+          }
+
+          if (user.isSome()) {
+            executor.mutable_command()->add_arguments(
+                "--user=" + user.get());
+          }
+        }
+      }
+
       executor.mutable_command()->set_value(path.get());
     } else {
       executor.mutable_command()->set_value(
@@ -3430,8 +3701,8 @@ void Slave::executorLaunched(
 
   switch (executor->state) {
     case Executor::TERMINATING:
-      LOG(WARNING) << "Killing executor '" << *executor
-                   << "' because the executor is terminating";
+      LOG(WARNING) << "Killing executor " << *executor
+                   << " because the executor is terminating";
 
       containerizer->destroy(containerId);
       break;
@@ -3440,8 +3711,8 @@ void Slave::executorLaunched(
       break;
     case Executor::TERMINATED:
     default:
-      LOG(FATAL) << "Executor '" << *executor
-                 << "' is in an unexpected state " << executor->state;
+      LOG(FATAL) << "Executor " << *executor << " is in an unexpected state "
+                 << executor->state;
 
       break;
   }
@@ -3761,6 +4032,7 @@ void Slave::shutdownExecutor(
   if (!framework->executors.contains(executorId)) {
     LOG(WARNING) << "Ignoring shutdown of unknown executor '" << executorId
                  << "' of framework " << frameworkId;
+    return;
   }
 
   Executor* executor = framework->executors[executorId];
@@ -3775,6 +4047,7 @@ void Slave::shutdownExecutor(
     LOG(WARNING) << "Ignoring shutdown executor '" << executorId
                  << "' of framework " << frameworkId
                  << " because the executor is terminating/terminated";
+    return;
   }
 
   _shutdownExecutor(framework, executor);
@@ -3856,8 +4129,8 @@ void Slave::shutdownExecutorTimeout(
       containerizer->destroy(executor->containerId);
       break;
     default:
-      LOG(FATAL) << "Executor " << *executor
-                 << " is in unexpected state " << executor->state;
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                 << executor->state;
       break;
   }
 }
@@ -3930,8 +4203,8 @@ void Slave::registerExecutorTimeout(
       break;
     }
     default:
-      LOG(FATAL) << "Executor " << *executor
-                 << " is in unexpected state " << executor->state;
+      LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                 << executor->state;
       break;
   }
 }
@@ -4094,17 +4367,17 @@ Future<Nothing> Slave::_recover()
         // http.isNone and pid.isNone (see comments in the header).
         if (executor->pid.isSome() && executor->pid.get()) {
           LOG(INFO)
-            << "Sending reconnect request to executor '" << *executor << "'";
+            << "Sending reconnect request to executor " << *executor;
 
           ReconnectExecutorMessage message;
           message.mutable_slave_id()->MergeFrom(info.id());
           send(executor->pid.get(), message);
         } else if (executor->pid.isNone()) {
-          LOG(INFO) << "Waiting for executor '" << *executor
-                    << "' to subscribe";
+          LOG(INFO) << "Waiting for executor " << *executor
+                    << " to subscribe";
         } else {
-          LOG(INFO) << "Unable to reconnect to executor '" << *executor
-                    << "' because no pid or http checkpoint file was found";
+          LOG(INFO) << "Unable to reconnect to executor " << *executor
+                    << " because no pid or http checkpoint file was found";
         }
       } else {
         // For PID-based executors, we ask the executor to shut
@@ -4113,11 +4386,11 @@ Future<Nothing> Slave::_recover()
         // when the executor subscribes.
         if ((executor->pid.isSome() && executor->pid.get()) ||
             executor->pid.isNone()) {
-          LOG(INFO) << "Sending shutdown to executor '" << *executor << "'";
+          LOG(INFO) << "Sending shutdown to executor " << *executor;
           _shutdownExecutor(framework, executor);
         } else {
-          LOG(INFO) << "Killing executor '" << *executor
-                    << "' because no pid or http checkpoint file was found";
+          LOG(INFO) << "Killing executor " << *executor
+                    << " because no pid or http checkpoint file was found";
 
           containerizer->destroy(executor->containerId);
         }
@@ -4259,7 +4532,18 @@ void Slave::recoverFramework(const FrameworkState& state)
 
   CHECK_SOME(state.info);
   FrameworkInfo frameworkInfo = state.info.get();
+
+  // Mesos 0.22 and earlier didn't write the FrameworkID into the FrameworkInfo.
+  // In this case, we we update FrameworkInfo.framework_id from directory name,
+  // and rewrite the new format when we are done.
+  bool recheckpoint = false;
+  if (!frameworkInfo.has_id()) {
+    frameworkInfo.mutable_id()->CopyFrom(state.id);
+    recheckpoint = true;
+  }
+
   CHECK(frameworkInfo.has_id());
+  CHECK(frameworkInfo.checkpoint());
 
   // In 0.24.0, HTTP schedulers are supported and these do not
   // have a 'pid'. In this case, the slave will checkpoint UPID().
@@ -4273,6 +4557,10 @@ void Slave::recoverFramework(const FrameworkState& state)
 
   Framework* framework = new Framework(this, frameworkInfo, pid);
   frameworks[framework->id()] = framework;
+
+  if (recheckpoint) {
+    framework->checkpointFramework();
+  }
 
   // Now recover the executors for this framework.
   foreachvalue (const ExecutorState& executorState, state.executors) {
@@ -4495,8 +4783,8 @@ void Slave::_qosCorrections(const Future<list<QoSCorrection>>& future)
                        << executor->state << " state";
           break;
         default:
-          LOG(FATAL) << "Executor '" << *executor
-                     << "' is in unexpected state " << executor->state;
+          LOG(FATAL) << "Executor " << *executor << " is in unexpected state "
+                     << executor->state;
           break;
       }
     } else {
@@ -4757,8 +5045,7 @@ double Slave::_resources_used(const string& name)
 
   foreachvalue (Framework* framework, frameworks) {
     foreachvalue (Executor* executor, framework->executors) {
-      foreach (const Resource& resource,
-               executor->resources - executor->resources.revocable()) {
+      foreach (const Resource& resource, executor->resources.nonRevocable()) {
         if (resource.name() == name && resource.type() == Value::SCALAR) {
           used += resource.scalar().value();
         }
@@ -4836,30 +5123,31 @@ Framework::Framework(
     slave(_slave),
     info(_info),
     pid(_pid),
-    completedExecutors(MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK)
+    completedExecutors(MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK) {}
+
+
+void Framework::checkpointFramework() const
 {
-  if (info.checkpoint() && slave->state != slave->RECOVERING) {
-    // Checkpoint the framework info.
-    string path = paths::getFrameworkInfoPath(
-        slave->metaDir, slave->info.id(), id());
+  // Checkpoint the framework info.
+  string path = paths::getFrameworkInfoPath(
+      slave->metaDir, slave->info.id(), id());
 
-    VLOG(1) << "Checkpointing FrameworkInfo to '" << path << "'";
+  VLOG(1) << "Checkpointing FrameworkInfo to '" << path << "'";
 
-    CHECK_SOME(state::checkpoint(path, info));
+  CHECK_SOME(state::checkpoint(path, info));
 
-    // Checkpoint the framework pid, note that we checkpoint a
-    // UPID() when it is None (for HTTP schedulers) because
-    // 0.23.x slaves consider a missing pid file to be an
-    // error.
-    path = paths::getFrameworkPidPath(
-        slave->metaDir, slave->info.id(), id());
+  // Checkpoint the framework pid, note that we checkpoint a
+  // UPID() when it is None (for HTTP schedulers) because
+  // 0.23.x slaves consider a missing pid file to be an
+  // error.
+  path = paths::getFrameworkPidPath(
+      slave->metaDir, slave->info.id(), id());
 
-    VLOG(1) << "Checkpointing framework pid"
-            << " '" << pid.getOrElse(UPID()) << "'"
-            << " to '" << path << "'";
+  VLOG(1) << "Checkpointing framework pid"
+          << " '" << pid.getOrElse(UPID()) << "'"
+          << " to '" << path << "'";
 
-    CHECK_SOME(state::checkpoint(path, pid.getOrElse(UPID())));
-  }
+  CHECK_SOME(state::checkpoint(path, pid.getOrElse(UPID())));
 }
 
 
@@ -5087,18 +5375,28 @@ void Framework::recoverExecutor(const ExecutorState& state)
   Executor* executor = new Executor(
       slave, id(), state.info.get(), latest, directory, info.checkpoint());
 
-  // Recover the libprocess PID if possible.
-  if (run.get().libprocessPid.isSome()) {
-    // When recovering in non-strict mode, the assumption is that the
-    // slave can die after checkpointing the forked pid but before the
-    // libprocess pid. So, it is not possible for the libprocess pid
-    // to exist but not the forked pid. If so, it is a really bad
-    // situation (e.g., disk corruption).
-    CHECK_SOME(run.get().forkedPid)
-      << "Failed to get forked pid for executor " << state.id
-      << " of framework " << id();
+  // Recover the libprocess PID if possible for PID based executors.
+  if (run.get().http.isSome()) {
+    if (!run.get().http.get()) {
+      // When recovering in non-strict mode, the assumption is that the
+      // slave can die after checkpointing the forked pid but before the
+      // libprocess pid. So, it is not possible for the libprocess pid
+      // to exist but not the forked pid. If so, it is a really bad
+      // situation (e.g., disk corruption).
+      CHECK_SOME(run.get().forkedPid)
+        << "Failed to get forked pid for executor " << state.id
+        << " of framework " << id();
 
-    executor->pid = run.get().libprocessPid.get();
+      executor->pid = run.get().libprocessPid.get();
+    } else {
+      // We set the PID to None() to signify that this is a HTTP based
+      // executor.
+      executor->pid = None();
+    }
+  } else {
+    // We set the PID to UPID() to signify that the connection type for this
+    // executor is unknown.
+    executor->pid = UPID();
   }
 
   // And finally recover all the executor's tasks.

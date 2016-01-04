@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __TESTS_MESOS_HPP__
 #define __TESTS_MESOS_HPP__
@@ -31,8 +29,6 @@
 #include <mesos/scheduler.hpp>
 
 #include <mesos/authorizer/authorizer.hpp>
-
-#include <mesos/master/allocator.hpp>
 
 #include <mesos/fetcher/fetcher.hpp>
 
@@ -65,8 +61,6 @@
 
 #include "master/detector.hpp"
 #include "master/master.hpp"
-
-#include "master/allocator/mesos/hierarchical.hpp"
 
 #include "slave/slave.hpp"
 
@@ -244,6 +238,9 @@ protected:
 
   // Containerizer(s) created during test that we need to cleanup.
   std::map<process::PID<slave::Slave>, slave::Containerizer*> containerizers;
+
+  const std::string defaultAgentResourcesString{
+    "cpus:2;mem:1024;disk:1024;ports:[31000-32000]"};
 };
 
 
@@ -511,11 +508,14 @@ inline Resource::DiskInfo createDiskInfo(
 }
 
 
+// Note that `reservationPrincipal` should be specified if and only if
+// the volume uses dynamically reserved resources.
 inline Resource createPersistentVolume(
     const Bytes& size,
     const std::string& role,
     const std::string& persistenceId,
-    const std::string& containerPath)
+    const std::string& containerPath,
+    const Option<std::string>& reservationPrincipal = None())
 {
   Resource volume = Resources::parse(
       "disk",
@@ -525,7 +525,22 @@ inline Resource createPersistentVolume(
   volume.mutable_disk()->CopyFrom(
       createDiskInfo(persistenceId, containerPath));
 
+  if (reservationPrincipal.isSome()) {
+    volume.mutable_reservation()->set_principal(reservationPrincipal.get());
+  }
+
   return volume;
+}
+
+
+inline process::http::Headers createBasicAuthHeaders(
+    const Credential& credential)
+{
+  return process::http::Headers{{
+      "Authorization",
+      "Basic " +
+        base64::encode(credential.principal() + ":" + credential.secret())
+  }};
 }
 
 
@@ -585,6 +600,9 @@ inline Offer::Operation LAUNCH(const std::vector<TaskInfo>& tasks)
 class MockScheduler : public Scheduler
 {
 public:
+  MockScheduler();
+  virtual ~MockScheduler();
+
   MOCK_METHOD3(registered, void(SchedulerDriver*,
                                 const FrameworkID&,
                                 const MasterInfo&));
@@ -682,7 +700,8 @@ ACTION_P(DeclineOffers, filters)
 class MockExecutor : public Executor
 {
 public:
-  MockExecutor(const ExecutorID& _id) : id(_id) {}
+  MockExecutor(const ExecutorID& _id);
+  virtual ~MockExecutor();
 
   MOCK_METHOD4(registered, void(ExecutorDriver*,
                                 const ExecutorInfo&,
@@ -762,20 +781,8 @@ public:
 class MockGarbageCollector : public slave::GarbageCollector
 {
 public:
-  MockGarbageCollector()
-  {
-    // NOTE: We use 'EXPECT_CALL' and 'WillRepeatedly' here instead of
-    // 'ON_CALL' and 'WillByDefault'. See 'TestContainerizer::SetUp()'
-    // for more details.
-    EXPECT_CALL(*this, schedule(_, _))
-      .WillRepeatedly(Return(Nothing()));
-
-    EXPECT_CALL(*this, unschedule(_))
-      .WillRepeatedly(Return(true));
-
-    EXPECT_CALL(*this, prune(_))
-      .WillRepeatedly(Return());
-  }
+  MockGarbageCollector();
+  virtual ~MockGarbageCollector();
 
   MOCK_METHOD2(
       schedule,
@@ -792,20 +799,8 @@ public:
 class MockResourceEstimator : public mesos::slave::ResourceEstimator
 {
 public:
-  MockResourceEstimator()
-  {
-    ON_CALL(*this, initialize(_))
-      .WillByDefault(Return(Nothing()));
-    EXPECT_CALL(*this, initialize(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, oversubscribable())
-      .WillByDefault(Return(process::Future<Resources>()));
-    EXPECT_CALL(*this, oversubscribable())
-      .WillRepeatedly(DoDefault());
-  }
-
-  virtual ~MockResourceEstimator() {}
+  MockResourceEstimator();
+  virtual ~MockResourceEstimator();
 
   MOCK_METHOD1(
       initialize,
@@ -822,19 +817,8 @@ public:
 class MockQoSController : public mesos::slave::QoSController
 {
 public:
-  MockQoSController()
-  {
-    ON_CALL(*this, initialize(_))
-      .WillByDefault(Return(Nothing()));
-    EXPECT_CALL(*this, initialize(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, corrections())
-      .WillByDefault(
-          Return(process::Future<std::list<mesos::slave::QoSCorrection>>()));
-    EXPECT_CALL(*this, corrections())
-      .WillRepeatedly(DoDefault());
-  }
+  MockQoSController();
+  virtual ~MockQoSController();
 
   MOCK_METHOD1(
       initialize,
@@ -926,8 +910,7 @@ class MockFetcherProcess : public slave::FetcherProcess
 {
 public:
   MockFetcherProcess();
-
-  virtual ~MockFetcherProcess() {}
+  virtual ~MockFetcherProcess();
 
   MOCK_METHOD6(_fetch, process::Future<Nothing>(
       const hashmap<
@@ -955,14 +938,14 @@ public:
       const ContainerID& containerId,
       const std::string& sandboxDirectory,
       const Option<std::string>& user,
-      const FetcherInfo& info,
+      const mesos::fetcher::FetcherInfo& info,
       const slave::Flags& flags));
 
   process::Future<Nothing> unmocked_run(
       const ContainerID& containerId,
       const std::string& sandboxDirectory,
       const Option<std::string>& user,
-      const FetcherInfo& info,
+      const mesos::fetcher::FetcherInfo& info,
       const slave::Flags& flags);
 };
 
@@ -973,21 +956,8 @@ class MockDocker : public Docker
 public:
   MockDocker(
       const std::string& path,
-      const std::string &socket)
-    : Docker(path, socket)
-  {
-    EXPECT_CALL(*this, pull(_, _, _))
-      .WillRepeatedly(Invoke(this, &MockDocker::_pull));
-
-    EXPECT_CALL(*this, stop(_, _, _))
-      .WillRepeatedly(Invoke(this, &MockDocker::_stop));
-
-    EXPECT_CALL(*this, run(_, _, _, _, _, _, _, _, _))
-      .WillRepeatedly(Invoke(this, &MockDocker::_run));
-
-    EXPECT_CALL(*this, inspect(_, _))
-      .WillRepeatedly(Invoke(this, &MockDocker::_inspect));
-  }
+      const std::string& socket);
+  virtual ~MockDocker();
 
   MOCK_CONST_METHOD9(
       run,
@@ -999,8 +969,8 @@ public:
           const std::string&,
           const Option<mesos::Resources>&,
           const Option<std::map<std::string, std::string>>&,
-          const Option<std::string>&,
-          const Option<std::string>&));
+          const process::Subprocess::IO&,
+          const process::Subprocess::IO&));
 
   MOCK_CONST_METHOD3(
       pull,
@@ -1030,8 +1000,8 @@ public:
       const std::string& mappedDirectory,
       const Option<mesos::Resources>& resources,
       const Option<std::map<std::string, std::string>>& env,
-      const Option<std::string>& stdoutPath,
-      const Option<std::string>& stderrPath) const
+      const process::Subprocess::IO& stdout,
+      const process::Subprocess::IO& stderr) const
   {
     return Docker::run(
         containerInfo,
@@ -1041,8 +1011,8 @@ public:
         mappedDirectory,
         resources,
         env,
-        stdoutPath,
-        stderrPath);
+        stdout,
+        stderr);
   }
 
   process::Future<Docker::Image> _pull(
@@ -1076,18 +1046,13 @@ public:
   MockDockerContainerizer(
       const slave::Flags& flags,
       slave::Fetcher* fetcher,
-      process::Shared<Docker> docker)
-    : slave::DockerContainerizer(flags, fetcher, docker)
-  {
-    initialize();
-  }
+      const process::Owned<mesos::slave::ContainerLogger>& logger,
+      process::Shared<Docker> docker);
 
   MockDockerContainerizer(
-      const process::Owned<slave::DockerContainerizerProcess>& process)
-    : slave::DockerContainerizer(process)
-  {
-    initialize();
-  }
+      const process::Owned<slave::DockerContainerizerProcess>& process);
+
+  virtual ~MockDockerContainerizer();
 
   void initialize()
   {
@@ -1194,15 +1159,10 @@ public:
   MockDockerContainerizerProcess(
       const slave::Flags& flags,
       slave::Fetcher* fetcher,
-      const process::Shared<Docker>& docker)
-    : slave::DockerContainerizerProcess(flags, fetcher, docker)
-  {
-    EXPECT_CALL(*this, fetch(_, _))
-      .WillRepeatedly(Invoke(this, &MockDockerContainerizerProcess::_fetch));
+      const process::Owned<mesos::slave::ContainerLogger>& logger,
+      const process::Shared<Docker>& docker);
 
-    EXPECT_CALL(*this, pull(_))
-      .WillRepeatedly(Invoke(this, &MockDockerContainerizerProcess::_pull));
-  }
+  virtual ~MockDockerContainerizerProcess();
 
   MOCK_METHOD2(
       fetch,
@@ -1228,27 +1188,12 @@ public:
 };
 
 
-// Definition of a MockAuthozier that can be used in tests with gmock.
+// Definition of a MockAuthorizer that can be used in tests with gmock.
 class MockAuthorizer : public Authorizer
 {
 public:
-  MockAuthorizer()
-  {
-    // NOTE: We use 'EXPECT_CALL' and 'WillRepeatedly' here instead of
-    // 'ON_CALL' and 'WillByDefault'. See 'TestContainerizer::SetUp()'
-    // for more details.
-    EXPECT_CALL(*this, authorize(An<const mesos::ACL::RegisterFramework&>()))
-      .WillRepeatedly(Return(true));
-
-    EXPECT_CALL(*this, authorize(An<const mesos::ACL::RunTask&>()))
-      .WillRepeatedly(Return(true));
-
-    EXPECT_CALL(*this, authorize(An<const mesos::ACL::ShutdownFramework&>()))
-      .WillRepeatedly(Return(true));
-
-    EXPECT_CALL(*this, initialize(An<const Option<ACLs>&>()))
-      .WillRepeatedly(Return(Nothing()));
-  }
+  MockAuthorizer();
+  virtual ~MockAuthorizer();
 
   MOCK_METHOD1(
       initialize, Try<Nothing>(const Option<ACLs>& acls));
@@ -1258,376 +1203,16 @@ public:
       authorize, process::Future<bool>(const ACL::RunTask& request));
   MOCK_METHOD1(
       authorize, process::Future<bool>(const ACL::ShutdownFramework& request));
-};
-
-
-// The following actions make up for the fact that DoDefault
-// cannot be used inside a DoAll, for example:
-// EXPECT_CALL(allocator, addFramework(_, _, _))
-//   .WillOnce(DoAll(InvokeAddFramework(&allocator),
-//                   FutureSatisfy(&addFramework)));
-
-ACTION_P(InvokeInitialize, allocator)
-{
-  allocator->real->initialize(arg0, arg1, arg2, arg3);
-}
-
-
-ACTION_P(InvokeAddFramework, allocator)
-{
-  allocator->real->addFramework(arg0, arg1, arg2);
-}
-
-
-ACTION_P(InvokeRemoveFramework, allocator)
-{
-  allocator->real->removeFramework(arg0);
-}
-
-
-ACTION_P(InvokeActivateFramework, allocator)
-{
-  allocator->real->activateFramework(arg0);
-}
-
-
-ACTION_P(InvokeDeactivateFramework, allocator)
-{
-  allocator->real->deactivateFramework(arg0);
-}
-
-
-ACTION_P(InvokeUpdateFramework, allocator)
-{
-  allocator->real->updateFramework(arg0, arg1);
-}
-
-
-ACTION_P(InvokeAddSlave, allocator)
-{
-  allocator->real->addSlave(arg0, arg1, arg2, arg3, arg4);
-}
-
-
-ACTION_P(InvokeRemoveSlave, allocator)
-{
-  allocator->real->removeSlave(arg0);
-}
-
-
-ACTION_P(InvokeUpdateSlave, allocator)
-{
-  allocator->real->updateSlave(arg0, arg1);
-}
-
-
-ACTION_P(InvokeActivateSlave, allocator)
-{
-  allocator->real->activateSlave(arg0);
-}
-
-
-ACTION_P(InvokeDeactivateSlave, allocator)
-{
-  allocator->real->deactivateSlave(arg0);
-}
-
-
-ACTION_P(InvokeUpdateWhitelist, allocator)
-{
-  allocator->real->updateWhitelist(arg0);
-}
-
-
-ACTION_P(InvokeRequestResources, allocator)
-{
-  allocator->real->requestResources(arg0, arg1);
-}
-
-
-ACTION_P(InvokeUpdateAllocation, allocator)
-{
-  allocator->real->updateAllocation(arg0, arg1, arg2);
-}
-
-
-ACTION_P(InvokeUpdateResources, allocator)
-{
-  return allocator->real->updateAvailable(arg0, arg1);
-}
-
-
-ACTION_P(InvokeUpdateUnavailability, allocator)
-{
-  return allocator->real->updateUnavailability(arg0, arg1);
-}
-
-
-ACTION_P(InvokeUpdateInverseOffer, allocator)
-{
-  return allocator->real->updateInverseOffer(arg0, arg1, arg2, arg3, arg4);
-}
-
-
-ACTION_P(InvokeGetInverseOfferStatuses, allocator)
-{
-  return allocator->real->getInverseOfferStatuses();
-}
-
-
-ACTION_P(InvokeRecoverResources, allocator)
-{
-  allocator->real->recoverResources(arg0, arg1, arg2, arg3);
-}
-
-
-ACTION_P2(InvokeRecoverResourcesWithFilters, allocator, timeout)
-{
-  Filters filters;
-  filters.set_refuse_seconds(timeout);
-
-  allocator->real->recoverResources(arg0, arg1, arg2, filters);
-}
-
-
-ACTION_P(InvokeSuppressOffers, allocator)
-{
-  allocator->real->suppressOffers(arg0);
-}
-
-
-ACTION_P(InvokeReviveOffers, allocator)
-{
-  allocator->real->reviveOffers(arg0);
-}
-
-
-template <typename T = master::allocator::HierarchicalDRFAllocator>
-mesos::master::allocator::Allocator* createAllocator()
-{
-  // T represents the allocator type. It can be a default built-in
-  // allocator, or one provided by an allocator module.
-  Try<mesos::master::allocator::Allocator*> instance = T::create();
-  CHECK_SOME(instance);
-  return CHECK_NOTNULL(instance.get());
-}
-
-template <typename T = master::allocator::HierarchicalDRFAllocator>
-class TestAllocator : public mesos::master::allocator::Allocator
-{
-public:
-  // Actual allocation is done by an instance of real allocator,
-  // which is specified by the template parameter.
-  TestAllocator() : real(createAllocator<T>())
-  {
-    // We use 'ON_CALL' and 'WillByDefault' here to specify the
-    // default actions (call in to the real allocator). This allows
-    // the tests to leverage the 'DoDefault' action.
-    // However, 'ON_CALL' results in a "Uninteresting mock function
-    // call" warning unless each test puts expectations in place.
-    // As a result, we also use 'EXPECT_CALL' and 'WillRepeatedly'
-    // to get the best of both worlds: the ability to use 'DoDefault'
-    // and no warnings when expectations are not explicit.
-
-    ON_CALL(*this, initialize(_, _, _, _))
-      .WillByDefault(InvokeInitialize(this));
-    EXPECT_CALL(*this, initialize(_, _, _, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, addFramework(_, _, _))
-      .WillByDefault(InvokeAddFramework(this));
-    EXPECT_CALL(*this, addFramework(_, _, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, removeFramework(_))
-      .WillByDefault(InvokeRemoveFramework(this));
-    EXPECT_CALL(*this, removeFramework(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, activateFramework(_))
-      .WillByDefault(InvokeActivateFramework(this));
-    EXPECT_CALL(*this, activateFramework(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, deactivateFramework(_))
-      .WillByDefault(InvokeDeactivateFramework(this));
-    EXPECT_CALL(*this, deactivateFramework(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, updateFramework(_, _))
-      .WillByDefault(InvokeUpdateFramework(this));
-    EXPECT_CALL(*this, updateFramework(_, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, addSlave(_, _, _, _, _))
-      .WillByDefault(InvokeAddSlave(this));
-    EXPECT_CALL(*this, addSlave(_, _, _, _, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, removeSlave(_))
-      .WillByDefault(InvokeRemoveSlave(this));
-    EXPECT_CALL(*this, removeSlave(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, updateSlave(_, _))
-      .WillByDefault(InvokeUpdateSlave(this));
-    EXPECT_CALL(*this, updateSlave(_, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, activateSlave(_))
-      .WillByDefault(InvokeActivateSlave(this));
-    EXPECT_CALL(*this, activateSlave(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, deactivateSlave(_))
-      .WillByDefault(InvokeDeactivateSlave(this));
-    EXPECT_CALL(*this, deactivateSlave(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, updateWhitelist(_))
-      .WillByDefault(InvokeUpdateWhitelist(this));
-    EXPECT_CALL(*this, updateWhitelist(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, requestResources(_, _))
-      .WillByDefault(InvokeRequestResources(this));
-    EXPECT_CALL(*this, requestResources(_, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, updateAllocation(_, _, _))
-      .WillByDefault(InvokeUpdateAllocation(this));
-    EXPECT_CALL(*this, updateAllocation(_, _, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, updateAvailable(_, _))
-      .WillByDefault(InvokeUpdateResources(this));
-    EXPECT_CALL(*this, updateAvailable(_, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, updateUnavailability(_, _))
-      .WillByDefault(InvokeUpdateUnavailability(this));
-    EXPECT_CALL(*this, updateUnavailability(_, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, updateInverseOffer(_, _, _, _, _))
-      .WillByDefault(InvokeUpdateInverseOffer(this));
-    EXPECT_CALL(*this, updateInverseOffer(_, _, _, _, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, getInverseOfferStatuses())
-      .WillByDefault(InvokeGetInverseOfferStatuses(this));
-    EXPECT_CALL(*this, getInverseOfferStatuses())
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, recoverResources(_, _, _, _))
-      .WillByDefault(InvokeRecoverResources(this));
-    EXPECT_CALL(*this, recoverResources(_, _, _, _))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, reviveOffers(_))
-      .WillByDefault(InvokeReviveOffers(this));
-    EXPECT_CALL(*this, reviveOffers(_))
-      .WillRepeatedly(DoDefault());
-
-    ON_CALL(*this, suppressOffers(_))
-      .WillByDefault(InvokeSuppressOffers(this));
-    EXPECT_CALL(*this, suppressOffers(_))
-      .WillRepeatedly(DoDefault());
-  }
-
-  virtual ~TestAllocator() {}
-
-  MOCK_METHOD4(initialize, void(
-      const Duration&,
-      const lambda::function<
-          void(const FrameworkID&,
-               const hashmap<SlaveID, Resources>&)>&,
-      const lambda::function<
-          void(const FrameworkID&,
-               const hashmap<SlaveID, UnavailableResources>&)>&,
-      const hashmap<std::string, mesos::master::RoleInfo>&));
-
-  MOCK_METHOD3(addFramework, void(
-      const FrameworkID&,
-      const FrameworkInfo&,
-      const hashmap<SlaveID, Resources>&));
-
-  MOCK_METHOD1(removeFramework, void(
-      const FrameworkID&));
-
-  MOCK_METHOD1(activateFramework, void(
-      const FrameworkID&));
-
-  MOCK_METHOD1(deactivateFramework, void(
-      const FrameworkID&));
-
-  MOCK_METHOD2(updateFramework, void(
-      const FrameworkID&,
-      const FrameworkInfo&));
-
-  MOCK_METHOD5(addSlave, void(
-      const SlaveID&,
-      const SlaveInfo&,
-      const Option<Unavailability>&,
-      const Resources&,
-      const hashmap<FrameworkID, Resources>&));
-
-  MOCK_METHOD1(removeSlave, void(
-      const SlaveID&));
-
-  MOCK_METHOD2(updateSlave, void(
-      const SlaveID&,
-      const Resources&));
-
-  MOCK_METHOD1(activateSlave, void(
-      const SlaveID&));
-
-  MOCK_METHOD1(deactivateSlave, void(
-      const SlaveID&));
-
-  MOCK_METHOD1(updateWhitelist, void(
-      const Option<hashset<std::string> >&));
-
-  MOCK_METHOD2(requestResources, void(
-      const FrameworkID&,
-      const std::vector<Request>&));
-
-  MOCK_METHOD3(updateAllocation, void(
-      const FrameworkID&,
-      const SlaveID&,
-      const std::vector<Offer::Operation>&));
-
-  MOCK_METHOD2(updateAvailable, process::Future<Nothing>(
-      const SlaveID&,
-      const std::vector<Offer::Operation>&));
-
-  MOCK_METHOD2(updateUnavailability, void(
-      const SlaveID&,
-      const Option<Unavailability>&));
-
-  MOCK_METHOD5(updateInverseOffer, void(
-      const SlaveID&,
-      const FrameworkID&,
-      const Option<UnavailableResources>&,
-      const Option<mesos::master::InverseOfferStatus>&,
-      const Option<Filters>&));
-
-  MOCK_METHOD0(getInverseOfferStatuses, process::Future<
-      hashmap<SlaveID, hashmap<
-          FrameworkID,
-          mesos::master::InverseOfferStatus>>>());
-
-  MOCK_METHOD4(recoverResources, void(
-      const FrameworkID&,
-      const SlaveID&,
-      const Resources&,
-      const Option<Filters>& filters));
-
-  MOCK_METHOD1(reviveOffers, void(const FrameworkID&));
-
-  MOCK_METHOD1(suppressOffers, void(const FrameworkID&));
-
-  process::Owned<mesos::master::allocator::Allocator> real;
+  MOCK_METHOD1(
+      authorize, process::Future<bool>(const ACL::ReserveResources& request));
+  MOCK_METHOD1(
+      authorize, process::Future<bool>(const ACL::UnreserveResources& request));
+  MOCK_METHOD1(
+      authorize, process::Future<bool>(const ACL::CreateVolume& request));
+  MOCK_METHOD1(
+      authorize, process::Future<bool>(const ACL::DestroyVolume& request));
+  MOCK_METHOD1(
+      authorize, process::Future<bool>(const ACL::SetQuota& request));
 };
 
 

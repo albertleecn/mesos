@@ -12,14 +12,16 @@ layout: documentation
 ## Running Mesos
 
 * [Getting Started](/documentation/latest/getting-started/) for basic instructions on compiling and installing Mesos.
+* [Upgrades](/documentation/latest/upgrades/) for upgrading a Mesos cluster.
 * [Configuration](/documentation/latest/configuration/) for command-line arguments.
+* [Containerizer Internals](/documentation/latest/containerizer-internals) for implementation details of containerizers.
 * [Mesos Containerizer](/documentation/latest/containerizer/) default containerizer, supports both Linux and POSIX systems.
 * [Docker Containerizer](/documentation/latest/docker-containerizer/) for launching a Docker image as a Task, or as an Executor.
-* [External Containerizer](/documentation/latest/external-containerizer/) for custom containerization implementations.
+* [External Containerizer](/documentation/latest/external-containerizer/) for custom containerization implementations (deprecated).
+* [Roles](/documentation/latest/roles/)
 * [Framework Authentication](/documentation/latest/authentication/)
 * [Framework Authorization](/documentation/latest/authorization/)
 * [Framework Rate Limiting](/documentation/latest/framework-rate-limiting/)
-* [Logging and Debugging](/documentation/latest/logging-and-debugging/) for viewing Mesos and framework logs.
 * [High Availability](/documentation/latest/high-availability/) for running multiple masters simultaneously.
 * [Operational Guide](/documentation/latest/operational-guide/)
 * [Monitoring](/documentation/latest/monitoring/)
@@ -28,6 +30,7 @@ layout: documentation
 * [Maintenance](/documentation/latest/maintenance/) for performing maintenance on a Mesos cluster.
 * [Tools](/documentation/latest/tools/) for setting up and running a Mesos cluster.
 * [SSL](/documentation/latest/ssl/) for enabling and enforcing SSL communication.
+* [Mesos Image Provisioner](/documentation/latest/mesos-provisioner/) for provisioning container filesystems from different image formats.
 
 ## Advanced Features
 
@@ -36,11 +39,12 @@ layout: documentation
 * [Networking for Mesos-managed Containers](/documentation/latest/networking-for-mesos-managed-containers/)
 * [Oversubscription](/documentation/latest/oversubscription/) for how to configure Mesos to take advantage of unused resources to launch "best-effort" tasks.
 * [Persistent Volume](/documentation/latest/persistent-volume/) for how to allow tasks to access persistent storage resources.
-* [Reservation](/documentation/latest/reservation/) for how to configure Mesos to allow slaves to reserve resources.
+* [Reservation](/documentation/latest/reservation/) for how operators and frameworks can reserve resources for use by a role.
 
 ## Running Mesos Frameworks
 
- * [Mesos frameworks](/documentation/latest/frameworks/) for a list of apps built on top of Mesos and instructions on how to run them.
+* [Mesos frameworks](/documentation/latest/frameworks/) for a list of apps built on top of Mesos and instructions on how to run them.
+* [Sandbox](/documentation/latest/sandbox/) describes a useful debugging arena for most users.
 
 ## Developing Mesos Frameworks
 
@@ -50,6 +54,7 @@ layout: documentation
 * [Javadoc](/api/latest/java/) documents the Mesos Java API.
 * [Doxygen](/api/latest/c++/namespacemesos.html) documents the Mesos C++ API.
 * [Developer Tools](/documentation/latest/tools/) for hacking on Mesos or writing frameworks.
+* [Versioning](/documentation/latest/versioning/) describes how Mesos does API and release versioning.
 
 ## Extending Mesos
 

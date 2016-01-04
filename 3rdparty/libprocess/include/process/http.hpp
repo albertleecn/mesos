@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #ifndef __PROCESS_HTTP_HPP__
 #define __PROCESS_HTTP_HPP__
@@ -19,10 +17,10 @@
 #include <stdint.h>
 
 #include <atomic>
+#include <initializer_list>
 #include <iosfwd>
 #include <memory>
 #include <queue>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -55,6 +53,32 @@ class Socket;
 } // namespace network {
 
 namespace http {
+
+namespace authentication {
+
+class Authenticator;
+
+/**
+ * Sets (or overwrites) the authenticator for the realm.
+ *
+ * Every incoming HTTP request to an endpoint associated
+ * with the realm will be authenticated with the given
+ * authenticator.
+ */
+Future<Nothing> setAuthenticator(
+    const std::string& realm,
+    Owned<Authenticator> authenticator);
+
+
+/**
+ * Unsets the authenticator for the realm.
+ *
+ * Any endpoint mapped to the realm will no
+ * longer be authenticated.
+ */
+Future<Nothing> unsetAuthenticator(const std::string& realm);
+
+} // namespace authentication {
 
 // Status code reason strings, from the HTTP1.1 RFC:
 // http://www.w3.org/Protocols/rfc2616/rfc2616-sec6.html
@@ -97,6 +121,8 @@ struct URL
       path(_path),
       query(_query),
       fragment(_fragment) {}
+
+  static Try<URL> parse(const std::string& urlString);
 
   Option<std::string> scheme;
 
@@ -464,29 +490,7 @@ struct OK : Response
 
   explicit OK(const std::string& body) : Response(body, Status::OK) {}
 
-  OK(const JSON::Value& value, const Option<std::string>& jsonp = None())
-    : Response(Status::OK)
-  {
-    type = BODY;
-
-    std::ostringstream out;
-
-    if (jsonp.isSome()) {
-      out << jsonp.get() << "(";
-    }
-
-    out << value;
-
-    if (jsonp.isSome()) {
-      out << ");";
-      headers["Content-Type"] = "text/javascript";
-    } else {
-      headers["Content-Type"] = "application/json";
-    }
-
-    headers["Content-Length"] = stringify(out.str().size());
-    body = out.str().data();
-  }
+  OK(const JSON::Value& value, const Option<std::string>& jsonp = None());
 };
 
 
@@ -520,16 +524,40 @@ struct BadRequest : Response
 
 struct Unauthorized : Response
 {
-  Unauthorized(const std::string& realm) : Response(Status::UNAUTHORIZED)
+  explicit Unauthorized(const std::vector<std::string>& challenges)
+    : Response(Status::UNAUTHORIZED)
   {
-    headers["WWW-authenticate"] = "Basic realm=\"" + realm + "\"";
+    // TODO(arojas): Many HTTP client implementations do not support
+    // multiple challenges within a single 'WWW-Authenticate' header.
+    // Once MESOS-3306 is fixed, we can use multiple entries for the
+    // same header.
+    headers["WWW-Authenticate"] = strings::join(", ", challenges);
   }
 
-  Unauthorized(const std::string& realm, const std::string& body)
+  Unauthorized(
+      const std::vector<std::string>& challenges,
+      const std::string& body)
     : Response(body, Status::UNAUTHORIZED)
   {
-    headers["WWW-authenticate"] = "Basic realm=\"" + realm + "\"";
+    // TODO(arojas): Many HTTP client implementations do not support
+    // multiple challenges within a single 'WWW-Authenticate' header.
+    // Once MESOS-3306 is fixed, we can use multiple entries for the
+    // same header.
+    headers["WWW-Authenticate"] = strings::join(", ", challenges);
   }
+
+  // TODO(arojas): Remove this in favor of the
+  // explicit challenge constructor above.
+  explicit Unauthorized(const std::string& realm)
+    : Unauthorized(
+          std::vector<std::string>{"Basic realm=\"" + realm + "\""}) {}
+
+  // TODO(arojas): Remove this in favor of the
+  // explicit challenge constructor above.
+  Unauthorized(const std::string& realm, const std::string& body)
+    : Unauthorized(
+          std::vector<std::string>{"Basic realm=\"" + realm + "\""},
+          body) {}
 };
 
 
@@ -553,10 +581,23 @@ struct NotFound : Response
 
 struct MethodNotAllowed : Response
 {
-  MethodNotAllowed() : Response(Status::METHOD_NOT_ALLOWED) {}
+  // According to RFC 2616, "An Allow header field MUST be present in a
+  // 405 (Method Not Allowed) response".
 
-  explicit MethodNotAllowed(const std::string& body)
-    : Response(body, Status::METHOD_NOT_ALLOWED) {}
+  explicit MethodNotAllowed(
+      const std::initializer_list<std::string>& allowedMethods)
+    : Response(Status::METHOD_NOT_ALLOWED)
+  {
+    headers["Allow"] = strings::join(", ", allowedMethods);
+  }
+
+  MethodNotAllowed(
+      const std::initializer_list<std::string>& allowedMethods,
+      const std::string& body)
+    : Response(body, Status::METHOD_NOT_ALLOWED)
+  {
+    headers["Allow"] = strings::join(", ", allowedMethods);
+  }
 };
 
 

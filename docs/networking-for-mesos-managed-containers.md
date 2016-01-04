@@ -125,13 +125,21 @@ A new NetworkInfo message has been introduced:
 ```{.proto}
 message NetworkInfo {
   enum Protocol {
-    IPv4 = 0,
-    IPv6 = 1
+    IPv4 = 1;
+    IPv6 = 2;
   }
 
-  optional Protocol protocol = 1;
+  message IPAddress {
+    optional Protocol protocol = 1;
 
-  optional string ip_address = 2;
+    optional string ip_address = 2;
+  }
+
+  repeated IPAddress ip_addresses = 5;
+
+  optional Protocol protocol = 1 [deprecated = true]; // Since 0.26.0
+
+  optional string ip_address = 2 [deprecated = true]; // Since 0.26.0
 
   repeated string groups = 3;
 
@@ -157,23 +165,28 @@ message in TaskInfo. Here are a few examples:
 
    ```
    TaskInfo {
-     ...
-     command: ...,
-     container: ContainerInfo {
-       network_infos: [
-         NetworkInfo {
-           protocol: None;
-           ip_address: None;
-           groups: [];
-           labels: None;
-         }
-       ]
-     }
+     ...
+     command: ...,
+     container: ContainerInfo {
+       network_infos: [
+         NetworkInfo {
+           ip_addresses: [
+             IPAddress {
+               protocol: None;
+               ip_address: None;
+             }
+           ]
+           groups: [];
+           labels: None;
+         }
+       ]
+     }
    }
    ```
 
-2. A request for one IPv4 and one IPv6 address, in two separate groups using the
+2. A request for one IPv4 and one IPv6 address, in two groups using the
    default command executor
+
 
    ```
    TaskInfo {
@@ -182,15 +195,17 @@ message in TaskInfo. Here are a few examples:
      container: ContainerInfo {
        network_infos: [
          NetworkInfo {
-           protocol: IPv4;
-           ip_address: None;
-           groups: ["public"];
-           labels: None;
-         },
-         NetworkInfo {
-           protocol: IPv6;
-           ip_address: None;
-           groups: ["private"];
+           ip_addresses: [
+             IPAddress {
+               protocol: IPv4;
+               ip_address: None;
+             },
+             IPAddress {
+               protocol: IPv6;
+               ip_address: None;
+             }
+           ]
+           groups: ["dev", "test"];
            labels: None;
          }
        ]
@@ -198,7 +213,42 @@ message in TaskInfo. Here are a few examples:
    }
    ```
 
-3. A request for a specific IP address using a custom executor
+3. A request for two network interfaces, each with one IP address, each in
+   a different network group using the default command executor
+
+
+   ```
+   TaskInfo {
+     ...
+     command: ...,
+     container: ContainerInfo {
+       network_infos: [
+         NetworkInfo {
+           ip_addresses: [
+             IPAddress {
+               protocol: None;
+               ip_address: None;
+             }
+           ]
+           groups: ["foo"];
+           labels: None;
+         },
+         NetworkInfo {
+           ip_addresses: [
+             IPAddress {
+               protocol: None;
+               ip_address: None;
+             }
+           ]
+           groups: ["bar"];
+           labels: None;
+         },
+       ]
+     }
+   }
+   ```
+
+4. A request for a specific IP address using a custom executor
 
    ```
    TaskInfo {
@@ -208,8 +258,12 @@ message in TaskInfo. Here are a few examples:
        container: ContainerInfo {
          network_infos: [
            NetworkInfo {
-             protocol: None;
-             ip_address: "10.1.2.3";
+             ip_addresses: [
+               IPAddress {
+                 protocol: None;
+                 ip_address: "10.1.2.3";
+               }
+             ]
              groups: [];
              labels: None;
            }
@@ -219,13 +273,15 @@ message in TaskInfo. Here are a few examples:
    }
    ```
 
-NOTE: The Mesos Containerizer will reject any CommandInfo that has a ContainerInfo. For this reason, when opting in to network isolation when using the Mesos Containerizer, set TaskInfo.ContainerInfo.NetworkInfo.
+NOTE: The Mesos Containerizer will reject any CommandInfo that has a
+ContainerInfo. For this reason, when opting in to network isolation when
+using the Mesos Containerizer, set TaskInfo.ContainerInfo.NetworkInfo.
 
 ## Address Discovery
 
 The NetworkInfo message allows frameworks to request IP address(es) to be
-assigned at task launch time on the Mesos agent.  After opting in to network
-isolation for a given executor’s container in this way, frameworks will need to
+assigned at task launch time on the Mesos agent. After opting in to network
+isolation for a given executor's container in this way, frameworks will need to
 know what address(es) were ultimately assigned in order to perform health
 checks, or any other out-of-band communication.
 

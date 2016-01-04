@@ -1,31 +1,27 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#include "slave/containerizer/mesos/provisioner/docker/store.hpp"
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <list>
 #include <vector>
 
 #include <glog/logging.h>
 
+#include <stout/hashmap.hpp>
 #include <stout/json.hpp>
 #include <stout/os.hpp>
-#include <stout/result.hpp>
 
 #include <process/collect.hpp>
 #include <process/defer.hpp>
@@ -35,10 +31,9 @@
 #include "common/status_utils.hpp"
 
 #include "slave/containerizer/mesos/provisioner/docker/metadata_manager.hpp"
+#include "slave/containerizer/mesos/provisioner/docker/store.hpp"
 #include "slave/containerizer/mesos/provisioner/docker/paths.hpp"
 #include "slave/containerizer/mesos/provisioner/docker/puller.hpp"
-
-#include "slave/flags.hpp"
 
 using namespace process;
 
@@ -59,34 +54,34 @@ public:
       const Flags& _flags,
       const Owned<MetadataManager>& _metadataManager,
       const Owned<Puller>& _puller)
-    : flags(_flags), metadataManager(_metadataManager), puller(_puller) {}
+    : flags(_flags),
+      metadataManager(_metadataManager),
+      puller(_puller) {}
 
   ~StoreProcess() {}
 
   Future<Nothing> recover();
 
-  Future<vector<string>> get(const mesos::Image& image);
+  Future<ImageInfo> get(const mesos::Image& image);
 
 private:
-  Future<Image> _get(
-      const Image::Name& name,
-      const Option<Image>& image);
-
-  Future<vector<string>> __get(const Image& image);
+  Future<Image> _get(const Image::Name& name, const Option<Image>& image);
+  Future<ImageInfo> __get(const Image& image);
 
   Future<vector<string>> moveLayers(
-      const std::string& staging,
       const std::list<pair<string, string>>& layerPaths);
 
   Future<Image> storeImage(
       const Image::Name& name,
       const std::vector<std::string>& layerIds);
 
-  Future<Nothing> moveLayer(const pair<string, string>& layerPath);
+  Future<Nothing> moveLayer(
+      const pair<string, string>& layerPath);
 
   const Flags flags;
   Owned<MetadataManager> metadataManager;
   Owned<Puller> puller;
+  hashmap<std::string, Owned<Promise<Image>>> pulling;
 };
 
 
@@ -97,21 +92,29 @@ Try<Owned<slave::Store>> Store::create(const Flags& flags)
     return Error("Failed to create Docker puller: " + puller.error());
   }
 
-  if (!os::exists(flags.docker_store_dir)) {
-    Try<Nothing> mkdir = os::mkdir(flags.docker_store_dir);
-    if (mkdir.isError()) {
-      return Error("Failed to create Docker store directory: " + mkdir.error());
-    }
+  Try<Owned<slave::Store>> store = Store::create(flags, puller.get());
+  if (store.isError()) {
+    return Error("Failed to create Docker store: " + store.error());
   }
 
-  if (!os::exists(paths::getStagingDir(flags.docker_store_dir))) {
-    Try<Nothing> mkdir =
-      os::mkdir(paths::getStagingDir(flags.docker_store_dir));
+  return store.get();
+}
 
-    if (mkdir.isError()) {
-      return Error("Failed to create Docker store staging directory: " +
-                   mkdir.error());
-    }
+
+Try<Owned<slave::Store>> Store::create(
+    const Flags& flags,
+    const Owned<Puller>& puller)
+{
+  Try<Nothing> mkdir = os::mkdir(flags.docker_store_dir);
+  if (mkdir.isError()) {
+    return Error("Failed to create Docker store directory: " +
+                 mkdir.error());
+  }
+
+  mkdir = os::mkdir(paths::getStagingDir(flags.docker_store_dir));
+  if (mkdir.isError()) {
+    return Error("Failed to create Docker store staging directory: " +
+                 mkdir.error());
   }
 
   Try<Owned<MetadataManager>> metadataManager = MetadataManager::create(flags);
@@ -120,7 +123,7 @@ Try<Owned<slave::Store>> Store::create(const Flags& flags)
   }
 
   Owned<StoreProcess> process(
-      new StoreProcess(flags, metadataManager.get(), puller.get()));
+      new StoreProcess(flags, metadataManager.get(), puller));
 
   return Owned<slave::Store>(new Store(process));
 }
@@ -128,14 +131,14 @@ Try<Owned<slave::Store>> Store::create(const Flags& flags)
 
 Store::Store(const Owned<StoreProcess>& _process) : process(_process)
 {
-  process::spawn(CHECK_NOTNULL(process.get()));
+  spawn(CHECK_NOTNULL(process.get()));
 }
 
 
 Store::~Store()
 {
-  process::terminate(process.get());
-  process::wait(process.get());
+  terminate(process.get());
+  wait(process.get());
 }
 
 
@@ -145,13 +148,13 @@ Future<Nothing> Store::recover()
 }
 
 
-Future<vector<string>> Store::get(const mesos::Image& image)
+Future<ImageInfo> Store::get(const mesos::Image& image)
 {
   return dispatch(process.get(), &StoreProcess::get, image);
 }
 
 
-Future<vector<string>> StoreProcess::get(const mesos::Image& image)
+Future<ImageInfo> StoreProcess::get(const mesos::Image& image)
 {
   if (image.type() != mesos::Image::DOCKER) {
     return Failure("Docker provisioner store only supports Docker images");
@@ -180,19 +183,36 @@ Future<Image> StoreProcess::_get(
     return Failure("Failed to create a staging directory");
   }
 
-  return puller->pull(name, staging.get())
-    .then(defer(self(), &Self::moveLayers, staging.get(), lambda::_1))
-    .then(defer(self(), &Self::storeImage, name, lambda::_1))
-    .onAny([staging]() {
-      Try<Nothing> rmdir = os::rmdir(staging.get());
-      if (rmdir.isError()) {
-        LOG(WARNING) << "Failed to remove staging directory: " << rmdir.error();
-      }
-    });
+  const string imageName = stringify(name);
+
+  if (!pulling.contains(imageName)) {
+    Owned<Promise<Image>> promise(new Promise<Image>());
+
+    Future<Image> future = puller->pull(name, Path(staging.get()))
+      .then(defer(self(), &Self::moveLayers, lambda::_1))
+      .then(defer(self(), &Self::storeImage, name, lambda::_1))
+      .onAny(defer(self(), [this, imageName](const Future<Image>&) {
+        pulling.erase(imageName);
+      }))
+      .onAny([staging, imageName]() {
+        Try<Nothing> rmdir = os::rmdir(staging.get());
+        if (rmdir.isError()) {
+          LOG(WARNING) << "Failed to remove staging directory: "
+                       << rmdir.error();
+        }
+      });
+
+    promise->associate(future);
+    pulling[imageName] = promise;
+
+    return promise->future();
+  }
+
+  return pulling[imageName]->future();
 }
 
 
-Future<vector<string>> StoreProcess::__get(const Image& image)
+Future<ImageInfo> StoreProcess::__get(const Image& image)
 {
   vector<string> layerDirectories;
   foreach (const string& layer, image.layer_ids()) {
@@ -201,7 +221,12 @@ Future<vector<string>> StoreProcess::__get(const Image& image)
             flags.docker_store_dir, layer));
   }
 
-  return layerDirectories;
+  // TODO(gilbert): We should be able to support storing all image
+  // spec locally, and simply grab neccessary runtime config from
+  // local manifest.
+  Option<RuntimeConfig> runtimeConfig = None();
+
+  return ImageInfo{layerDirectories, runtimeConfig};
 }
 
 
@@ -212,7 +237,6 @@ Future<Nothing> StoreProcess::recover()
 
 
 Future<vector<string>> StoreProcess::moveLayers(
-    const string& staging,
     const list<pair<string, string>>& layerPaths)
 {
   list<Future<Nothing>> futures;
@@ -222,12 +246,12 @@ Future<vector<string>> StoreProcess::moveLayers(
 
   return collect(futures)
     .then([layerPaths]() {
-        vector<string> layerIds;
-        foreach (const auto& layerPath, layerPaths) {
-          layerIds.push_back(layerPath.first);
-        }
+      vector<string> layerIds;
+      foreach (const auto& layerPath, layerPaths) {
+        layerIds.push_back(layerPath.first);
+      }
 
-        return layerIds;
+      return layerIds;
     });
 }
 
@@ -240,7 +264,8 @@ Future<Image> StoreProcess::storeImage(
 }
 
 
-Future<Nothing> StoreProcess::moveLayer(const pair<string, string>& layerPath)
+Future<Nothing> StoreProcess::moveLayer(
+    const pair<string, string>& layerPath)
 {
   if (!os::exists(layerPath.second)) {
     return Failure("Unable to find layer '" + layerPath.first + "' in '" +
@@ -250,18 +275,25 @@ Future<Nothing> StoreProcess::moveLayer(const pair<string, string>& layerPath)
   const string imageLayerPath =
     paths::getImageLayerPath(flags.docker_store_dir, layerPath.first);
 
-  if (!os::exists(imageLayerPath)) {
-    Try<Nothing> mkdir = os::mkdir(imageLayerPath);
-    if (mkdir.isError()) {
-      return Failure("Failed to create layer path in store for id '" +
-                     layerPath.first + "': " + mkdir.error());
+  // If image layer path exists, we should remove it and make an empty
+  // directory, because os::rename can only have empty or non-existed
+  // directory as destination.
+  if (os::exists(imageLayerPath)) {
+    Try<Nothing> rmdir = os::rmdir(imageLayerPath);
+    if (rmdir.isError()) {
+      return Failure("Failed to remove existing layer: " + rmdir.error());
     }
+  }
+
+  Try<Nothing> mkdir = os::mkdir(imageLayerPath);
+  if (mkdir.isError()) {
+    return Failure("Failed to create layer path in store for id '" +
+                   layerPath.first + "': " + mkdir.error());
   }
 
   Try<Nothing> status = os::rename(
       layerPath.second,
-      paths::getImageLayerRootfsPath(
-          flags.docker_store_dir, layerPath.first));
+      imageLayerPath);
 
   if (status.isError()) {
     return Failure("Failed to move layer '" + layerPath.first +

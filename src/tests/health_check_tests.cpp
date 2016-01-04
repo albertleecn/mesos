@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <mesos/executor.hpp>
 #include <mesos/scheduler.hpp>
@@ -35,6 +33,8 @@
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
 #include "tests/utils.hpp"
+
+namespace http = process::http;
 
 using mesos::internal::master::Master;
 
@@ -75,7 +75,8 @@ public:
       int gracePeriodSeconds = 0,
       const Option<int>& consecutiveFailures = None(),
       const Option<map<string, string>>& env = None(),
-      const Option<ContainerInfo>& containerInfo = None())
+      const Option<ContainerInfo>& containerInfo = None(),
+      const Option<int>& timeoutSeconds = None())
   {
     CommandInfo healthCommand;
     healthCommand.set_value(healthCmd);
@@ -87,7 +88,8 @@ public:
         gracePeriodSeconds,
         consecutiveFailures,
         env,
-        containerInfo);
+        containerInfo,
+        timeoutSeconds);
   }
 
   vector<TaskInfo> populateTasks(
@@ -97,7 +99,8 @@ public:
       int gracePeriodSeconds = 0,
       const Option<int>& consecutiveFailures = None(),
       const Option<map<string, string>>& env = None(),
-      const Option<ContainerInfo>& containerInfo = None())
+      const Option<ContainerInfo>& containerInfo = None(),
+      const Option<int>& timeoutSeconds = None())
   {
     TaskInfo task;
     task.set_name("");
@@ -137,6 +140,10 @@ public:
     healthCheck.set_delay_seconds(0);
     healthCheck.set_interval_seconds(0);
     healthCheck.set_grace_period_seconds(gracePeriodSeconds);
+
+    if (timeoutSeconds.isSome()) {
+      healthCheck.set_timeout_seconds(timeoutSeconds.get());
+    }
 
     if (consecutiveFailures.isSome()) {
       healthCheck.set_consecutive_failures(consecutiveFailures.get());
@@ -243,6 +250,32 @@ TEST_F(HealthCheckTest, HealthyTask)
   EXPECT_EQ(TASK_RUNNING, implicitReconciliation.get().state());
   EXPECT_TRUE(implicitReconciliation.get().has_healthy());
   EXPECT_TRUE(implicitReconciliation.get().healthy());
+
+  // Verify that task health is exposed in the master's state endpoint.
+  {
+    Future<http::Response> response = http::get(master.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(true, find);
+  }
+
+  // Verify that task health is exposed in the slave's state endpoint.
+  {
+    Future<http::Response> response = http::get(slave.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].executors[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(true, find);
+  }
 
   driver.stop();
   driver.join();
@@ -483,13 +516,95 @@ TEST_F(HealthCheckTest, HealthStatusChange)
   EXPECT_EQ(TASK_RUNNING, statusHealth1.get().state());
   EXPECT_TRUE(statusHealth1.get().healthy());
 
+  // Verify that task health is exposed in the master's state endpoint.
+  {
+    Future<http::Response> response = http::get(master.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(true, find);
+  }
+
+  // Verify that task health is exposed in the slave's state endpoint.
+  {
+    Future<http::Response> response = http::get(slave.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].executors[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(true, find);
+  }
+
   AWAIT_READY(statusHealth2);
   EXPECT_EQ(TASK_RUNNING, statusHealth2.get().state());
   EXPECT_FALSE(statusHealth2.get().healthy());
 
+  // Verify that the task health change is reflected in the master's
+  // state endpoint.
+  {
+    Future<http::Response> response = http::get(master.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(false, find);
+  }
+
+  // Verify that the task health change is reflected in the slave's
+  // state endpoint.
+  {
+    Future<http::Response> response = http::get(slave.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].executors[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(false, find);
+  }
+
   AWAIT_READY(statusHealth3);
   EXPECT_EQ(TASK_RUNNING, statusHealth3.get().state());
   EXPECT_TRUE(statusHealth3.get().healthy());
+
+  // Verify through master's state endpoint that the task is back to a
+  // healthy state.
+  {
+    Future<http::Response> response = http::get(master.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(true, find);
+  }
+
+  // Verify through slave's state endpoint that the task is back to a
+  // healthy state.
+  {
+    Future<http::Response> response = http::get(slave.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+
+    Result<JSON::Value> find = parse.get().find<JSON::Value>(
+        "frameworks[0].executors[0].tasks[0].statuses[0].healthy");
+    EXPECT_SOME_EQ(true, find);
+  }
 
   os::rm(tmpPath); // Clean up the temporary file.
 
@@ -625,8 +740,7 @@ TEST_F(HealthCheckTest, ROOT_DOCKER_DockerHealthStatusChange)
 
 
 // Testing killing task after number of consecutive failures.
-// Temporarily disabled due to MESOS-1613.
-TEST_F(HealthCheckTest, DISABLED_ConsecutiveFailures)
+TEST_F(HealthCheckTest, ConsecutiveFailures)
 {
   Try<PID<Master> > master = StartMaster();
   ASSERT_SOME(master);
@@ -838,6 +952,87 @@ TEST_F(HealthCheckTest, DISABLED_GracePeriod)
   AWAIT_READY(statusHealth);
   EXPECT_EQ(TASK_RUNNING, statusHealth.get().state());
   EXPECT_FALSE(statusHealth.get().healthy());
+
+  driver.stop();
+  driver.join();
+
+  Shutdown();
+}
+
+
+// Testing continue running health check when check command timeout.
+TEST_F(HealthCheckTest, CheckCommandTimeout)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "posix/cpu,posix/mem";
+
+  Fetcher fetcher;
+
+  Try<MesosContainerizer*> containerizer =
+    MesosContainerizer::create(flags, false, &fetcher);
+  CHECK_SOME(containerizer);
+
+  Try<PID<Slave>> slave = StartSlave(containerizer.get());
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+    &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .Times(1);
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers.get().size());
+
+  vector<TaskInfo> tasks = populateTasks(
+    "sleep 120", "sleep 120", offers.get()[0], 0, 3, None(), None(), 5);
+
+  // Expecting four unhealthy updates and one final kill update.
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> status1;
+  Future<TaskStatus> status2;
+  Future<TaskStatus> status3;
+  Future<TaskStatus> statusKilled;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&status1))
+    .WillOnce(FutureArg<1>(&status2))
+    .WillOnce(FutureArg<1>(&status3))
+    .WillOnce(FutureArg<1>(&statusKilled));
+
+  driver.launchTasks(offers.get()[0].id(), tasks);
+
+  AWAIT_READY(statusRunning);
+  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+
+  AWAIT_READY(status1);
+  EXPECT_EQ(TASK_RUNNING, status1.get().state());
+  EXPECT_FALSE(status1.get().healthy());
+
+  AWAIT_READY(status2);
+  EXPECT_EQ(TASK_RUNNING, status2.get().state());
+  EXPECT_FALSE(status2.get().healthy());
+
+  AWAIT_READY(status3);
+  EXPECT_EQ(TASK_RUNNING, status3.get().state());
+  EXPECT_FALSE(status3.get().healthy());
+
+  AWAIT_READY(statusKilled);
+  EXPECT_EQ(TASK_KILLED, statusKilled.get().state());
+  EXPECT_TRUE(statusKilled.get().has_healthy());
+  EXPECT_FALSE(statusKilled.get().healthy());
 
   driver.stop();
   driver.join();

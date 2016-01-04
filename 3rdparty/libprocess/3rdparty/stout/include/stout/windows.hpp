@@ -1,23 +1,25 @@
-/**
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef __STOUT_WINDOWS_HPP__
 #define __STOUT_WINDOWS_HPP__
 
 
-#include <direct.h> // For `_mkdir`.
-#include <fcntl.h>  // For file access flags like `_O_CREAT`.
-#include <io.h>     // For `_read`, `_write`.
+#include <direct.h>   // For `_mkdir`.
+#include <fcntl.h>    // For file access flags like `_O_CREAT`.
+#include <io.h>       // For `_read`, `_write`.
+#include <stdlib.h>   // For `_PATH_MAX`.
+
+#include <sys/stat.h> // For permissions flags.
 
 #include <BaseTsd.h> // For `SSIZE_T`.
 // We include `Winsock2.h` before `Windows.h` explicitly to avoid symbold
@@ -37,6 +39,49 @@
 //   * in global scope.
 //   * globally available throughout both the Stout codebase, and any code
 //     that uses it (such as Mesos).
+
+
+// This code un-defines the global `GetMessage` macro defined by the Windows
+// headers, and replaces it with an inline function that is equivalent.
+//
+// There are two reasons for doing this. The first is because this macro
+// interferes with `google::protobufs::Reflection::GetMessage`. Replacing the
+// `GetMessage` macro with an inline function allows people calling the
+// `GetMessage` macro to carry on doing so with no code changes, but it will
+// also allow us to use `google::protobufs::Reflection::GetMessage` without
+// interference from the macro.
+//
+// The second is because we don't want to obliterate the `GetMessage` macro for
+// people who include this header, either on purpose, or incidentally as part
+// of some other Mesos header. The effect is that our need to call protobuf's
+// `GetMessage` function has no deleterious effect on customers of this API.
+//
+// NOTE: the Windows headers also don't use define-once semantics for the
+// `GetMessage` macro. In particular, this means that every time you include
+// `Winuser.h` and a `GetMessage` macro isn't defined, the Windows headers will
+// redefine it for you. The impact of this is that you should re-un-define the
+// macro every time you include `Windows.h`; since we should be including
+// `Windows.h` only from this file, we un-define it just after we include
+// `Windows.h`.
+#ifdef GetMessage
+inline BOOL GetMessageWindows(
+    LPMSG lpMsg,
+    HWND hWnd,
+    UINT wMsgFilterMin,
+    UINT wMsgFilterMax)
+{
+  return GetMessage(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax);
+}
+#undef GetMessage
+inline BOOL GetMessage(
+    LPMSG lpMsg,
+    HWND hWnd,
+    UINT wMsgFilterMin,
+    UINT wMsgFilterMax)
+{
+  return GetMessageWindows(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax);
+}
+#endif
 
 
 // Define constants used for Windows compat. Allows a lot of code on
@@ -75,6 +120,9 @@ typedef int mode_t;
 // including functions like `OpenProcess`.
 typedef DWORD pid_t;
 
+typedef int uid_t;
+typedef int gid_t;
+
 typedef SSIZE_T ssize_t;
 
 // Socket flags. Define behavior of a socket when it (e.g.) shuts down. We map
@@ -82,6 +130,14 @@ typedef SSIZE_T ssize_t;
 // have to change any socket code.
 constexpr int SHUT_RD = SD_RECEIVE;
 
+// Macros that test whether a `stat` struct represents a directory or a file.
+#define S_ISDIR(mode)  (((mode) & S_IFMT) == S_IFDIR)  // Directory.
+#define S_ISREG(mode)  (((mode) & S_IFMT) == S_IFREG)  // File.
+#define S_ISCHR(mode)  (((mode) & S_IFMT) == S_IFCHR)  // Character device.
+#define S_ISFIFO(mode) (((mode) & S_IFMT) == _S_IFIFO) // Pipe.
+#define S_ISBLK(mode)  0                               // Block special device.
+#define S_ISSOCK(mode) 0                               // Socket.
+#define S_ISLNK(mode)  0                               // Symbolic link.
 
 // Permissions API. (cf. MESOS-3176 to track ongoing permissions work.)
 //
@@ -173,6 +229,13 @@ const mode_t S_IRWXO = S_IROTH | S_IWOTH | S_IXOTH;
 const mode_t S_ISUID = 0x08000000;        // No-op.
 const mode_t S_ISGID = 0x04000000;        // No-op.
 const mode_t S_ISVTX = 0x02000000;        // No-op.
+
+
+inline auto strerror_r(int errnum, char* buffer, size_t length) ->
+decltype(strerror_s(buffer, length, errnum))
+{
+  return strerror_s(buffer, length, errnum);
+}
 
 
 // File I/O function aliases.

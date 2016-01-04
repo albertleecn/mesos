@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __PROVISIONER_STORE_HPP__
 #define __PROVISIONER_STORE_HPP__
@@ -34,6 +32,25 @@
 namespace mesos {
 namespace internal {
 namespace slave {
+
+// Runtime configuration struct includes execution configuration
+// which are specified in the image. Besides the root filesystem,
+// Docker and Appc images also contain runtime information as
+// well, such as environment variables, entrypoint, volumes, etc.
+struct RuntimeConfig
+{
+  // TODO(gilbert): Add more runtime configurations from image.
+};
+
+
+// Includes a vector of rootfs layers in topological order corresponding
+// to a specific image, and its runtime configuration.
+struct ImageInfo
+{
+  std::vector<std::string> layers;
+  Option<RuntimeConfig> runtimeConfig;
+};
+
 
 // An image store abstraction that "stores" images. It serves as a
 // read-through cache (cache misses are fetched remotely and
@@ -65,7 +82,7 @@ public:
   //
   // The returned future fails if the requested image or any of its
   // dependencies cannot be found or failed to be fetched.
-  virtual process::Future<std::vector<std::string>> get(const Image& image) = 0;
+  virtual process::Future<ImageInfo> get(const Image& image) = 0;
 };
 
 } // namespace slave {

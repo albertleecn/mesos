@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <event2/buffer.h>
 #include <event2/bufferevent_ssl.h>
@@ -108,9 +106,10 @@ LibeventSSLSocketImpl::~LibeventSSLSocketImpl()
   evconnlistener* _listener = listener;
   bufferevent* _bev = bev;
   std::weak_ptr<LibeventSSLSocketImpl>* _event_loop_handle = event_loop_handle;
+  int ssl_socket_fd = ssl_connect_fd;
 
   run_in_event_loop(
-      [_listener, _bev, _event_loop_handle]() {
+      [_listener, _bev, _event_loop_handle, ssl_socket_fd]() {
         // Once this lambda is called, it should not be possible for
         // more event loop callbacks to be triggered with 'this->bev'.
         // This is important because we delete event_loop_handle which
@@ -141,6 +140,14 @@ LibeventSSLSocketImpl::~LibeventSSLSocketImpl()
           // 'BEV_OPT_CLOSE_ON_FREE' we rely on the base class
           // 'Socket::Impl' to clean up the fd.
           bufferevent_free(_bev);
+        }
+
+        if (ssl_socket_fd >= 0) {
+          Try<Nothing> close = os::close(ssl_socket_fd);
+          if (close.isError()) {
+            LOG(WARNING) << "Failed to close socket "
+                         << stringify(ssl_socket_fd) << ": " << close.error();
+          }
         }
 
         delete _event_loop_handle;
@@ -225,15 +232,36 @@ void LibeventSSLSocketImpl::recv_callback(bufferevent* /*bev*/, void* arg)
 
 
 // Only runs in event loop. Member function continuation of static
-// 'recv_callback'.
+// 'recv_callback'. This function can be called from two places -
+// a) `LibeventSSLSocketImpl::recv` when a new Socket::recv is called and there
+//    is buffer available to read.
+// b) `LibeventSSLSocketImpl::recv_callback when libevent calls the deferred
+//    read callback.
 void LibeventSSLSocketImpl::recv_callback()
 {
   CHECK(__in_event_loop__);
 
   Owned<RecvRequest> request;
 
-  synchronized (lock) {
-    std::swap(request, recv_request);
+  const size_t buffer_length = evbuffer_get_length(bufferevent_get_input(bev));
+
+  // Swap out the request object IFF there is buffer available to read. We check
+  // this here because it is possible that when the libevent deferred callback
+  // was called, a Socket::recv context already read the buffer from the event.
+  // Following sequence is possible:
+  // a. libevent finds a buffer ready to be read.
+  // b. libevent queues buffer event to be dispatched.
+  // c. Socket::recv is called that creates a new request.
+  // d. Socket::recv finds buffer length > 0.
+  // e. Socket::recv reads the buffer.
+  // f. A new request Socket::recv is called which creates a new request.
+  // g. libevent callback is called for the event queued at step b.
+  // h. libevent callback finds the length of the buffer as 0 but the request is
+  //    a non-NULL due to step f.
+  if (buffer_length > 0) {
+    synchronized (lock) {
+      std::swap(request, recv_request);
+    }
   }
 
   if (request.get() != NULL) {
@@ -420,7 +448,8 @@ LibeventSSLSocketImpl::LibeventSSLSocketImpl(int _s)
     recv_request(NULL),
     send_request(NULL),
     connect_request(NULL),
-    event_loop_handle(NULL) {}
+    event_loop_handle(NULL),
+    ssl_connect_fd(-1) {}
 
 
 LibeventSSLSocketImpl::LibeventSSLSocketImpl(
@@ -435,7 +464,8 @@ LibeventSSLSocketImpl::LibeventSSLSocketImpl(
     send_request(NULL),
     connect_request(NULL),
     event_loop_handle(NULL),
-    peer_hostname(std::move(_peer_hostname)) {}
+    peer_hostname(std::move(_peer_hostname)),
+    ssl_connect_fd(-1) {}
 
 
 Future<Nothing> LibeventSSLSocketImpl::connect(const Address& address)
@@ -453,13 +483,26 @@ Future<Nothing> LibeventSSLSocketImpl::connect(const Address& address)
     return Failure("Failed to connect: SSL_new");
   }
 
+  ssl_connect_fd = ::dup(get());
+  if (ssl_connect_fd < 0) {
+    return Failure("Failed to 'dup' socket for new openssl socket handle");
+  }
+
+  // Reapply FD_CLOEXEC on the duplicate file descriptor.
+  Try<Nothing> closeexec = os::cloexec(ssl_connect_fd);
+  if (closeexec.isError()) {
+    return Failure(
+        "Failed to set FD_CLOEXEC flag for the dup'ed openssl socket handle: " +
+        closeexec.error());
+  }
+
   // Construct the bufferevent in the connecting state.
   // We set 'BEV_OPT_DEFER_CALLBACKS' to avoid calling the
   // 'event_callback' before 'bufferevent_socket_connect' returns.
   CHECK(bev == NULL);
   bev = bufferevent_openssl_socket_new(
       base,
-      get(),
+      ssl_connect_fd,
       ssl,
       BUFFEREVENT_SSL_CONNECTING,
       BEV_OPT_THREADSAFE | BEV_OPT_DEFER_CALLBACKS);

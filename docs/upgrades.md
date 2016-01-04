@@ -4,7 +4,13 @@ layout: documentation
 
 # Upgrading Mesos
 
-This document serves as a guide for users who wish to upgrade an existing mesos cluster. Some versions require particular upgrade techniques when upgrading a running cluster. Some upgrades will have incompatible changes.
+This document serves as a guide for users who wish to upgrade an existing Mesos cluster. Some versions require particular upgrade techniques when upgrading a running cluster. Some upgrades will have incompatible changes.
+
+## Upgrading from 0.26.x to 0.27.x ##
+
+* Mesos 0.27 introduces the concept of _implicit roles_. In previous releases, configuring roles required specifying a static whitelist of valid role names on master startup (via the `--roles` flag). In Mesos 0.27, if `--roles` is omitted, _any_ role name can be used; controlling which principals are allowed to register as which roles should be done using [ACLs](authorization.md). The role whitelist functionality is still supported but is deprecated.
+
+* The Allocator API has changed due to the introduction of implicit roles. Custom allocator implementations will need to be updated. See [MESOS-4000](https://issues.apache.org/jira/browse/MESOS-4000) for more information.
 
 ## Upgrading from 0.25.x to 0.26.x ##
 
@@ -12,6 +18,14 @@ This document serves as a guide for users who wish to upgrade an existing mesos 
 
 * REASON_MEM_LIMIT -> REASON_CONTAINER_LIMITATION_MEMORY
 * REASON_EXECUTOR_PREEMPTED -> REASON_CONTAINER_PREEMPTED
+
+**NOTE** The `Credential` protobuf has been changed. `Credential` field `secret` is now a string, it used to be bytes. This will affect framework developers and language bindings ought to update their generated protobuf with the new version. This fixes JSON based credentials file support.
+
+**NOTE** The `/state` endpoints on master and slave will no longer include `data` fields as part of the JSON models for `ExecutorInfo` and `TaskInfo` out of consideration for memory scalability (see [MESOS-3794](https://issues.apache.org/jira/browse/MESOS-3794) and [this email thread](http://www.mail-archive.com/dev@mesos.apache.org/msg33536.html)).
+On master, the affected `data` field was originally found via `frameworks[*].executors[*].data`.
+On slaves, the affected `data` field was originally found via `executors[*].tasks[*].data`.
+
+**NOTE** The `NetworkInfo` protobuf has been changed. The fields `protocol` and `ip_address` are now deprecated. The new field `ip_addresses` subsumes the information provided by them.
 
 
 ## Upgrading from 0.24.x to 0.25.x

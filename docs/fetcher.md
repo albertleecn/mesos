@@ -11,10 +11,18 @@ from local file systems.
 
 ## What is the Mesos fetcher?
 
-The Mesos fetcher is a mechanism to download resources into the sandbox
-directory of a task in preparation of running the task. As part of a TaskInfo
-message, the framework ordering the task's execution provides a list of
-`CommandInfo::URI` protobuf values, which becomes the input to the Mesos fetcher.
+The Mesos fetcher is a mechanism to download resources into the [sandbox
+directory](/documentation/latest/sandbox/) of a task in preparation of running
+the task. As part of a TaskInfo message, the framework ordering the task's
+execution provides a list of `CommandInfo::URI` protobuf values, which becomes
+the input to the Mesos fetcher.
+
+The Mesos fetcher can copy files from a local filesytem and it also natively
+supports the HTTP, HTTPS, FTP and FTPS protocols. If the requested URI is based
+on some other protocol, then the fetcher tries to utilise a local Hadoop client
+and hence supports any protocol supported by the Hadoop client, e.g., HDFS, S3.
+See the slave [configuration documentation](/documentation/latest/configuration/)
+for how to configure the slave with a path to the Hadoop client.
 
 By default, each requested URI is downloaded directly into the sandbox directory
 and repeated requests for the same URI leads to downloading another copy of the

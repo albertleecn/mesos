@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <errno.h>
 #include <netdb.h>
@@ -23,6 +21,7 @@
 #include <glog/logging.h>
 
 #include <iostream>
+#include <sstream>
 #include <string>
 
 #include <process/pid.hpp>
@@ -33,24 +32,25 @@
 
 #include "config.hpp"
 
-
+using std::ios_base;
 using std::istream;
+using std::istringstream;
 using std::ostream;
+using std::ostringstream;
 using std::string;
-
 
 namespace process {
 
 UPID::UPID(const char* s)
 {
-  std::istringstream in(s);
+  istringstream in(s);
   in >> *this;
 }
 
 
-UPID::UPID(const std::string& s)
+UPID::UPID(const string& s)
 {
-  std::istringstream in(s);
+  istringstream in(s);
   in >> *this;
 }
 
@@ -65,7 +65,7 @@ UPID::UPID(const ProcessBase& process)
 
 UPID::operator std::string() const
 {
-  std::ostringstream out;
+  ostringstream out;
   out << *this;
   return out.str();
 }
@@ -86,14 +86,14 @@ istream& operator>>(istream& stream, UPID& pid)
 
   string str;
   if (!(stream >> str)) {
-    stream.setstate(std::ios_base::badbit);
+    stream.setstate(ios_base::badbit);
     return stream;
   }
 
   VLOG(2) << "Attempting to parse '" << str << "' into a PID";
 
   if (str.size() == 0) {
-    stream.setstate(std::ios_base::badbit);
+    stream.setstate(ios_base::badbit);
     return stream;
   }
 
@@ -106,7 +106,7 @@ istream& operator>>(istream& stream, UPID& pid)
   if (index != string::npos) {
     id = str.substr(0, index);
   } else {
-    stream.setstate(std::ios_base::badbit);
+    stream.setstate(ios_base::badbit);
     return stream;
   }
 
@@ -117,7 +117,7 @@ istream& operator>>(istream& stream, UPID& pid)
   if (index != string::npos) {
     host = str.substr(0, index);
   } else {
-    stream.setstate(std::ios_base::badbit);
+    stream.setstate(ios_base::badbit);
     return stream;
   }
 
@@ -126,7 +126,7 @@ istream& operator>>(istream& stream, UPID& pid)
 
   if (ip.isError()) {
     VLOG(2) << ip.error();
-    stream.setstate(std::ios_base::badbit);
+    stream.setstate(ios_base::badbit);
     return stream;
   }
 
@@ -135,7 +135,7 @@ istream& operator>>(istream& stream, UPID& pid)
   str = str.substr(index + 1);
 
   if (sscanf(str.c_str(), "%hu", &address.port) != 1) {
-    stream.setstate(std::ios_base::badbit);
+    stream.setstate(ios_base::badbit);
     return stream;
   }
 

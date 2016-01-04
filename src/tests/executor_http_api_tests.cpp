@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <string>
 #include <vector>
@@ -27,34 +25,45 @@
 #include <process/future.hpp>
 #include <process/gtest.hpp>
 #include <process/http.hpp>
+#include <process/message.hpp>
 #include <process/pid.hpp>
 
 #include "common/http.hpp"
+#include "common/recordio.hpp"
 
 #include "master/master.hpp"
 
+#include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
 
 using mesos::internal::master::Master;
 
+using mesos::internal::recordio::Reader;
+
 using mesos::internal::slave::Slave;
 
 using mesos::v1::executor::Call;
+using mesos::v1::executor::Event;
 
 using process::Clock;
 using process::Future;
+using process::Message;
 using process::PID;
 
 using process::http::BadRequest;
 using process::http::MethodNotAllowed;
 using process::http::NotAcceptable;
 using process::http::OK;
+using process::http::Pipe;
 using process::http::Response;
 using process::http::UnsupportedMediaType;
+
+using recordio::Decoder;
 
 using std::string;
 using std::vector;
 
+using testing::Eq;
 using testing::WithParamInterface;
 
 namespace mesos {
@@ -303,7 +312,7 @@ TEST_F(ExecutorHttpApiTest, GetRequest)
       "api/v1/executor");
 
   AWAIT_READY(response);
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(MethodNotAllowed().status, response);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(MethodNotAllowed({"POST"}).status, response);
 
   Shutdown();
 }
@@ -344,7 +353,7 @@ TEST_P(ExecutorHttpApiTest, DefaultAccept)
   AWAIT_READY(frameworkId);
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1, offers.get().size());
+  ASSERT_EQ(1u, offers.get().size());
 
   EXPECT_CALL(exec, registered(_, _, _, _))
     .Times(1);
@@ -423,7 +432,7 @@ TEST_P(ExecutorHttpApiTest, NoAcceptHeader)
   AWAIT_READY(frameworkId);
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1, offers.get().size());
+  ASSERT_EQ(1u, offers.get().size());
 
   EXPECT_CALL(exec, registered(_, _, _, _))
     .Times(1);
@@ -618,9 +627,6 @@ TEST_P(ExecutorHttpApiTest, StatusUpdateCallFailedValidation)
     call.mutable_framework_id()->set_value("dummy_framework_id");
     call.mutable_executor_id()->set_value("call_level_executor_id");
 
-    call.mutable_update()->set_uuid(UUID::random().toBytes());
-    call.mutable_update()->set_timestamp(0);
-
     v1::TaskStatus* status = call.mutable_update()->mutable_status();
 
     status->mutable_executor_id()->set_value("update_level_executor_id");
@@ -647,9 +653,6 @@ TEST_P(ExecutorHttpApiTest, StatusUpdateCallFailedValidation)
     call.set_type(Call::UPDATE);
     call.mutable_framework_id()->set_value("dummy_framework_id");
     call.mutable_executor_id()->set_value("call_level_executor_id");
-
-    call.mutable_update()->set_uuid(UUID::random().toBytes());
-    call.mutable_update()->set_timestamp(0);
 
     v1::TaskStatus* status = call.mutable_update()->mutable_status();
 
@@ -678,9 +681,6 @@ TEST_P(ExecutorHttpApiTest, StatusUpdateCallFailedValidation)
     call.mutable_framework_id()->set_value("dummy_framework_id");
     call.mutable_executor_id()->set_value("call_level_executor_id");
 
-    call.mutable_update()->set_uuid(UUID::random().toBytes());
-    call.mutable_update()->set_timestamp(0);
-
     v1::TaskStatus* status = call.mutable_update()->mutable_status();
 
     status->mutable_executor_id()->set_value("call_level_executor_id");
@@ -704,6 +704,103 @@ TEST_P(ExecutorHttpApiTest, StatusUpdateCallFailedValidation)
   Shutdown();
 }
 
+
+// This test verifies if the executor is able to receive a Subscribed
+// event in response to a Subscribe call request.
+TEST_P(ExecutorHttpApiTest, Subscribe)
+{
+  Try<PID<Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  ExecutorID executorId = DEFAULT_EXECUTOR_ID;
+  MockExecutor exec(executorId);
+
+  TestContainerizer containerizer(&exec);
+
+  Try<PID<Slave>> slave = StartSlave(&containerizer);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+  Future<FrameworkID> frameworkId;
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .WillOnce(FutureArg<1>(&frameworkId));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  driver.start();
+
+  AWAIT_READY(frameworkId);
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+
+  Future<Message> registerExecutorMessage =
+    DROP_MESSAGE(Eq(RegisterExecutorMessage().GetTypeName()), _, _);
+
+  TaskInfo taskInfo = createTask(offers.get()[0], "", executorId);
+  driver.launchTasks(offers.get()[0].id(), {taskInfo});
+
+  // Drop the `RegisterExecutorMessage` and then send a `Subscribe` request
+  // from the HTTP based executor.
+  AWAIT_READY(registerExecutorMessage);
+
+  Call call;
+  call.mutable_framework_id()->CopyFrom(evolve(frameworkId.get()));
+  call.mutable_executor_id()->CopyFrom(evolve(executorId));
+
+  call.set_type(Call::SUBSCRIBE);
+
+  call.mutable_subscribe();
+
+  // Retrieve the parameter passed as content type to this test.
+  const ContentType contentType = GetParam();
+
+  process::http::Headers headers;
+  headers["Accept"] = stringify(contentType);
+
+  Future<Response> response = process::http::streaming::post(
+      slave.get(),
+      "api/v1/executor",
+      headers,
+      serialize(contentType, call),
+      stringify(contentType));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  EXPECT_SOME_EQ(stringify(contentType),
+                 response.get().headers.get("Content-Type"));
+
+  EXPECT_SOME_EQ("chunked",
+                 response.get().headers.get("Transfer-Encoding"));
+
+  ASSERT_EQ(Response::PIPE, response.get().type);
+
+  Option<Pipe::Reader> reader = response.get().reader;
+  ASSERT_SOME(reader);
+
+  auto deserializer =
+    lambda::bind(deserialize<Event>, contentType, lambda::_1);
+
+  Reader<Event> responseDecoder(
+      Decoder<Event>(deserializer),
+      reader.get());
+
+  Future<Result<Event>> event = responseDecoder.read();
+  AWAIT_READY(event);
+  ASSERT_SOME(event.get());
+
+  // Check event type is subscribed and if the ExecutorID matches.
+  ASSERT_EQ(Event::SUBSCRIBED, event.get().get().type());
+  ASSERT_EQ(event.get().get().subscribed().executor_info().executor_id(),
+            call.executor_id());
+
+  reader.get().close();
+  Shutdown();
+}
 
 } // namespace tests {
 } // namespace internal {

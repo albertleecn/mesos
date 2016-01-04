@@ -1,16 +1,15 @@
-/**
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef __STOUT_OS_HPP__
 #define __STOUT_OS_HPP__
 
@@ -82,6 +81,7 @@
 #include <stout/os/killtree.hpp>
 #include <stout/os/ls.hpp>
 #include <stout/os/mkdir.hpp>
+#include <stout/os/mkdtemp.hpp>
 #include <stout/os/mktemp.hpp>
 #include <stout/os/os.hpp>
 #include <stout/os/permissions.hpp>
@@ -93,6 +93,7 @@
 #include <stout/os/shell.hpp>
 #include <stout/os/signals.hpp>
 #include <stout/os/stat.hpp>
+#include <stout/os/strerror.hpp>
 #include <stout/os/touch.hpp>
 #include <stout/os/utime.hpp>
 #include <stout/os/write.hpp>
@@ -215,9 +216,10 @@ inline Try<Version> release()
     return Error(info.error());
   }
 
+  int major, minor, patch = 0;
+#ifndef __FreeBSD__
   // TODO(karya): Replace sscanf with Version::parse() once Version
   // starts supporting labels and build metadata.
-  int major, minor, patch;
   if (::sscanf(
           info.get().release.c_str(),
           "%d.%d.%d",
@@ -226,7 +228,12 @@ inline Try<Version> release()
           &patch) != 3) {
     return Error("Failed to parse: " + info.get().release);
   }
-
+#else
+  // TODO(dforsyth): Handle FreeBSD patch versions (-pX).
+  if (::sscanf(info.get().release.c_str(), "%d.%d-%*s", &major, &minor) != 2) {
+    return Error("Failed to parse: " + info.get().release);
+  }
+#endif
   return Version(major, minor, patch);
 }
 
@@ -293,10 +300,10 @@ inline std::string expandName(const std::string& libraryName)
 {
   const char* prefix = "lib";
   const char* extension =
-#ifdef __linux__
-    ".so";
-#else
+#ifdef __APPLE__
     ".dylib";
+#else
+    ".so";
 #endif
 
   return prefix + libraryName + extension;
@@ -307,10 +314,10 @@ inline std::string expandName(const std::string& libraryName)
 inline std::string paths()
 {
   const char* environmentVariable =
-#ifdef __linux__
-    "LD_LIBRARY_PATH";
-#else
+#ifdef __APPLE__
     "DYLD_LIBRARY_PATH";
+#else
+    "LD_LIBRARY_PATH";
 #endif
   const Option<std::string> path = getenv(environmentVariable);
   return path.isSome() ? path.get() : std::string();
@@ -321,10 +328,10 @@ inline std::string paths()
 inline void setPaths(const std::string& newPaths)
 {
   const char* environmentVariable =
-#ifdef __linux__
-    "LD_LIBRARY_PATH";
-#else
+#ifdef __APPLE__
     "DYLD_LIBRARY_PATH";
+#else
+    "LD_LIBRARY_PATH";
 #endif
   setenv(environmentVariable, newPaths);
 }

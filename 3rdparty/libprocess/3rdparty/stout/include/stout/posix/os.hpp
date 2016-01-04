@@ -1,16 +1,15 @@
-/**
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef __STOUT_POSIX_OS_HPP__
 #define __STOUT_POSIX_OS_HPP__
 
@@ -68,6 +67,9 @@
 #include <stout/os/exists.hpp>
 #include <stout/os/fcntl.hpp>
 #include <stout/os/fork.hpp>
+#ifdef __FreeBSD__
+#include <stout/os/freebsd.hpp>
+#endif
 #ifdef __linux__
 #include <stout/os/linux.hpp>
 #endif // __linux__
@@ -104,24 +106,6 @@ inline void setenv(const std::string& key,
 inline void unsetenv(const std::string& key)
 {
   ::unsetenv(key.c_str());
-}
-
-
-// Creates a temporary directory using the specified path
-// template. The template may be any path with _6_ `Xs' appended to
-// it, for example /tmp/temp.XXXXXX. The trailing `Xs' are replaced
-// with a unique alphanumeric combination.
-inline Try<std::string> mkdtemp(const std::string& path = "/tmp/XXXXXX")
-{
-  char* temp = new char[path.size() + 1];
-  if (::mkdtemp(::strcpy(temp, path.c_str())) != NULL) {
-    std::string result(temp);
-    delete[] temp;
-    return result;
-  } else {
-    delete[] temp;
-    return ErrnoError();
-  }
 }
 
 
@@ -585,9 +569,13 @@ inline Try<Memory> memory()
 # if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 3, 23)
   memory.total = Bytes(info.totalram * info.mem_unit);
   memory.free = Bytes(info.freeram * info.mem_unit);
+  memory.totalSwap = Bytes(info.totalswap * info.mem_unit);
+  memory.freeSwap = Bytes(info.freeswap * info.mem_unit);
 # else
   memory.total = Bytes(info.totalram);
   memory.free = Bytes(info.freeram);
+  memory.totalSwap = Bytes(info.totalswap);
+  memory.freeSwap = Bytes(info.freeswap);
 # endif
 
   return memory;
@@ -619,6 +607,19 @@ inline Try<Memory> memory()
     return ErrnoError();
   }
   memory.free = Bytes(freeCount * pageSize);
+
+  struct xsw_usage usage;
+  length = sizeof(struct xsw_usage);
+  if (sysctlbyname(
+        "vm.swapusage",
+        &usage,
+        &length,
+        NULL,
+        0) != 0) {
+    return ErrnoError();
+  }
+  memory.totalSwap = Bytes(usage.xsu_total * pageSize);
+  memory.freeSwap = Bytes(usage.xsu_avail * pageSize);
 
   return memory;
 

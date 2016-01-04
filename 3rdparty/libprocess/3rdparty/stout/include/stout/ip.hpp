@@ -1,16 +1,15 @@
-/**
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef __STOUT_IP_HPP__
 #define __STOUT_IP_HPP__
 
@@ -19,9 +18,9 @@
 #include <arpa/inet.h>
 #endif // __WINDOWS__
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
 #include <ifaddrs.h>
-#endif // __linux__ || __APPLE__
+#endif // __linux__ || __APPLE__ || __FreeBSD__
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,6 +47,7 @@
 #include <string>
 #include <vector>
 
+#include <boost/functional/hash.hpp>
 
 #include <stout/abort.hpp>
 #include <stout/bits.hpp>
@@ -55,6 +55,7 @@
 #include <stout/none.hpp>
 #include <stout/numify.hpp>
 #include <stout/option.hpp>
+#include <stout/os/strerror.hpp>
 #include <stout/result.hpp>
 #include <stout/stringify.hpp>
 #include <stout/strings.hpp>
@@ -210,23 +211,38 @@ inline Try<IP> IP::parse(const std::string& value, int family)
 
 inline Try<IP> IP::create(const struct sockaddr_storage& _storage)
 {
-  switch (_storage.ss_family) {
-    case AF_INET: {
-      struct sockaddr_in addr = *((struct sockaddr_in*) &_storage);
-      return IP(addr.sin_addr);
-    }
-    default: {
-      return Error(
-          "Unsupported family type: " +
-          stringify(_storage.ss_family));
-    }
-  }
+  // According to POSIX: (IEEE Std 1003.1, 2004)
+  //
+  // (1) `sockaddr_storage` is "aligned at an appropriate boundary so that
+  // pointers to it can be cast as pointers to protocol-specific address
+  // structures and used to access the fields of those structures without
+  // alignment problems."
+  //
+  // (2) "When a `sockaddr_storage` structure is cast as a `sockaddr`
+  // structure, the `ss_family` field of the `sockaddr_storage` structure
+  // shall map onto the `sa_family` field of the `sockaddr` structure."
+  //
+  // Therefore, casting from `const sockaddr_storage*` to `const sockaddr*`
+  // (then subsequently dereferencing the `const sockaddr*`) should be safe.
+  // Note that casting in the reverse direction (`const sockaddr*` to
+  // `const sockaddr_storage*`) would NOT be safe, since the former might
+  // not be aligned appropriately.
+  const auto* addr = reinterpret_cast<const struct sockaddr*>(&_storage);
+  return create(*addr);
 }
 
 
 inline Try<IP> IP::create(const struct sockaddr& _storage)
 {
-  return create(*((struct sockaddr_storage*) &_storage));
+  switch (_storage.sa_family) {
+    case AF_INET: {
+      const auto* addr = reinterpret_cast<const struct sockaddr_in*>(&_storage);
+      return IP(addr->sin_addr);
+    }
+    default: {
+      return Error("Unsupported family type: " + stringify(_storage.sa_family));
+    }
+  }
 }
 
 
@@ -242,8 +258,7 @@ inline std::ostream& operator<<(std::ostream& stream, const IP& ip)
         // We do not expect inet_ntop to fail because all parameters
         // passed in are valid.
         ABORT("Failed to get human-readable IP for " +
-              stringify(ntohl(in.s_addr)) +
-              ": " + strerror(errno));
+              stringify(ntohl(in.s_addr)) + ": " + os::strerror(errno));
       }
 
       stream << buffer;
@@ -412,7 +427,7 @@ inline Result<IPNetwork> IPNetwork::fromLinkDevice(
     const std::string& name,
     int family)
 {
-#if !defined(__linux__) && !defined(__APPLE__)
+#if !defined(__linux__) && !defined(__APPLE__) && !defined(__FreeBSD__)
   return Error("Not implemented");
 #else
   if (family != AF_INET) {

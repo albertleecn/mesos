@@ -1,16 +1,15 @@
-/**
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <string>
 #include <vector>
 
@@ -94,6 +93,29 @@ TEST(PathTest, Dirname)
 }
 
 
+TEST(PathTest, Extension)
+{
+  EXPECT_NONE(Path(".").extension());
+  EXPECT_NONE(Path("..").extension());
+
+  EXPECT_NONE(Path("a").extension());
+  EXPECT_NONE(Path("/a").extension());
+  EXPECT_NONE(Path("/").extension());
+
+  EXPECT_NONE(Path("/a.b/c").extension());
+
+  EXPECT_SOME_EQ(".txt", Path("a.txt").extension());
+  EXPECT_SOME_EQ(".txt", Path("/a/b.txt").extension());
+  EXPECT_SOME_EQ(".txt", Path("/a.b/c.txt").extension());
+
+  EXPECT_SOME_EQ(".gz", Path("a.tar.gz").extension());
+  EXPECT_SOME_EQ(".gz", Path("/a.tar.gz").extension());
+
+  EXPECT_SOME_EQ(".bashrc", Path(".bashrc").extension());
+  EXPECT_SOME_EQ(".bashrc", Path("/.bashrc").extension());
+}
+
+
 TEST(PathTest, Join)
 {
   EXPECT_EQ("a/b/c", path::join("a", "b", "c"));
@@ -118,6 +140,24 @@ TEST(PathTest, Join)
   EXPECT_EQ("/a/b/c", path::join("/a", "/b", "/c"));
   EXPECT_EQ("/a/b/c/", path::join("/a/", "/b/", "/c/"));
   EXPECT_EQ("a/b/c/", path::join("a/", "/b/", "/c/"));
+}
+
+
+TEST(PathTest, Absolute)
+{
+  // Check absolute paths.
+  EXPECT_TRUE(path::absolute("/"));
+  EXPECT_TRUE(path::absolute("/foo"));
+  EXPECT_TRUE(path::absolute("/foo/bar"));
+  EXPECT_TRUE(path::absolute("/foo/bar/../baz"));
+
+  // Check relative paths.
+  EXPECT_FALSE(path::absolute(""));
+  EXPECT_FALSE(path::absolute("."));
+  EXPECT_FALSE(path::absolute(".."));
+  EXPECT_FALSE(path::absolute("../"));
+  EXPECT_FALSE(path::absolute("./foo"));
+  EXPECT_FALSE(path::absolute("../foo"));
 }
 
 

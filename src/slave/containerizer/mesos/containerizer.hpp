@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __MESOS_CONTAINERIZER_HPP__
 #define __MESOS_CONTAINERIZER_HPP__
@@ -22,6 +20,7 @@
 #include <list>
 #include <vector>
 
+#include <mesos/slave/container_logger.hpp>
 #include <mesos/slave/isolator.hpp>
 
 #include <process/metrics/counter.hpp>
@@ -32,7 +31,8 @@
 #include "slave/state.hpp"
 
 #include "slave/containerizer/containerizer.hpp"
-#include "slave/containerizer/launcher.hpp"
+
+#include "slave/containerizer/mesos/launcher.hpp"
 
 namespace mesos {
 namespace internal {
@@ -55,6 +55,7 @@ public:
       const Flags& flags,
       bool local,
       Fetcher* fetcher,
+      const process::Owned<mesos::slave::ContainerLogger>& logger,
       const process::Owned<Launcher>& launcher,
       const std::vector<process::Owned<mesos::slave::Isolator>>& isolators);
 
@@ -112,11 +113,13 @@ public:
       const Flags& _flags,
       bool _local,
       Fetcher* _fetcher,
+      const process::Owned<mesos::slave::ContainerLogger>& _logger,
       const process::Owned<Launcher>& _launcher,
       const std::vector<process::Owned<mesos::slave::Isolator>>& _isolators)
     : flags(_flags),
       local(_local),
       fetcher(_fetcher),
+      logger(_logger),
       launcher(_launcher),
       isolators(_isolators) {}
 
@@ -127,16 +130,7 @@ public:
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
-      const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint);
-
-  virtual process::Future<bool> launch(
-      const ContainerID& containerId,
-      const TaskInfo& taskInfo,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
@@ -243,6 +237,7 @@ private:
   const Flags flags;
   const bool local;
   Fetcher* fetcher;
+  process::Owned<mesos::slave::ContainerLogger> logger;
   const process::Owned<Launcher> launcher;
   const std::vector<process::Owned<mesos::slave::Isolator>> isolators;
 

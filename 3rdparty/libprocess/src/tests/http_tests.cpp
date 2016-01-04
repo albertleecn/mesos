@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <arpa/inet.h>
 
@@ -23,16 +21,19 @@
 #include <vector>
 
 #include <process/address.hpp>
+#include <process/authenticator.hpp>
 #include <process/future.hpp>
 #include <process/gmock.hpp>
 #include <process/gtest.hpp>
 #include <process/http.hpp>
+#include <process/id.hpp>
 #include <process/io.hpp>
 #include <process/owned.hpp>
 #include <process/socket.hpp>
 
 #include <stout/base64.hpp>
 #include <stout/gtest.hpp>
+#include <stout/hashset.hpp>
 #include <stout/none.hpp>
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
@@ -40,10 +41,16 @@
 
 #include "encoder.hpp"
 
+namespace authentication = process::http::authentication;
+namespace ID = process::ID;
 namespace http = process::http;
+
+using authentication::Authenticator;
+using authentication::AuthenticationResult;
 
 using process::Future;
 using process::Owned;
+using process::PID;
 using process::Process;
 using process::Promise;
 
@@ -74,6 +81,10 @@ public:
   MOCK_METHOD1(a, Future<http::Response>(const http::Request&));
   MOCK_METHOD1(abc, Future<http::Response>(const http::Request&));
 
+  MOCK_METHOD2(
+      authenticated,
+      Future<http::Response>(const http::Request&, const Option<string>&));
+
 protected:
   virtual void initialize()
   {
@@ -85,6 +96,7 @@ protected:
     route("/delete", None(), &HttpProcess::requestDelete);
     route("/a", None(), &HttpProcess::a);
     route("/a/b/c", None(), &HttpProcess::abc);
+    route("/authenticated", "realm", None(), &HttpProcess::authenticated);
   }
 
   Future<http::Response> auth(const http::Request& request)
@@ -739,15 +751,24 @@ TEST(HTTPConnectionTest, Serial)
 
 TEST(HTTPConnectionTest, Pipeline)
 {
-  Http http;
+  // We use two Processes here to ensure that libprocess performs
+  // pipelining correctly when requests on a single connection
+  // are going to different Processes.
+  Http http1, http2;
 
-  http::URL url = http::URL(
+  http::URL url1 = http::URL(
       "http",
-      http.process->self().address.ip,
-      http.process->self().address.port,
-      http.process->self().id + "/get");
+      http1.process->self().address.ip,
+      http1.process->self().address.port,
+      http1.process->self().id + "/get");
 
-  Future<http::Connection> connect = http::connect(url);
+  http::URL url2 = http::URL(
+      "http",
+      http2.process->self().address.ip,
+      http2.process->self().address.port,
+      http2.process->self().id + "/get");
+
+  Future<http::Connection> connect = http::connect(url1);
   AWAIT_READY(connect);
 
   http::Connection connection = connect.get();
@@ -756,13 +777,15 @@ TEST(HTTPConnectionTest, Pipeline)
   Promise<http::Response> promise1, promise2, promise3;
   Future<http::Request> get1, get2, get3;
 
-  EXPECT_CALL(*http.process, get(_))
+  EXPECT_CALL(*http1.process, get(_))
     .WillOnce(DoAll(FutureArg<0>(&get1),
                     Return(promise1.future())))
-    .WillOnce(DoAll(FutureArg<0>(&get2),
-                    Return(promise2.future())))
     .WillOnce(DoAll(FutureArg<0>(&get3),
                     Return(promise3.future())));
+
+  EXPECT_CALL(*http2.process, get(_))
+    .WillOnce(DoAll(FutureArg<0>(&get2),
+                    Return(promise2.future())));
 
   http::Request request1, request2, request3;
 
@@ -770,9 +793,9 @@ TEST(HTTPConnectionTest, Pipeline)
   request2.method = "GET";
   request3.method = "GET";
 
-  request1.url = url;
-  request2.url = url;
-  request3.url = url;
+  request1.url = url1;
+  request2.url = url2;
+  request3.url = url1;
 
   request1.body = "1";
   request2.body = "2";
@@ -885,8 +908,12 @@ TEST(HTTPConnectionTest, ClosingRequest)
   AWAIT_READY(connection.disconnected());
 }
 
-
+// TODO(dforsyth): The test suite doesn't see the second call on FreeBSD
+#ifndef __FreeBSD__
 TEST(HTTPConnectionTest, ClosingResponse)
+#else
+TEST(HTTPConnectionTest, DISABLED_ClosingResponse)
+#endif
 {
   Http http;
 
@@ -901,15 +928,17 @@ TEST(HTTPConnectionTest, ClosingResponse)
 
   http::Connection connection = connect.get();
 
-  // Issue two pipelined requests, the server will respond
+  // Issue two pipelined requests; the server will respond
   // with a 'Connection: close' for the first response, which
-  // will lead to a disconnection.
-  Promise<http::Response> promise1, promise2;
-  Future<http::Request> get1, get2;
+  // will trigger a disconnection and break the pipeline. This
+  // means that the second request arrives at the server but
+  // the response cannot be received due to the disconnection.
+  Promise<http::Response> promise1;
+  Future<Nothing> get2;
 
   EXPECT_CALL(*http.process, get(_))
-    .WillOnce(DoAll(FutureArg<0>(&get1), Return(promise1.future())))
-    .WillOnce(DoAll(FutureArg<0>(&get2), Return(promise2.future())));
+    .WillOnce(Return(promise1.future()))
+    .WillOnce(DoAll(FutureSatisfy(&get2), Return(http::OK())));
 
   http::Request request1, request2;
 
@@ -925,12 +954,14 @@ TEST(HTTPConnectionTest, ClosingResponse)
   Future<http::Response> response1 = connection.send(request1);
   Future<http::Response> response2 = connection.send(request2);
 
-  // The first response will close the connection.
-  http::Response ok = http::OK("body");
-  ok.headers["Connection"] = "close";
+  http::Response close = http::OK("body");
+  close.headers["Connection"] = "close";
 
-  promise1.set(ok);
+  // Wait for both requests to arrive, then issue the closing response.
+  AWAIT_READY(get2);
+  promise1.set(close);
 
+  // The second response will fail because of 'Connection: close'.
   AWAIT_READY(response1);
   AWAIT_FAILED(response2);
 
@@ -1163,4 +1194,233 @@ TEST(URLTest, Stringification)
 
   EXPECT_TRUE(url4 == "http://172.158.1.23:80/path?baz=bam&foo=bar#fragment" ||
               url4 == "http://172.158.1.23:80/path?foo=bar&baz=bam#fragment");
+}
+
+
+TEST(URLTest, ParseUrls)
+{
+  Try<http::URL> url = URL::parse("https://auth.docker.com");
+  EXPECT_SOME(url);
+  EXPECT_SOME_EQ("https", url.get().scheme);
+  EXPECT_SOME_EQ(443, url.get().port);
+  EXPECT_SOME_EQ("auth.docker.com", url.get().domain);
+  EXPECT_EQ("/", url.get().path);
+
+  url = URL::parse("http://docker.com/");
+  EXPECT_SOME(url);
+  EXPECT_SOME_EQ("http", url.get().scheme);
+  EXPECT_SOME_EQ(80, url.get().port);
+  EXPECT_SOME_EQ("docker.com", url.get().domain);
+  EXPECT_EQ("/", url.get().path);
+
+  url = URL::parse("http://registry.docker.com:1234/abc/1");
+  EXPECT_SOME(url);
+  EXPECT_SOME_EQ("http", url.get().scheme);
+  EXPECT_SOME_EQ(1234, url.get().port);
+  EXPECT_SOME_EQ("registry.docker.com", url.get().domain);
+  EXPECT_EQ("/abc/1", url.get().path);
+
+  // Missing scheme.
+  EXPECT_ERROR(URL::parse("mesos.com"));
+  // Unknown scheme with no port.
+  EXPECT_ERROR(URL::parse("abc://abc.com"));
+  // Invalid urls.
+  EXPECT_ERROR(URL::parse("://///"));
+  EXPECT_ERROR(URL::parse("://"));
+  EXPECT_ERROR(URL::parse("http://"));
+  EXPECT_ERROR(URL::parse("http:////"));
+}
+
+
+class MockAuthenticator : public Authenticator
+{
+public:
+  MOCK_METHOD1(
+      authenticate,
+      Future<AuthenticationResult>(const http::Request&));
+
+  virtual string scheme() const { return "Basic"; }
+};
+
+
+class HttpAuthenticationTest : public ::testing::Test
+{
+protected:
+  Future<Nothing> setAuthenticator(
+      const string& realm,
+      Owned<Authenticator> authenticator)
+  {
+    realms.insert(realm);
+
+    return authentication::setAuthenticator(realm, authenticator);
+  }
+
+  virtual void TearDown()
+  {
+    foreach (const string& realm, realms) {
+      // We need to wait in order to ensure that the operation
+      // completes before we leave TearDown. Otherwise, we may
+      // leak a mock object.
+      AWAIT_READY(authentication::unsetAuthenticator(realm));
+    }
+    realms.clear();
+  }
+
+private:
+  hashset<string> realms;
+};
+
+
+// Ensures that when there is no authenticator for a realm,
+// requests are not authenticated (i.e. the principal is None).
+TEST_F(HttpAuthenticationTest, NoAuthenticator)
+{
+  Http http;
+
+  EXPECT_CALL(*http.process, authenticated(_, Option<string>::none()))
+    .WillOnce(Return(http::OK()));
+
+  Future<http::Response> response =
+    http::get(http.process->self(), "authenticated");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
+}
+
+
+// Tests that an authentication Unauthorized result is exposed correctly.
+TEST_F(HttpAuthenticationTest, Unauthorized)
+{
+  MockAuthenticator* authenticator = new MockAuthenticator();
+  setAuthenticator("realm", Owned<Authenticator>(authenticator));
+
+  Http http;
+
+  AuthenticationResult authentication;
+  authentication.unauthorized =
+    http::Unauthorized(vector<string>({"Basic realm=\"realm\""}));
+
+  EXPECT_CALL(*authenticator, authenticate(_))
+    .WillOnce(Return(authentication));
+
+  Future<http::Response> response =
+    http::get(http.process->self(), "authenticated");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      http::Unauthorized(vector<string>()).status,
+      response);
+
+  EXPECT_EQ(
+      authentication.unauthorized->headers.get("WWW-Authenticate"),
+      response.get().headers.get("WWW-Authenticate"));
+}
+
+
+// Tests that an authentication Forbidden result is exposed correctly.
+TEST_F(HttpAuthenticationTest, Forbidden)
+{
+  MockAuthenticator* authenticator = new MockAuthenticator();
+  setAuthenticator("realm", Owned<Authenticator>(authenticator));
+
+  Http http;
+
+  AuthenticationResult authentication;
+  authentication.forbidden = http::Forbidden();
+
+  EXPECT_CALL(*authenticator, authenticate(_))
+    .WillOnce(Return(authentication));
+
+  Future<http::Response> response =
+    http::get(http.process->self(), "authenticated");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Forbidden().status, response);
+}
+
+
+// Tests that a successful authentication hits the endpoint.
+TEST_F(HttpAuthenticationTest, Authenticated)
+{
+  MockAuthenticator* authenticator = new MockAuthenticator();
+  setAuthenticator("realm", Owned<Authenticator>(authenticator));
+
+  Http http;
+
+  AuthenticationResult authentication;
+  authentication.principal = "principal";
+
+  EXPECT_CALL((*authenticator), authenticate(_))
+    .WillOnce(Return(authentication));
+
+  EXPECT_CALL(*http.process, authenticated(_, Option<string>("principal")))
+    .WillOnce(Return(http::OK()));
+
+  // Note that we don't bother pretending to specify a valid
+  // 'Authorization' header since we force authentication success.
+  Future<http::Response> response =
+    http::get(http.process->self(), "authenticated");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
+}
+
+
+// Tests that HTTP pipelining is respected even when
+// authentications are satisfied out-of-order.
+TEST_F(HttpAuthenticationTest, Pipelining)
+{
+  MockAuthenticator* authenticator = new MockAuthenticator();
+  setAuthenticator("realm", Owned<Authenticator>(authenticator));
+
+  Http http;
+
+  // We satisfy the authentication futures in reverse
+  // order. Libprocess should not re-order requests
+  // when this occurs.
+  Promise<AuthenticationResult> promise1;
+  Promise<AuthenticationResult> promise2;
+  EXPECT_CALL((*authenticator), authenticate(_))
+    .WillOnce(Return(promise1.future()))
+    .WillOnce(Return(promise2.future()));
+
+  Future<Option<string>> principal1;
+  Future<Option<string>> principal2;
+  EXPECT_CALL(*http.process, authenticated(_, _))
+    .WillOnce(DoAll(FutureArg<1>(&principal1), Return(http::OK("1"))))
+    .WillOnce(DoAll(FutureArg<1>(&principal2), Return(http::OK("2"))));
+
+  http::URL url = http::URL(
+      "http",
+      http.process->self().address.ip,
+      http.process->self().address.port,
+      http.process->self().id + "/authenticated");
+
+  Future<http::Connection> connect = http::connect(url);
+  AWAIT_READY(connect);
+
+  http::Connection connection = connect.get();
+
+  // Note that we don't bother pretending to specify a valid
+  // 'Authorization' header since we force authentication success.
+  http::Request request;
+  request.method = "GET";
+  request.url = url;
+  request.keepAlive = true;
+
+  Future<http::Response> response1 = connection.send(request);
+  Future<http::Response> response2 = connection.send(request);
+
+  AuthenticationResult authentiation2;
+  authentiation2.principal = "principal2";
+  promise2.set(authentiation2);
+
+  AuthenticationResult authentiation1;
+  authentiation1.principal = "princpal1";
+  promise1.set(authentiation1);
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response1);
+  EXPECT_EQ("1", response1->body);
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response2);
+  EXPECT_EQ("2", response2->body);
+
+  AWAIT_EXPECT_EQ(authentiation1.principal, principal1);
+  AWAIT_EXPECT_EQ(authentiation2.principal, principal2);
 }

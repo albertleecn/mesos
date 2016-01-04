@@ -43,6 +43,8 @@ PICOJSON = 3rdparty/picojson-$(PICOJSON_VERSION)
 noinst_LTLIBRARIES = libprocess.la
 
 libprocess_la_SOURCES =		\
+  src/authenticator_manager.hpp	\
+  src/authenticator_manager.cpp	\
   src/clock.cpp			\
   src/config.hpp		\
   src/decoder.hpp		\
@@ -86,11 +88,15 @@ libprocess_la_SOURCES +=	\
     src/ssl/utilities.cpp
 endif
 
+
+# We use "-isystem" instead of "-I" to add Boost to the include search
+# path. This disables compiler warnings inside Boost headers since we
+# can't easily fix them. See MESOS-3799.
 libprocess_la_CPPFLAGS =			\
   -DBUILD_DIR=\"$(LIBPROCESS_BUILD_DIR)\"	\
   -I$(srcdir)/include				\
   -I$(srcdir)/$(STOUT)/include			\
-  -I$(BOOST)					\
+  -isystem $(BOOST)				\
   -I$(LIBEV)					\
   -I$(PICOJSON)					\
   -DPICOJSON_USE_INT64				\
@@ -147,8 +153,8 @@ libprocess_tests_SOURCES =					\
   src/tests/io_tests.cpp					\
   src/tests/limiter_tests.cpp					\
   src/tests/main.cpp						\
-  src/tests/mutex_tests.cpp					\
   src/tests/metrics_tests.cpp					\
+  src/tests/mutex_tests.cpp					\
   src/tests/owned_tests.cpp					\
   src/tests/process_tests.cpp					\
   src/tests/queue_tests.cpp					\

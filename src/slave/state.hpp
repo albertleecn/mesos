@@ -1,25 +1,25 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __SLAVE_STATE_HPP__
 #define __SLAVE_STATE_HPP__
 
+#ifndef __WINDOWS__
 #include <unistd.h>
+#endif // __WINDOWS__
 
 #include <vector>
 
@@ -31,12 +31,17 @@
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
 #include <stout/hashset.hpp>
-#include <stout/os.hpp>
 #include <stout/path.hpp>
 #include <stout/protobuf.hpp>
 #include <stout/strings.hpp>
 #include <stout/utils.hpp>
 #include <stout/uuid.hpp>
+
+#include <stout/os/mkdir.hpp>
+#include <stout/os/mktemp.hpp>
+#include <stout/os/rename.hpp>
+#include <stout/os/rm.hpp>
+#include <stout/os/write.hpp>
 
 #include "messages/messages.hpp"
 
@@ -208,6 +213,10 @@ struct RunState
   hashmap<TaskID, TaskState> tasks;
   Option<pid_t> forkedPid;
   Option<process::UPID> libprocessPid;
+
+  // This represents if the executor is connected via HTTP. It can be None()
+  // when the connection type is unknown.
+  Option<bool> http;
 
   // Executor terminated and all its updates acknowledged.
   bool completed;

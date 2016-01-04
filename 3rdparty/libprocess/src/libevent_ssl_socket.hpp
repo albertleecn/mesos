@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #ifndef __LIBEVENT_SSL_SOCKET_HPP__
 #define __LIBEVENT_SSL_SOCKET_HPP__
@@ -180,6 +178,12 @@ private:
   Queue<Future<Socket>> accept_queue;
 
   Option<std::string> peer_hostname;
+
+  // Socket descriptor/handle used by libevent_ssl.
+  // Ownership semantics:
+  //  This class owns this handle and is responsible for creating (via dup)
+  //  and closing it.
+  int ssl_connect_fd;
 };
 
 } // namespace network {

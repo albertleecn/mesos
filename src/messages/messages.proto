@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 import "mesos/mesos.proto";
 
@@ -37,8 +35,8 @@ package mesos.internal;
  *   1) we need additional IDs, such as a specific
  *      framework, executor, or agent; or
  *   2) we do not need the additional data, such as the command run by the
- *      task, the specific containerization, or health checks.  These
- *      additional fields may be large and unnecessary for some Mesos messages.
+ *      task or the health checks.  These additional fields may be large and
+ *      unnecessary for some Mesos messages.
  *
  * `Task` is generally constructed from a `TaskInfo`.  See protobuf::createTask.
  */
@@ -65,6 +63,9 @@ message Task {
   // to use this information as needed and to handle tasks without
   // service discovery information.
   optional DiscoveryInfo discovery = 12;
+
+  // Container information for the task.
+  optional ContainerInfo container = 13;
 }
 
 
@@ -82,12 +83,14 @@ message StatusUpdate {
   required FrameworkID framework_id = 1;
   optional ExecutorID executor_id = 2;
   optional SlaveID slave_id = 3;
+
+  // Since 0.23.0 we set 'status.uuid' in the executor
+  // driver for all retryable status updates.
   required TaskStatus status = 4;
+
   required double timestamp = 5;
 
-  // This is being deprecated in favor of TaskStatus.uuid. In 0.23.0,
-  // we set the TaskStatus 'uuid' in the executor driver for all
-  // retryable status updates.
+  // Since 0.26.0 this is deprecated in favor of 'status.uuid'.
   optional bytes uuid = 6;
 
   // This corresponds to the latest state of the task according to the
@@ -661,12 +664,11 @@ message Archive {
 
 
 /**
- * Message describing task current health status that is sent by
- * the task health checker to the command executor.
- * The command executor reports the task status back to the
- * on each receive. If the health checker configured failure
- * condition meets, then `kill_task` flag will be set to true which
- * the executor on message receive will kill the task.
+ * Message describing a task's current health status, which is sent by
+ * the health check program to the executor.
+ * On each receive, if the number of consecutive failed health checks
+ * meets the `consecutive_failure` configuration, then `kill_task`
+ * flag will be set to true.
  */
 message TaskHealthStatus {
   required TaskID task_id = 1;
@@ -676,7 +678,7 @@ message TaskHealthStatus {
   // Flag to initiate task kill.
   optional bool kill_task = 3 [default = false];
 
-  // Number of consecutive counts in current status.
+  // Number of consecutive failures observed by the health check program.
   // This will not be populated if task is healthy.
   optional int32 consecutive_failures = 4;
 }

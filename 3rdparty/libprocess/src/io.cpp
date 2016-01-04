@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <memory>
 #include <string>
@@ -24,6 +22,7 @@
 #include <stout/lambda.hpp>
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
+#include <stout/os/strerror.hpp>
 #include <stout/try.hpp>
 
 using std::string;
@@ -92,7 +91,7 @@ void read(
                          WeakFuture<short>(future)));
       } else {
         // Error occurred.
-        promise->fail(strerror(errno));
+        promise->fail(os::strerror(errno));
       }
     } else {
       promise->set(length);
@@ -103,7 +102,7 @@ void read(
 
 void write(
     int fd,
-    void* data,
+    const void* data,
     size_t size,
     const std::shared_ptr<Promise<size_t>>& promise,
     const Future<short>& future)
@@ -124,46 +123,7 @@ void write(
   } else if (future.isFailed()) {
     promise->fail(future.failure());
   } else {
-    // Do a write but ignore SIGPIPE so we can return an error when
-    // writing to a pipe or socket where the reading end is closed.
-    // TODO(benh): The 'suppress' macro failed to work on OS X as it
-    // appears that signal delivery was happening asynchronously.
-    // That is, the signal would not appear to be pending when the
-    // 'suppress' block was closed thus the destructor for
-    // 'Suppressor' was not waiting/removing the signal via 'sigwait'.
-    // It also appeared that the signal would be delivered to another
-    // thread even if it remained blocked in this thiread. The
-    // workaround here is to check explicitly for EPIPE and then do
-    // 'sigwait' regardless of what 'os::signals::pending' returns. We
-    // don't have that luxury with 'Suppressor' and arbitrary signals
-    // because we don't always have something like EPIPE to tell us
-    // that a signal is (or will soon be) pending.
-    bool pending = os::signals::pending(SIGPIPE);
-    bool unblock = !pending ? os::signals::block(SIGPIPE) : false;
-
     ssize_t length = ::write(fd, data, size);
-
-    // Save the errno so we can restore it after doing sig* functions
-    // below.
-    int errno_ = errno;
-
-    if (length < 0 && errno == EPIPE && !pending) {
-      sigset_t mask;
-      sigemptyset(&mask);
-      sigaddset(&mask, SIGPIPE);
-
-      int result;
-      do {
-        int ignored;
-        result = sigwait(&mask, &ignored);
-      } while (result == -1 && errno == EINTR);
-    }
-
-    if (unblock) {
-      os::signals::unblock(SIGPIPE);
-    }
-
-    errno = errno_;
 
     if (length < 0) {
       if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -183,7 +143,7 @@ void write(
                          WeakFuture<short>(future)));
       } else {
         // Error occurred.
-        promise->fail(strerror(errno));
+        promise->fail(os::strerror(errno));
       }
     } else {
       // TODO(benh): Retry if 'length' is 0?
@@ -228,7 +188,7 @@ Future<size_t> read(int fd, void* data, size_t size)
 }
 
 
-Future<size_t> write(int fd, void* data, size_t size)
+Future<size_t> write(int fd, const void* data, size_t size)
 {
   process::initialize();
 
@@ -276,7 +236,7 @@ Future<size_t> peek(int fd, void* data, size_t size, size_t limit)
   // also make sure it's non-blocking and will close-on-exec. Start by
   // checking we've got a "valid" file descriptor before dup'ing.
   if (fd < 0) {
-    return Failure(strerror(EBADF));
+    return Failure(os::strerror(EBADF));
   }
 
   fd = dup(fd);
@@ -342,7 +302,7 @@ Future<Nothing> _write(
     Owned<string> data,
     size_t index)
 {
-  return io::write(fd, (void*) (data->data() + index), data->size() - index)
+  return io::write(fd, data->data() + index, data->size() - index)
     .then([=](size_t length) -> Future<Nothing> {
       if (index + length == data->size()) {
         return Nothing();
@@ -429,7 +389,7 @@ Future<string> read(int fd)
   // also make sure it's non-blocking and will close-on-exec. Start by
   // checking we've got a "valid" file descriptor before dup'ing.
   if (fd < 0) {
-    return Failure(strerror(EBADF));
+    return Failure(os::strerror(EBADF));
   }
 
   fd = dup(fd);
@@ -475,7 +435,7 @@ Future<Nothing> write(int fd, const std::string& data)
   // also make sure it's non-blocking and will close-on-exec. Start by
   // checking we've got a "valid" file descriptor before dup'ing.
   if (fd < 0) {
-    return Failure(strerror(EBADF));
+    return Failure(os::strerror(EBADF));
   }
 
   fd = dup(fd);
@@ -510,7 +470,7 @@ Future<Nothing> redirect(int from, Option<int> to, size_t chunk)
 {
   // Make sure we've got "valid" file descriptors.
   if (from < 0 || (to.isSome() && to.get() < 0)) {
-    return Failure(strerror(EBADF));
+    return Failure(os::strerror(EBADF));
   }
 
   if (to.isNone()) {

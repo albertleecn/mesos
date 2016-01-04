@@ -1,30 +1,31 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <list>
 #include <map>
 #include <string>
 #include <vector>
 
+#include <mesos/slave/container_logger.hpp>
+
 #include <process/check.hpp>
 #include <process/defer.hpp>
 #include <process/delay.hpp>
 #include <process/io.hpp>
+#include <process/owned.hpp>
 #include <process/reap.hpp>
 #include <process/subprocess.hpp>
 
@@ -59,6 +60,8 @@ using std::string;
 using std::vector;
 
 using namespace process;
+
+using mesos::slave::ContainerLogger;
 
 namespace mesos {
 namespace internal {
@@ -123,7 +126,16 @@ Try<DockerContainerizer*> DockerContainerizer::create(
     const Flags& flags,
     Fetcher* fetcher)
 {
+  // Create and initialize the container logger module.
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(flags.container_logger);
+
+  if (logger.isError()) {
+    return Error("Failed to create container logger: " + logger.error());
+  }
+
   Try<Docker*> create = Docker::create(flags.docker, flags.docker_socket, true);
+
   if (create.isError()) {
     return Error("Failed to create docker: " + create.error());
   }
@@ -139,7 +151,11 @@ Try<DockerContainerizer*> DockerContainerizer::create(
     }
   }
 
-  return new DockerContainerizer(flags, fetcher, docker);
+  return new DockerContainerizer(
+      flags,
+      fetcher,
+      Owned<ContainerLogger>(logger.get()),
+      docker);
 }
 
 
@@ -154,8 +170,13 @@ DockerContainerizer::DockerContainerizer(
 DockerContainerizer::DockerContainerizer(
     const Flags& flags,
     Fetcher* fetcher,
+    const Owned<ContainerLogger>& logger,
     Shared<Docker> docker)
-  : process(new DockerContainerizerProcess(flags, fetcher, docker))
+  : process(new DockerContainerizerProcess(
+      flags,
+      fetcher,
+      logger,
+      docker))
 {
   spawn(process.get());
 }
@@ -223,12 +244,10 @@ DockerContainerizerProcess::Container::create(
       paths::getSlavePath(flags.work_dir, slaveId),
       DOCKER_SYMLINK_DIRECTORY);
 
-  if (!os::exists(dockerSymlinkPath)) {
-    Try<Nothing> mkdir = os::mkdir(dockerSymlinkPath);
-    if (mkdir.isError()) {
-      return Error("Unable to create symlink folder for docker " +
-                   dockerSymlinkPath + ": " + mkdir.error());
-    }
+  Try<Nothing> mkdir = os::mkdir(dockerSymlinkPath);
+  if (mkdir.isError()) {
+    return Error("Unable to create symlink folder for docker " +
+                 dockerSymlinkPath + ": " + mkdir.error());
   }
 
   bool symlinked = false;
@@ -583,15 +602,15 @@ Future<Nothing> DockerContainerizerProcess::_recover(
     foreachvalue (const ExecutorState& executor, framework.executors) {
       if (executor.info.isNone()) {
         LOG(WARNING) << "Skipping recovery of executor '" << executor.id
-                     << "' of framework " << framework.id
-                     << " because its info could not be recovered";
+                     << "' of framework '" << framework.id
+                     << "' because its info could not be recovered";
         continue;
       }
 
       if (executor.latest.isNone()) {
         LOG(WARNING) << "Skipping recovery of executor '" << executor.id
-                     << "' of framework " << framework.id
-                     << " because its latest run could not be recovered";
+                     << "' of framework '" << framework.id
+                     << "' because its latest run could not be recovered";
         continue;
       }
 
@@ -613,8 +632,8 @@ Future<Nothing> DockerContainerizerProcess::_recover(
 
       if (run.get().completed) {
         VLOG(1) << "Skipping recovery of executor '" << executor.id
-                << "' of framework " << framework.id
-                << " because its latest run "
+                << "' of framework '" << framework.id
+                << "' because its latest run "
                 << containerId << " is completed";
         continue;
       }
@@ -623,23 +642,23 @@ Future<Nothing> DockerContainerizerProcess::_recover(
       if (executorInfo.has_container() &&
           executorInfo.container().type() != ContainerInfo::DOCKER) {
         LOG(INFO) << "Skipping recovery of executor '" << executor.id
-                  << "' of framework " << framework.id
-                  << " because it was not launched from docker containerizer";
+                  << "' of framework '" << framework.id
+                  << "' because it was not launched from docker containerizer";
         continue;
       }
 
       if (!executorInfo.has_container() &&
           !existingContainers.contains(containerId)) {
         LOG(INFO) << "Skipping recovery of executor '" << executor.id
-                  << "' of framework " << framework.id
-                  << " because its executor is not marked as docker "
+                  << "' of framework '" << framework.id
+                  << "' because its executor is not marked as docker "
                   << "and the docker container doesn't exist";
         continue;
       }
 
       LOG(INFO) << "Recovering container '" << containerId
                 << "' for executor '" << executor.id
-                << "' of framework " << framework.id;
+                << "' of framework '" << framework.id << "'";
 
       // Create and store a container.
       Container* container = new Container(containerId);
@@ -831,40 +850,46 @@ Future<Docker::Container> DockerContainerizerProcess::launchExecutorContainer(
   Container* container = containers_[containerId];
   container->state = Container::RUNNING;
 
-  // Start the executor in a Docker container.
-  // This executor could either be a custom executor specified by an
-  // ExecutorInfo, or the docker executor.
-  Future<Nothing> run = docker->run(
-      container->container,
-      container->command,
-      containerName,
-      container->directory,
-      flags.sandbox_directory,
-      container->resources,
-      container->environment,
-      path::join(container->directory, "stdout"),
-      path::join(container->directory, "stderr"));
+  return logger->prepare(container->executor, container->directory)
+    .then(defer(
+        self(),
+        [=](const ContainerLogger::SubprocessInfo& subprocessInfo)
+          -> Future<Docker::Container> {
+    // Start the executor in a Docker container.
+    // This executor could either be a custom executor specified by an
+    // ExecutorInfo, or the docker executor.
+    Future<Nothing> run = docker->run(
+        container->container,
+        container->command,
+        containerName,
+        container->directory,
+        flags.sandbox_directory,
+        container->resources,
+        container->environment,
+        subprocessInfo.out,
+        subprocessInfo.err);
 
-  Owned<Promise<Docker::Container>> promise(new Promise<Docker::Container>());
-  // We like to propogate the run failure when run fails so slave can
-  // send this failure back to the scheduler. Otherwise we return
-  // inspect's result or its failure, which should not fail when
-  // the container isn't launched.
-  Future<Docker::Container> inspect =
-    docker->inspect(containerName, slave::DOCKER_INSPECT_DELAY)
-      .onAny([=](Future<Docker::Container> f) {
-          // We cannot associate the promise outside of the callback
-          // because we like to propagate run's failure when
-          // available.
-          promise->associate(f);
-      });
+    Owned<Promise<Docker::Container>> promise(new Promise<Docker::Container>());
+    // We like to propogate the run failure when run fails so slave can
+    // send this failure back to the scheduler. Otherwise we return
+    // inspect's result or its failure, which should not fail when
+    // the container isn't launched.
+    Future<Docker::Container> inspect =
+      docker->inspect(containerName, slave::DOCKER_INSPECT_DELAY)
+        .onAny([=](Future<Docker::Container> f) {
+            // We cannot associate the promise outside of the callback
+            // because we like to propagate run's failure when
+            // available.
+            promise->associate(f);
+        });
 
-  run.onFailed([=](const string& failure) mutable {
-    inspect.discard();
-    promise->fail(failure);
-  });
+    run.onFailed([=](const string& failure) mutable {
+      inspect.discard();
+      promise->fail(failure);
+    });
 
-  return promise->future();
+    return promise->future();
+  }));
 }
 
 
@@ -903,45 +928,51 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
   vector<string> argv;
   argv.push_back("mesos-docker-executor");
 
-  // Construct the mesos-docker-executor using the "name" we gave the
-  // container (to distinguish it from Docker containers not created
-  // by Mesos).
-  Try<Subprocess> s = subprocess(
-      path::join(flags.launcher_dir, "mesos-docker-executor"),
-      argv,
-      Subprocess::PIPE(),
-      Subprocess::PATH(path::join(container->directory, "stdout")),
-      Subprocess::PATH(path::join(container->directory, "stderr")),
-      dockerFlags(flags, container->name(), container->directory),
-      environment,
-      lambda::bind(&setup, container->directory));
+  return logger->prepare(container->executor, container->directory)
+    .then(defer(
+        self(),
+        [=](const ContainerLogger::SubprocessInfo& subprocessInfo)
+          -> Future<pid_t> {
+    // Construct the mesos-docker-executor using the "name" we gave the
+    // container (to distinguish it from Docker containers not created
+    // by Mesos).
+    Try<Subprocess> s = subprocess(
+        path::join(flags.launcher_dir, "mesos-docker-executor"),
+        argv,
+        Subprocess::PIPE(),
+        subprocessInfo.out,
+        subprocessInfo.err,
+        dockerFlags(flags, container->name(), container->directory),
+        environment,
+        lambda::bind(&setup, container->directory));
 
-  if (s.isError()) {
-    return Failure("Failed to fork executor: " + s.error());
-  }
+    if (s.isError()) {
+      return Failure("Failed to fork executor: " + s.error());
+    }
 
-  // Checkpoint the executor's pid (if necessary).
-  Try<Nothing> checkpointed = checkpoint(containerId, s.get().pid());
+    // Checkpoint the executor's pid (if necessary).
+    Try<Nothing> checkpointed = checkpoint(containerId, s.get().pid());
 
-  if (checkpointed.isError()) {
-    return Failure(
-        "Failed to checkpoint executor's pid: " + checkpointed.error());
-  }
+    if (checkpointed.isError()) {
+      return Failure(
+          "Failed to checkpoint executor's pid: " + checkpointed.error());
+    }
 
-  // Checkpoing complete, now synchronize with the process so that it
-  // can continue to execute.
-  CHECK_SOME(s.get().in());
-  char c;
-  ssize_t length;
-  while ((length = write(s.get().in().get(), &c, sizeof(c))) == -1 &&
-         errno == EINTR);
+    // Checkpoing complete, now synchronize with the process so that it
+    // can continue to execute.
+    CHECK_SOME(s.get().in());
+    char c;
+    ssize_t length;
+    while ((length = write(s.get().in().get(), &c, sizeof(c))) == -1 &&
+           errno == EINTR);
 
-  if (length != sizeof(c)) {
-    string error = string(strerror(errno));
-    return Failure("Failed to synchronize with child process: " + error);
-  }
+    if (length != sizeof(c)) {
+      return Failure("Failed to synchronize with child process: " +
+                     os::strerror(errno));
+    }
 
-  return s.get().pid();
+    return s.get().pid();
+  }));
 }
 
 

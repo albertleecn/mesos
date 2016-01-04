@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <list>
 #include <map>
@@ -25,6 +23,7 @@
 
 #include <mesos/mesos.hpp>
 
+#include <mesos/slave/container_logger.hpp>
 #include <mesos/slave/isolator.hpp>
 
 #include <process/future.hpp>
@@ -36,9 +35,9 @@
 #include "slave/flags.hpp"
 
 #include "slave/containerizer/fetcher.hpp"
-#include "slave/containerizer/launcher.hpp"
 
 #include "slave/containerizer/mesos/containerizer.hpp"
+#include "slave/containerizer/mesos/launcher.hpp"
 
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
@@ -64,6 +63,7 @@ using mesos::internal::slave::state::RunState;
 using mesos::internal::slave::state::SlaveState;
 
 using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerLogger;
 using mesos::slave::ContainerPrepareInfo;
 using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
@@ -111,10 +111,19 @@ public:
       return Error(launcher.error());
     }
 
+    // Create and initialize a new container logger.
+    Try<ContainerLogger*> logger =
+      ContainerLogger::create(flags.container_logger);
+
+    if (logger.isError()) {
+      return Error("Failed to create container logger: " + logger.error());
+    }
+
     return new MesosContainerizer(
         flags,
         false,
         fetcher,
+        Owned<ContainerLogger>(logger.get()),
         Owned<Launcher>(launcher.get()),
         isolators);
   }
@@ -445,12 +454,14 @@ public:
       const slave::Flags& flags,
       bool local,
       Fetcher* fetcher,
+      const Owned<ContainerLogger>& logger,
       const Owned<Launcher>& launcher,
       const vector<Owned<Isolator>>& isolators)
     : MesosContainerizerProcess(
           flags,
           local,
           fetcher,
+          logger,
           launcher,
           isolators)
   {
@@ -554,10 +565,16 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
 
   Fetcher fetcher;
 
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(flags.container_logger);
+
+  ASSERT_SOME(logger);
+
   MockMesosContainerizerProcess* process = new MockMesosContainerizerProcess(
       flags,
       true,
       &fetcher,
+      Owned<ContainerLogger>(logger.get()),
       Owned<Launcher>(launcher.get()),
       vector<Owned<Isolator>>());
 
@@ -620,10 +637,16 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
 
   Fetcher fetcher;
 
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(flags.container_logger);
+
+  ASSERT_SOME(logger);
+
   MockMesosContainerizerProcess* process = new MockMesosContainerizerProcess(
       flags,
       true,
       &fetcher,
+      Owned<ContainerLogger>(logger.get()),
       Owned<Launcher>(launcher.get()),
       {Owned<Isolator>(isolator)});
 
@@ -696,10 +719,16 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
 
   Fetcher fetcher;
 
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(flags.container_logger);
+
+  ASSERT_SOME(logger);
+
   MesosContainerizerProcess* process = new MesosContainerizerProcess(
       flags,
       true,
       &fetcher,
+      Owned<ContainerLogger>(logger.get()),
       Owned<Launcher>(launcher),
       vector<Owned<Isolator>>());
 

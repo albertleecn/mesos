@@ -1,21 +1,23 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <stdint.h>
 
 #ifndef __linux__
 #include <sys/time.h> // For gettimeofday.
+#endif
+#ifdef __FreeBSD__
+#include <sys/sysctl.h>
+#include <sys/types.h>
 #endif
 
 #include <cstdlib> // For rand.
@@ -42,7 +44,7 @@
 #include <stout/try.hpp>
 #include <stout/uuid.hpp>
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__FreeBSD__)
 #include <stout/os/sysctl.hpp>
 #endif
 
@@ -70,6 +72,21 @@ static hashset<string> listfiles(const string& directory)
   }
   return fileset;
 }
+
+
+#ifdef __FreeBSD__
+static bool isJailed() {
+  int mib[4];
+  size_t len = 4;
+  ::sysctlnametomib("security.jail.jailed", mib, &len);
+  Try<int> jailed = os::sysctl(mib[0], mib[1], mib[2]).integer();
+  if (jailed.isSome()) {
+      return jailed.get() == 1;
+  }
+
+  return false;
+}
+#endif
 
 
 class OsTest : public TemporaryDirectoryTest {};
@@ -181,14 +198,12 @@ TEST_F(OsTest, Nonblock)
   Try<bool> isNonBlock = false;
 
   isNonBlock = os::isNonblock(pipes[0]);
-  ASSERT_SOME(isNonBlock);
-  EXPECT_FALSE(isNonBlock.get());
+  EXPECT_SOME_FALSE(isNonBlock);
 
   ASSERT_SOME(os::nonblock(pipes[0]));
 
   isNonBlock = os::isNonblock(pipes[0]);
-  ASSERT_SOME(isNonBlock);
-  EXPECT_TRUE(isNonBlock.get());
+  EXPECT_SOME_TRUE(isNonBlock);
 
   close(pipes[0]);
   close(pipes[1]);
@@ -216,8 +231,7 @@ TEST_F(OsTest, ReadWriteString)
 
   Try<string> readstr = os::read(testfile);
 
-  ASSERT_SOME(readstr);
-  EXPECT_EQ(teststr, readstr.get());
+  EXPECT_SOME_EQ(teststr, readstr);
 }
 
 
@@ -293,8 +307,8 @@ TEST_F(OsTest, BootId)
   Try<string> read = os::read("/proc/sys/kernel/random/boot_id");
   ASSERT_SOME(read);
   EXPECT_EQ(bootId.get(), strings::trim(read.get()));
-#elif defined(__APPLE__)
-  // For OS X systems, the boot id is the system boot time in
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+  // For OS X and FreeBSD systems, the boot id is the system boot time in
   // seconds, so assert it can be numified and is a reasonable value.
   Try<uint64_t> numified = numify<uint64_t>(bootId.get());
   ASSERT_SOME(numified);
@@ -355,7 +369,7 @@ TEST_F(OsTest, Sleep)
 }
 
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__FreeBSD__)
 TEST_F(OsTest, Sysctl)
 {
   // String test.
@@ -365,13 +379,11 @@ TEST_F(OsTest, Sysctl)
 
   Try<string> release = os::sysctl(CTL_KERN, KERN_OSRELEASE).string();
 
-  ASSERT_SOME(release);
-  EXPECT_EQ(uname.get().release, release.get());
+  EXPECT_SOME_EQ(uname.get().release, release);
 
   Try<string> type = os::sysctl(CTL_KERN, KERN_OSTYPE).string();
 
-  ASSERT_SOME(type);
-  EXPECT_EQ(uname.get().sysname, type.get());
+  EXPECT_SOME_EQ(uname.get().sysname, type);
 
   // Integer test.
   Try<int> maxproc = os::sysctl(CTL_KERN, KERN_MAXPROC).integer();
@@ -387,7 +399,11 @@ TEST_F(OsTest, Sysctl)
   std::set<pid_t> pids;
 
   foreach (const kinfo_proc& process, processes.get()) {
+#ifdef __APPLE__
     pids.insert(process.kp_proc.p_pid);
+#else
+    pids.insert(process.ki_pid);
+#endif // __APPLE__
   }
 
   EXPECT_EQ(1, pids.count(getpid()));
@@ -402,7 +418,7 @@ TEST_F(OsTest, Sysctl)
   EXPECT_GT(Seconds(bootTime.get().tv_sec), Seconds(0));
   EXPECT_LT(Seconds(bootTime.get().tv_sec), Seconds(time.tv_sec));
 }
-#endif // __APPLE__
+#endif // __APPLE__ || __FreeBSD__
 
 
 TEST_F(OsTest, Pids)
@@ -411,7 +427,15 @@ TEST_F(OsTest, Pids)
   ASSERT_SOME(pids);
   EXPECT_NE(0u, pids.get().size());
   EXPECT_EQ(1u, pids.get().count(getpid()));
-  EXPECT_EQ(1u, pids.get().count(1));
+
+  // In a FreeBSD jail, pid 1 may not exist.
+#ifdef __FreeBSD__
+  if (!isJailed()) {
+#endif
+    EXPECT_EQ(1u, pids.get().count(1));
+#ifdef __FreeBSD__
+  }
+#endif
 
   pids = os::pids(getpgid(0), None());
   EXPECT_SOME(pids);
@@ -543,7 +567,7 @@ TEST_F(OsTest, Processes)
 void dosetsid(void)
 {
   if (::setsid() == -1) {
-    ABORT(string("Failed to setsid: ") + strerror(errno));
+    ABORT(string("Failed to setsid: ") + os::strerror(errno));
   }
 }
 
@@ -745,10 +769,18 @@ TEST_F(OsTest, KilltreeNoRoot)
   ASSERT_NE(child, _grandchild.get().parent);
   ASSERT_FALSE(_grandchild.get().zombie);
 
+  // Check to see if we're in a jail on FreeBSD in case we've been
+  // reparented to pid 1
+#if __FreeBSD__
+  if (!isJailed()) {
+#endif
   // Check that grandchild's parent is also not a zombie.
   Result<os::Process> currentParent = os::process(_grandchild.get().parent);
   ASSERT_SOME(currentParent);
   ASSERT_FALSE(currentParent.get().zombie);
+#ifdef __FreeBSD__
+  }
+#endif
 
 
   // Kill the process tree. Even though the root process has exited,
@@ -828,10 +860,13 @@ TEST_F(OsTest, ProcessExists)
   // Check we exist.
   EXPECT_TRUE(os::exists(::getpid()));
 
+  // In a FreeBSD jail, pid 1 may not exist.
+#if !defined(__FreeBSD__)
   // Check init/launchd/systemd exists.
   // NOTE: This should return true even if we don't have permission to signal
   // the pid.
   EXPECT_TRUE(os::exists(1));
+#endif
 
   // Check existence of a child process through its lifecycle: running,
   // zombied, reaped.

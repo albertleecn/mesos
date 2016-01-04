@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #ifndef __PORT_MAPPING_ISOLATOR_HPP__
 #define __PORT_MAPPING_ISOLATOR_HPP__
@@ -47,7 +45,7 @@
 
 #include "slave/flags.hpp"
 
-#include "slave/containerizer/isolator.hpp"
+#include "slave/containerizer/mesos/isolator.hpp"
 
 namespace mesos {
 namespace internal {
@@ -89,7 +87,7 @@ public:
       const IntervalSet<uint16_t>& total,
       size_t _portsPerContainer)
     : free(total),
-      portsPerContainer_(_portsPerContainer) {};
+      portsPerContainer_(_portsPerContainer) {}
 
   // Returns the number of ephemeral ports for each container.
   size_t portsPerContainer() const { return portsPerContainer_; }
@@ -257,6 +255,7 @@ private:
       const net::IPNetwork& _hostIPNetwork,
       const size_t _hostEth0MTU,
       const net::IP& _hostDefaultGateway,
+      const routing::Handle& _hostTxFqCodelHandle,
       const hashmap<std::string, std::string>& _hostNetworkConfigurations,
       const Option<Bytes>& _egressRateLimitPerContainer,
       const IntervalSet<uint16_t>& _managedNonEphemeralPorts,
@@ -269,6 +268,7 @@ private:
       hostIPNetwork(_hostIPNetwork),
       hostEth0MTU(_hostEth0MTU),
       hostDefaultGateway(_hostDefaultGateway),
+      hostTxFqCodelHandle(_hostTxFqCodelHandle),
       hostNetworkConfigurations(_hostNetworkConfigurations),
       egressRateLimitPerContainer(_egressRateLimitPerContainer),
       managedNonEphemeralPorts(_managedNonEphemeralPorts),
@@ -315,6 +315,7 @@ private:
   const net::IPNetwork hostIPNetwork;
   const size_t hostEth0MTU;
   const net::IP hostDefaultGateway;
+  const routing::Handle hostTxFqCodelHandle;
 
   // Describe the host network configurations. It is a map between
   // configure proc files (e.g., /proc/sys/net/core/somaxconn) and

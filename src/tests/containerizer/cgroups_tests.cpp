@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <assert.h>
 #include <errno.h>
@@ -499,7 +497,7 @@ TEST_F(CgroupsAnyHierarchyTest, ROOT_CGROUPS_Write)
 }
 
 
-TEST_F(CgroupsAnyHierarchyTest, ROOT_CGROUPS_Cfs_Big_Quota)
+TEST_F(CgroupsAnyHierarchyTest, ROOT_CGROUPS_CFS_Big_Quota)
 {
   string hierarchy = path::join(baseHierarchy, "cpu");
   ASSERT_SOME(cgroups::create(hierarchy, TEST_CGROUPS_ROOT));
@@ -555,6 +553,17 @@ TEST_F(CgroupsAnyHierarchyWithCpuMemoryTest, ROOT_CGROUPS_Listen)
     << "a modern enough version of the Linux kernel. You won't be\n"
     << "able to use the cgroups isolator, but feel free to disable\n"
     << "this test.\n"
+    << "-------------------------------------------------------------";
+
+  Try<os::Memory> memory = os::memory();
+  ASSERT_SOME(memory);
+
+  // TODO(vinod): Instead of asserting here dynamically disable
+  // the test if swap is enabled on the host.
+  ASSERT_EQ(memory.get().totalSwap, Bytes(0))
+    << "-------------------------------------------------------------\n"
+    << "We cannot run this test because it appears you have swap\n"
+    << "enabled, but feel free to disable this test.\n"
     << "-------------------------------------------------------------";
 
   const Bytes limit =  Megabytes(64);
@@ -1075,6 +1084,17 @@ protected:
 
 TEST_F(CgroupsAnyHierarchyMemoryPressureTest, ROOT_IncreaseRSS)
 {
+  Try<os::Memory> memory = os::memory();
+  ASSERT_SOME(memory);
+
+  // TODO(vinod): Instead of asserting here dynamically disable
+  // the test if swap is enabled on the host.
+  ASSERT_EQ(memory.get().totalSwap, Bytes(0))
+    << "-------------------------------------------------------------\n"
+    << "We cannot run this test because it appears you have swap\n"
+    << "enabled, but feel free to disable this test.\n"
+    << "-------------------------------------------------------------";
+
   MemoryTestHelper helper;
   ASSERT_SOME(helper.spawn());
   ASSERT_SOME(helper.pid());

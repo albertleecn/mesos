@@ -1,28 +1,26 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#include <gmock/gmock.h>
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <iostream>
 #include <limits>
 #include <map>
 #include <string>
 #include <vector>
+
+#include <gmock/gmock.h>
 
 #include <mesos/executor.hpp>
 #include <mesos/scheduler.hpp>
@@ -44,6 +42,7 @@
 
 #include "master/allocator/mesos/hierarchical.hpp"
 
+#include "tests/allocator.hpp"
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
 
@@ -53,19 +52,16 @@ using mesos::internal::master::Master;
 
 using mesos::internal::slave::Slave;
 
-using process::PID;
 using process::Future;
+using process::PID;
 
 using std::map;
 using std::string;
 using std::vector;
 
 using testing::_;
-using testing::AtMost;
 using testing::DoAll;
 using testing::DoDefault;
-using testing::Eq;
-using testing::SaveArg;
 
 namespace mesos {
 namespace internal {
@@ -86,7 +82,7 @@ TEST_F(ReservationTest, ReserveThenUnreserve)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master = StartMaster(masterFlags);
@@ -114,11 +110,11 @@ TEST_F(ReservationTest, ReserveThenUnreserve)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -181,7 +177,7 @@ TEST_F(ReservationTest, ReserveAndLaunchThenUnreserve)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master = StartMaster(masterFlags);
@@ -206,11 +202,11 @@ TEST_F(ReservationTest, ReserveAndLaunchThenUnreserve)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -298,7 +294,7 @@ TEST_F(ReservationTest, ReserveShareWithinRole)
   frameworkInfo2.set_role(role);
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = role;
 
   Try<PID<Master>> master = StartMaster(masterFlags);
@@ -325,11 +321,11 @@ TEST_F(ReservationTest, ReserveShareWithinRole)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched1, registered(&driver1, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched1, resourceOffers(&driver1, _))
     .WillOnce(FutureArg<1>(&offers));
-
-  EXPECT_CALL(sched1, registered(&driver1, _, _));
 
   driver1.start();
 
@@ -369,11 +365,11 @@ TEST_F(ReservationTest, ReserveShareWithinRole)
   // receive the resources.
   driver1.declineOffer(offer.id(), filtersForever);
 
+  EXPECT_CALL(sched2, registered(&driver2, _, _));
+
   // The expectation for the next offer.
   EXPECT_CALL(sched2, resourceOffers(&driver2, _))
     .WillOnce(FutureArg<1>(&offers));
-
-  EXPECT_CALL(sched2, registered(&driver2, _, _));
 
   driver2.start();
 
@@ -407,7 +403,7 @@ TEST_F(ReservationTest, DropReserveTooLarge)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   EXPECT_CALL(allocator, initialize(_, _, _, _));
@@ -435,13 +431,13 @@ TEST_F(ReservationTest, DropReserveTooLarge)
   // We use this to capture the offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
 
   EXPECT_CALL(allocator, addFramework(_, _, _));
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -498,7 +494,7 @@ TEST_F(ReservationTest, DropReserveStaticReservation)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   EXPECT_CALL(allocator, initialize(_, _, _, _));
@@ -526,13 +522,13 @@ TEST_F(ReservationTest, DropReserveStaticReservation)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
 
   EXPECT_CALL(allocator, addFramework(_, _, _));
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -587,7 +583,7 @@ TEST_F(ReservationTest, SendingCheckpointResourcesMessage)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master = StartMaster(masterFlags);
@@ -614,12 +610,12 @@ TEST_F(ReservationTest, SendingCheckpointResourcesMessage)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -687,7 +683,7 @@ TEST_F(ReservationTest, ResourcesCheckpointing)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master = StartMaster(masterFlags);
@@ -711,12 +707,12 @@ TEST_F(ReservationTest, ResourcesCheckpointing)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -778,7 +774,7 @@ TEST_F(ReservationTest, MasterFailover)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master1 = StartMaster(masterFlags);
@@ -802,12 +798,12 @@ TEST_F(ReservationTest, MasterFailover)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -847,11 +843,11 @@ TEST_F(ReservationTest, MasterFailover)
   Future<SlaveReregisteredMessage> slaveReregistered =
     FUTURE_PROTOBUF(SlaveReregisteredMessage(), _, _);
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the next offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   // Simulate a new master detected event on the slave so that the
   // slave will do a re-registration.
@@ -893,7 +889,7 @@ TEST_F(ReservationTest, CompatibleCheckpointedResources)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master = StartMaster(masterFlags);
@@ -922,12 +918,12 @@ TEST_F(ReservationTest, CompatibleCheckpointedResources)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   // The expectation for the first offer.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -956,7 +952,7 @@ TEST_F(ReservationTest, CompatibleCheckpointedResources)
   terminate(slave1);
   wait(slave1);
 
-  // Simulate a reboot of the slave machine by modify the boot ID.
+  // Simulate a reboot of the slave machine by modifying the boot ID.
   ASSERT_SOME(os::write(slave::paths::getBootIdPath(
       slave::paths::getMetaRootDir(slaveFlags.work_dir)),
       "rebooted! ;)"));
@@ -999,14 +995,14 @@ TEST_F(ReservationTest, CompatibleCheckpointedResourcesWithPersistentVolumes)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   slave::Flags slaveFlags = CreateSlaveFlags();
-  slaveFlags.resources = "cpus:8;mem:4096";
+  slaveFlags.resources = "cpus:8;mem:4096;disk:2048";
 
   MockExecutor exec(DEFAULT_EXECUTOR_ID);
 
@@ -1038,11 +1034,11 @@ TEST_F(ReservationTest, CompatibleCheckpointedResourcesWithPersistentVolumes)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -1082,7 +1078,7 @@ TEST_F(ReservationTest, CompatibleCheckpointedResourcesWithPersistentVolumes)
   terminate(slave1);
   wait(slave1);
 
-  // Simulate a reboot of the slave machine by modify the boot ID.
+  // Simulate a reboot of the slave machine by modifying the boot ID.
   ASSERT_SOME(os::write(slave::paths::getBootIdPath(
       slave::paths::getMetaRootDir(slaveFlags.work_dir)),
       "rebooted! ;)"));
@@ -1124,7 +1120,7 @@ TEST_F(ReservationTest, IncompatibleCheckpointedResources)
   frameworkInfo.set_role("role");
 
   master::Flags masterFlags = CreateMasterFlags();
-  masterFlags.allocation_interval = Milliseconds(50);
+  masterFlags.allocation_interval = Milliseconds(5);
   masterFlags.roles = frameworkInfo.role();
 
   Try<PID<Master>> master = StartMaster(masterFlags);
@@ -1153,11 +1149,11 @@ TEST_F(ReservationTest, IncompatibleCheckpointedResources)
   // We use this to capture offers from 'resourceOffers'.
   Future<vector<Offer>> offers;
 
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
 
   driver.start();
 
@@ -1186,7 +1182,7 @@ TEST_F(ReservationTest, IncompatibleCheckpointedResources)
   terminate(slave1);
   wait(slave1);
 
-  // Simulate a reboot of the slave machine by modify the boot ID.
+  // Simulate a reboot of the slave machine by modifying the boot ID.
   ASSERT_SOME(os::write(slave::paths::getBootIdPath(
       slave::paths::getMetaRootDir(slaveFlags.work_dir)),
       "rebooted! ;)"));
@@ -1218,6 +1214,520 @@ TEST_F(ReservationTest, IncompatibleCheckpointedResources)
   Shutdown();
 }
 
+
+// This test verifies that reserve and unreserve operations complete
+// successfully when authorization succeeds.
+TEST_F(ReservationTest, GoodACLReserveThenUnreserve)
+{
+  ACLs acls;
+
+  // This principal can reserve any resources.
+  mesos::ACL::ReserveResources* reserve = acls.add_reserve_resources();
+  reserve->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  reserve->mutable_resources()->set_type(mesos::ACL::Entity::ANY);
+
+  // This principal can unreserve any resources.
+  mesos::ACL::UnreserveResources* unreserve = acls.add_unreserve_resources();
+  unreserve->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  unreserve->mutable_reserver_principals()->add_values(
+      DEFAULT_CREDENTIAL.principal());
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_role("role");
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+  masterFlags.allocation_interval = Milliseconds(5);
+  masterFlags.roles = frameworkInfo.role();
+
+  Try<PID<Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  // Create a slave.
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = "cpus:1;mem:512";
+
+  Try<PID<Slave>> slave = StartSlave(slaveFlags);
+  ASSERT_SOME(slave);
+
+  // Create a scheduler.
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get(), DEFAULT_CREDENTIAL);
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (by default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  Resources unreserved = Resources::parse("cpus:1;mem:512").get();
+  Resources dynamicallyReserved = unreserved.flatten(
+      frameworkInfo.role(), createReservationInfo(frameworkInfo.principal()));
+
+  // We use this to capture offers from 'resourceOffers'.
+  Future<vector<Offer>> offers;
+
+  // The expectation for the first offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  driver.start();
+
+  // In the first offer, expect an offer with unreserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  Offer offer = offers.get()[0];
+
+  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Reserve the resources.
+  driver.acceptOffers({offer.id()}, {RESERVE(dynamicallyReserved)}, filters);
+
+  // In the next offer, expect an offer with reserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  EXPECT_TRUE(Resources(offer.resources()).contains(dynamicallyReserved));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Unreserve the resources.
+  driver.acceptOffers({offer.id()}, {UNRESERVE(dynamicallyReserved)}, filters);
+
+  // In the next offer, expect an offer with unreserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
+
+  driver.stop();
+  driver.join();
+
+  Shutdown();
+}
+
+
+// This test verifies that a reserve operation
+// gets dropped if authorization fails.
+TEST_F(ReservationTest, BadACLDropReserve)
+{
+  ACLs acls;
+
+  // No entity can reserve any resources.
+  mesos::ACL::ReserveResources* reserve = acls.add_reserve_resources();
+  reserve->mutable_principals()->set_type(mesos::ACL::Entity::NONE);
+  reserve->mutable_resources()->set_type(mesos::ACL::Entity::ANY);
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_role("role");
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+  masterFlags.allocation_interval = Milliseconds(5);
+  masterFlags.roles = frameworkInfo.role();
+
+  Try<PID<Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  // Create a slave.
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = "cpus:1;mem:512";
+
+  Try<PID<Slave>> slave = StartSlave(slaveFlags);
+  ASSERT_SOME(slave);
+
+  // Create a scheduler.
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get(), DEFAULT_CREDENTIAL);
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (by default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  Resources unreserved = Resources::parse("cpus:1;mem:512").get();
+  Resources dynamicallyReserved = unreserved.flatten(
+      frameworkInfo.role(), createReservationInfo(frameworkInfo.principal()));
+
+  // We use this to capture offers from 'resourceOffers'.
+  Future<vector<Offer>> offers;
+
+  // The expectation for the first offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  driver.start();
+
+  // In the first offer, expect an offer with unreserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  Offer offer = offers.get()[0];
+
+  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Reserve the resources.
+  driver.acceptOffers({offer.id()}, {RESERVE(dynamicallyReserved)}, filters);
+
+  // In the next offer, still expect an offer with unreserved
+  // resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
+
+  driver.stop();
+  driver.join();
+
+  Shutdown();
+}
+
+
+// This test verifies that an unreserve operation
+// gets dropped if authorization fails.
+TEST_F(ReservationTest, BadACLDropUnreserve)
+{
+  ACLs acls;
+
+  // This principal can reserve any resources.
+  mesos::ACL::ReserveResources* reserve = acls.add_reserve_resources();
+  reserve->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  reserve->mutable_resources()->set_type(mesos::ACL::Entity::ANY);
+
+  // This principal cannot unreserve any resources.
+  mesos::ACL::UnreserveResources* unreserve = acls.add_unreserve_resources();
+  unreserve->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  unreserve->mutable_reserver_principals()->set_type(mesos::ACL::Entity::NONE);
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_role("role");
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+  masterFlags.allocation_interval = Milliseconds(5);
+  masterFlags.roles = frameworkInfo.role();
+
+  Try<PID<Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  // Create a slave.
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = "cpus:2;mem:1024";
+
+  Try<PID<Slave>> slave = StartSlave(slaveFlags);
+  ASSERT_SOME(slave);
+
+  // Create a scheduler.
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get(), DEFAULT_CREDENTIAL);
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (by default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // Define the resources to be reserved.
+  Resources unreserved1 = Resources::parse("cpus:1;mem:512").get();
+  Resources dynamicallyReserved1 = unreserved1.flatten(
+      frameworkInfo.role(), createReservationInfo(frameworkInfo.principal()));
+  Resources unreserved2 = Resources::parse("cpus:0.5;mem:256").get();
+  Resources dynamicallyReserved2 = unreserved2.flatten(
+      frameworkInfo.role(), createReservationInfo(frameworkInfo.principal()));
+
+  // We use this to capture offers from 'resourceOffers'.
+  Future<vector<Offer>> offers;
+
+  // The expectation for the first offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  driver.start();
+
+  // In the first offer, expect an offer with unreserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  Offer offer = offers.get()[0];
+
+  // The slave's total resources are twice those defined by `unreserved1`.
+  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved1 + unreserved1));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Reserve the first set of resources.
+  driver.acceptOffers({offer.id()}, {RESERVE(dynamicallyReserved1)}, filters);
+
+  // In the next offer, expect an offer with reserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  // The reserved resources and an equal portion of
+  // unreserved resources should be present.
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+          dynamicallyReserved1 +
+          unreserved1));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Unreserve the first set of resources, and reserve the second set.
+  driver.acceptOffers({offer.id()},
+      {UNRESERVE(dynamicallyReserved1),
+       RESERVE(dynamicallyReserved2)},
+      filters);
+
+  // In the next offer, expect to find both sets of reserved
+  // resources, since the Unreserve operation should fail.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+          dynamicallyReserved1 +
+          dynamicallyReserved2 +
+          unreserved2));
+
+  driver.stop();
+  driver.join();
+
+  Shutdown();
+}
+
+
+// Tests a couple more complex combinations of `RESERVE`, `UNRESERVE`, and
+// `LAUNCH` offer operations to verify that they work with authorization.
+TEST_F(ReservationTest, ACLMultipleOperations)
+{
+  // Pause the clock and control it manually in order to
+  // control the timing of the offer cycle.
+  process::Clock::pause();
+
+  ACLs acls;
+
+  // This principal can reserve any resources.
+  mesos::ACL::ReserveResources* reserve = acls.add_reserve_resources();
+  reserve->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  reserve->mutable_resources()->set_type(mesos::ACL::Entity::ANY);
+
+  // This principal cannot unreserve any resources.
+  mesos::ACL::UnreserveResources* unreserve = acls.add_unreserve_resources();
+  unreserve->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  unreserve->mutable_reserver_principals()->set_type(mesos::ACL::Entity::NONE);
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_role("role");
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+  masterFlags.allocation_interval = Milliseconds(5);
+  masterFlags.roles = frameworkInfo.role();
+
+  Try<PID<Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+
+  // Create a slave.
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = "cpus:2;mem:1024";
+
+  Try<PID<Slave>> slave = StartSlave(&exec, slaveFlags);
+  ASSERT_SOME(slave);
+
+  // Create a scheduler.
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get(), DEFAULT_CREDENTIAL);
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (by default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // Define the resources to be reserved.
+  Resources unreserved1 = Resources::parse("cpus:1;mem:512").get();
+  Resources dynamicallyReserved1 = unreserved1.flatten(
+      frameworkInfo.role(), createReservationInfo(frameworkInfo.principal()));
+  Resources unreserved2 = Resources::parse("cpus:0.5;mem:256").get();
+  Resources dynamicallyReserved2 = unreserved2.flatten(
+      frameworkInfo.role(), createReservationInfo(frameworkInfo.principal()));
+
+  // We use this to capture offers from 'resourceOffers'.
+  Future<vector<Offer>> offers;
+
+  // The expectation for the first offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  driver.start();
+
+  // Advance the clock to generate an offer.
+  process::Clock::settle();
+  process::Clock::advance(masterFlags.allocation_interval);
+
+  // In the first offer, expect an offer with unreserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  Offer offer = offers.get()[0];
+
+  // The slave's total resources are twice those defined by `unreserved1`.
+  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved1 + unreserved1));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Reserve the first set of resources.
+  driver.acceptOffers({offer.id()}, {RESERVE(dynamicallyReserved1)}, filters);
+
+  process::Clock::settle();
+  process::Clock::advance(masterFlags.allocation_interval);
+
+  // In the next offer, expect an offer with reserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  // The reserved resources and an equal portion of
+  // unreserved resources should be present.
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+          dynamicallyReserved1 +
+          unreserved1));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Create a task to launch with the resources of `dynamicallyReserved2`.
+  TaskInfo taskInfo1 =
+    createTask(offer.slave_id(), dynamicallyReserved2, "exit 1", exec.id);
+
+  EXPECT_CALL(exec, registered(_, _, _, _));
+
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(SendStatusUpdateFromTask(TASK_FINISHED));
+
+  // Expect a TASK_FINISHED status.
+  Future<TaskStatus> statusUpdateAcknowledgement;
+  EXPECT_CALL(sched, statusUpdate(_, _))
+    .WillOnce(FutureArg<1>(&statusUpdateAcknowledgement));
+
+  // Attempt to unreserve a set of resources,
+  // reserve a second set, and launch a task.
+  driver.acceptOffers({offer.id()},
+      {UNRESERVE(dynamicallyReserved1),
+       RESERVE(dynamicallyReserved2),
+       LAUNCH({taskInfo1})},
+      filters);
+
+  // Wait for TASK_FINISHED update ack.
+  AWAIT_READY(statusUpdateAcknowledgement);
+  EXPECT_EQ(TASK_FINISHED, statusUpdateAcknowledgement.get().state());
+
+  process::Clock::settle();
+  process::Clock::advance(masterFlags.allocation_interval);
+
+  // In the next offer, expect to find both sets of reserved
+  // resources, since the Unreserve operation should fail.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+          dynamicallyReserved1 +
+          dynamicallyReserved2 +
+          unreserved2));
+
+  // The expectation for the next offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  // Create a task to launch with the resources of `dynamicallyReserved1`.
+  TaskInfo taskInfo2 =
+    createTask(offer.slave_id(), dynamicallyReserved1, "exit 1", exec.id);
+
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(SendStatusUpdateFromTask(TASK_FINISHED));
+
+  Future<TaskStatus> failedTaskStatus;
+  EXPECT_CALL(sched, statusUpdate(_, _))
+    .WillOnce(FutureArg<1>(&failedTaskStatus));
+
+  // Attempt to unreserve all the dynamically reserved resources
+  // and launch a task on `dynamicallyReserved1`.
+  driver.acceptOffers({offer.id()},
+      {UNRESERVE(dynamicallyReserved1),
+       UNRESERVE(dynamicallyReserved2),
+       LAUNCH({taskInfo2})},
+      filters);
+
+  process::Clock::settle();
+  process::Clock::advance(masterFlags.allocation_interval);
+
+  // In the next offer, expect to find the reserved resources.
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  offer = offers.get()[0];
+
+  EXPECT_TRUE(
+      Resources(offer.resources()).contains(
+          dynamicallyReserved1 +
+          dynamicallyReserved2 +
+          unreserved2));
+
+  // Check that the task launched as expected.
+  EXPECT_EQ(TASK_FINISHED, failedTaskStatus.get().state());
+
+  driver.stop();
+  driver.join();
+
+  Shutdown();
+}
 }  // namespace tests {
 }  // namespace internal {
 }  // namespace mesos {

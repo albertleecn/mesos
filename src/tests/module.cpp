@@ -1,20 +1,18 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <string>
 
@@ -95,6 +93,29 @@ static void addAuthenticationModules(Modules* modules)
   addModule(library,
             TestCRAMMD5Authenticator,
             "org_apache_mesos_TestCRAMMD5Authenticator");
+}
+
+
+// Add available ContainerLogger modules.
+static void addContainerLoggerModules(Modules* modules)
+{
+  CHECK_NOTNULL(modules);
+
+  const string libraryPath = path::join(
+      tests::flags.build_dir,
+      "src",
+      ".libs",
+      os::libraries::expandName("testcontainer_logger"));
+
+  // Add our test container logger module.
+  Modules::Library* library = modules->add_libraries();
+  library->set_file(libraryPath);
+
+  // To add a new module from this library, create a new ModuleID enum
+  // and tie it with a module name.
+  addModule(library,
+            TestSandboxContainerLogger,
+            "org_apache_mesos_TestSandboxContainerLogger");
 }
 
 
@@ -218,6 +239,9 @@ Try<Nothing> initModules(const Option<Modules>& modules)
 
   // Add authentication modules from testauthentication library.
   addAuthenticationModules(&mergedModules);
+
+  // Add container logger modules from testcontainer_logger library.
+  addContainerLoggerModules(&mergedModules);
 
   // Add hook modules from testhook library.
   addHookModules(&mergedModules);

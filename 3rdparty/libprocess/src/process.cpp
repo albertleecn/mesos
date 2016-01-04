@@ -1,16 +1,14 @@
-/**
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License
-*/
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License
 
 #include <errno.h>
 #include <limits.h>
@@ -74,6 +72,7 @@
 #include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/profiler.hpp>
+#include <process/sequence.hpp>
 #include <process/socket.hpp>
 #include <process/statistics.hpp>
 #include <process/system.hpp>
@@ -89,12 +88,14 @@
 #include <stout/numify.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
+#include <stout/os/strerror.hpp>
 #include <stout/path.hpp>
 #include <stout/strings.hpp>
 #include <stout/synchronized.hpp>
 #include <stout/thread_local.hpp>
 #include <stout/unreachable.hpp>
 
+#include "authenticator_manager.hpp"
 #include "config.hpp"
 #include "decoder.hpp"
 #include "encoder.hpp"
@@ -119,6 +120,10 @@ using process::http::OK;
 using process::http::Request;
 using process::http::Response;
 using process::http::ServiceUnavailable;
+
+using process::http::authentication::Authenticator;
+using process::http::authentication::AuthenticationResult;
+using process::http::authentication::AuthenticatorManager;
 
 using process::network::Address;
 using process::network::Socket;
@@ -186,7 +191,10 @@ public:
   // Enqueues a future to a response that will get waited on (up to
   // some timeout) and then sent once all previously enqueued
   // responses have been processed (e.g., waited for and sent).
-  void handle(Future<Response>* future, const Request& request);
+  void handle(const Future<Response>& future, const Request& request);
+
+protected:
+  void initialize() override;
 
 private:
   // Starts "waiting" on the next available future response.
@@ -209,21 +217,25 @@ private:
   // are acceptable and whether to persist the connection.
   struct Item
   {
-    Item(const Request& _request, Future<Response>* _future)
+    Item(const Request& _request, const Future<Response>& _future)
       : request(_request), future(_future) {}
 
-    ~Item()
-    {
-      delete future;
-    }
-
     const Request request; // Make a copy.
-    Future<Response>* future;
+    Future<Response> future; // Make a copy.
   };
 
   queue<Item*> items;
 
   Option<http::Pipe::Reader> pipe; // Current pipe, if streaming.
+
+  // We sequence the authentication results exposed to the caller
+  // in order to satisfy HTTP pipelining.
+  //
+  // Note that this needs to be done explicitly here because
+  // the authentication router does expose ordered completion
+  // of its Futures (it doesn't have the knowledge of sockets
+  // necessary to do it in a per-connection manner).
+  Owned<Sequence> authentications;
 };
 
 
@@ -383,7 +395,7 @@ public:
 
   ProcessReference use(const UPID& pid);
 
-  bool handle(
+  void handle(
       const Socket& socket,
       Request* request);
 
@@ -466,6 +478,9 @@ static ProcessManager* process_manager = NULL;
 // Scheduling gate that threads wait at when there is nothing to run.
 static Gate* gate = new Gate();
 
+// Used for authenticating HTTP requests.
+static AuthenticatorManager* authenticator_manager = NULL;
+
 // Filter. Synchronized support for using the filterer needs to be
 // recursive in case a filterer wants to do anything fancy (which is
 // possible and likely given that filters will get used for testing).
@@ -483,6 +498,30 @@ THREAD_LOCAL ProcessBase* __process__ = NULL;
 
 // Per thread executor pointer.
 THREAD_LOCAL Executor* _executor_ = NULL;
+
+
+namespace http {
+namespace authentication {
+
+Future<Nothing> setAuthenticator(
+    const std::string& realm,
+    Owned<Authenticator> authenticator)
+{
+  process::initialize();
+
+  return authenticator_manager->setAuthenticator(realm, authenticator);
+}
+
+
+Future<Nothing> unsetAuthenticator(const string& realm)
+{
+  process::initialize();
+
+  return authenticator_manager->unsetAuthenticator(realm);
+}
+
+} // namespace authentication {
+} // namespace http {
 
 
 // NOTE: Clock::* implementations are in clock.cpp except for
@@ -739,54 +778,56 @@ void initialize(const string& delegate)
   // TODO(benh): Return an error if attempting to initialize again
   // with a different delegate than originally specified.
 
-  // static pthread_once_t init = PTHREAD_ONCE_INIT;
-  // pthread_once(&init, ...);
-
-  static std::atomic_bool initialized(false);
-  static std::atomic_bool initializing(true);
+  // NOTE: Rather than calling `initialize` once at the root of the
+  // dependency tree; we currently rely on libprocess dependency
+  // declaration by invoking `initialize` prior to use. This is done
+  // frequently throughout the code base. Therefore we chose to use
+  // atomics rather than `Once`, as the overhead of a mutex and
+  // condition variable is exessive here.
+  static std::atomic_bool initialize_started(false);
+  static std::atomic_bool initialize_complete(false);
 
   // Try and do the initialization or wait for it to complete.
-  // TODO(neilc): Try to simplify and/or document this logic.
-  if (initialized.load() && !initializing.load()) {
+
+  // If already initialized, there's nothing more to do.
+  // NOTE: This condition is true as soon as the thread performing
+  // initialization sets `initialize_complete` to `true` in the *middle*
+  // of initialization.  This is done because some methods called by
+  // initialization will themselves call `process::initialize`.
+  if (initialize_started.load() && initialize_complete.load()) {
     return;
-  } else if (initialized.load() && initializing.load()) {
-    while (initializing.load());
-    return;
+
   } else {
-    // `compare_exchange_strong` needs an lvalue.
+    // NOTE: `compare_exchange_strong` needs an lvalue.
     bool expected = false;
-    if (!initialized.compare_exchange_strong(expected, true)) {
-      while (initializing.load());
+
+    // Any thread that calls `initialize` prior to when `initialize_complete`
+    // is set to `true` will reach this.
+
+    // Atomically sets `initialize_started` to `true`.  The thread that
+    // successfully sets `initialize_started` to `true` will move on to
+    // perform the initialization logic.  All others will wait here for
+    // initialization to complete.
+    if (!initialize_started.compare_exchange_strong(expected, true)) {
+      while (!initialize_complete.load());
       return;
     }
   }
 
-//   // Install signal handler.
-//   struct sigaction sa;
-
-//   sa.sa_handler = (void (*) (int)) sigbad;
-//   sigemptyset (&sa.sa_mask);
-//   sa.sa_flags = SA_RESTART;
-
-//   sigaction (SIGTERM, &sa, NULL);
-//   sigaction (SIGINT, &sa, NULL);
-//   sigaction (SIGQUIT, &sa, NULL);
-//   sigaction (SIGSEGV, &sa, NULL);
-//   sigaction (SIGILL, &sa, NULL);
-// #ifdef SIGBUS
-//   sigaction (SIGBUS, &sa, NULL);
-// #endif
-// #ifdef SIGSTKFLT
-//   sigaction (SIGSTKFLT, &sa, NULL);
-// #endif
-//   sigaction (SIGABRT, &sa, NULL);
-
-//   sigaction (SIGFPE, &sa, NULL);
-
-#ifdef __sun__
-  /* Need to ignore this since we can't do MSG_NOSIGNAL on Solaris. */
+  // We originally tried to leave SIGPIPE unblocked and to work
+  // around SIGPIPE in order to avoid imposing policy on users
+  // of libprocess. However, for pipes and files, the manual
+  // suppression of SIGPIPE had become onerous. Also, OS X
+  // appears to deliver SIGPIPE to the process rather than
+  // the triggering thread. It is better to just silence it
+  // and use EPIPE instead. See MESOS-2079 and related tickets.
+  //
+  // TODO(bmahler): Should libprocess finalization restore the
+  // previous handler?
+  //
+  // TODO(bmahler): Consider removing SO_NOSIGPIPE and MSG_NOSIGNAL
+  // to avoid confusion, now that they are no longer relevant.
   signal(SIGPIPE, SIG_IGN);
-#endif // __sun__
 
 #ifdef USE_SSL_SOCKET
   // Notify users of the 'SSL_SUPPORT_DOWNGRADE' flag that this
@@ -808,21 +849,6 @@ void initialize(const string& delegate)
   long cpus = process_manager->init_threads();
 
   Clock::initialize(lambda::bind(&timedout, lambda::_1));
-
-//   ev_child_init(&child_watcher, child_exited, pid, 0);
-//   ev_child_start(loop, &cw);
-
-//   /* Install signal handler. */
-//   struct sigaction sa;
-
-//   sa.sa_handler = ev_sighandler;
-//   sigfillset (&sa.sa_mask);
-//   sa.sa_flags = SA_RESTART; /* if restarting works we save one iteration */
-//   sigaction (w->signum, &sa, 0);
-
-//   sigemptyset (&sa.sa_mask);
-//   sigaddset (&sa.sa_mask, w->signum);
-//   sigprocmask (SIG_UNBLOCK, &sa.sa_mask, 0);
 
   __address__ = Address::LOCALHOST_ANY();
 
@@ -919,9 +945,9 @@ void initialize(const string& delegate)
     PLOG(FATAL) << "Failed to initialize: " << listen.error();
   }
 
-  // Need to set `initializing` here so that we can actually invoke `spawn()`
-  // below for the garbage collector.
-  initializing.store(false);
+  // Need to set `initialize_complete` here so that we can actually
+  // invoke `accept()` and `spawn()` below.
+  initialize_complete.store(true);
 
   __s__->accept()
     .onAny(lambda::bind(&internal::on_accept, lambda::_1));
@@ -945,6 +971,9 @@ void initialize(const string& delegate)
   // Create the global system statistics process.
   spawn(new System(), true);
 
+  // Create the global HTTP authentication router.
+  authenticator_manager = new AuthenticatorManager();
+
   // Ensure metrics process is running.
   // TODO(bmahler): Consider initializing this consistently with
   // the other global Processes.
@@ -967,12 +996,28 @@ void initialize(const string& delegate)
 }
 
 
+// Gracefully winds down libprocess in roughly the reverse order of
+// initialization.
 void finalize()
 {
-  delete process_manager;
+  // The clock is only paused during tests.  Pausing may lead to infinite waits
+  // during clean up, so we make sure the clock is running normally.
+  Clock::resume();
 
-  // TODO(benh): Finalize/shutdown Clock so that it doesn't attempt
-  // to dereference 'process_manager' in the 'timedout' callback.
+  // This will terminate any existing processes created via `spawn()`,
+  // like `gc`, `help`, `Logging()`, `Profiler()`, and `System()`.
+  // NOTE: This will also stop the event loop.
+
+  // TODO(arojas): The HTTP authentication logic in ProcessManager
+  // does not handle the case where the process_manager is deleted
+  // while authentication was in progress!!
+
+  delete process_manager;
+  process_manager = NULL;
+
+  // The clock must be cleaned up after the `process_manager` as processes
+  // may otherwise add timers after cleaning up.
+  Clock::finalize();
 }
 
 
@@ -1010,12 +1055,12 @@ HttpProxy::~HttpProxy()
     Item* item = items.front();
 
     // Attempt to discard the future.
-    item->future->discard();
+    item->future.discard();
 
     // But it might have already been ready. In general, we need to
     // wait until this future is potentially ready in order to attempt
     // to close a pipe if one exists.
-    item->future->onReady([](const Response& response) {
+    item->future.onReady([](const Response& response) {
       // Cleaning up a response (i.e., closing any open Pipes in the
       // event Response::type is PIPE).
       if (response.type == Response::PIPE) {
@@ -1031,13 +1076,23 @@ HttpProxy::~HttpProxy()
 }
 
 
-void HttpProxy::enqueue(const Response& response, const Request& request)
+void HttpProxy::initialize()
 {
-  handle(new Future<Response>(response), request);
+  // We have to construct the sequence outside of the HttpProxy
+  // constructor in order to prevent a deadlock between the
+  // SocketManager and the ProcessManager (see the comment in
+  // SocketManager::proxy).
+  authentications.reset(new Sequence());
 }
 
 
-void HttpProxy::handle(Future<Response>* future, const Request& request)
+void HttpProxy::enqueue(const Response& response, const Request& request)
+{
+  handle(Future<Response>(response), request);
+}
+
+
+void HttpProxy::handle(const Future<Response>& future, const Request& request)
 {
   items.push(new Item(request, future));
 
@@ -1051,7 +1106,7 @@ void HttpProxy::next()
 {
   if (items.size() > 0) {
     // Wait for any transition of the future.
-    items.front()->future->onAny(
+    items.front()->future.onAny(
         defer(self(), &HttpProxy::waited, lambda::_1));
   }
 }
@@ -1062,11 +1117,11 @@ void HttpProxy::waited(const Future<Response>& future)
   CHECK(items.size() > 0);
   Item* item = items.front();
 
-  CHECK(future == *item->future);
+  CHECK(future == item->future);
 
   // Process the item and determine if we're done or not (so we know
   // whether to start waiting on the next responses).
-  bool processed = process(*item->future, item->request);
+  bool processed = process(item->future, item->request);
 
   items.pop();
   delete item;
@@ -1101,14 +1156,14 @@ bool HttpProxy::process(const Future<Response>& future, const Request& request)
           VLOG(1) << "Returning '404 Not Found' for path '" << path << "'";
           socket_manager->send(NotFound(), request, socket);
       } else {
-        const char* error = strerror(errno);
+        const string error = os::strerror(errno);
         VLOG(1) << "Failed to send file at '" << path << "': " << error;
         socket_manager->send(InternalServerError(), request, socket);
       }
     } else {
       struct stat s; // Need 'struct' because of function named 'stat'.
       if (fstat(fd, &s) != 0) {
-        const char* error = strerror(errno);
+        const string error = os::strerror(errno);
         VLOG(1) << "Failed to send file at '" << path << "': " << error;
         socket_manager->send(InternalServerError(), request, socket);
       } else if (S_ISDIR(s.st_mode)) {
@@ -2198,7 +2253,7 @@ ProcessReference ProcessManager::use(const UPID& pid)
 }
 
 
-bool ProcessManager::handle(
+void ProcessManager::handle(
     const Socket& socket,
     Request* request)
 {
@@ -2235,7 +2290,7 @@ bool ProcessManager::handle(
       }
 
       delete request;
-      return accepted;
+      return;
     }
 
     VLOG(1) << "Failed to handle libprocess message: "
@@ -2243,7 +2298,7 @@ bool ProcessManager::handle(
             << " (User-Agent: " << request->headers["User-Agent"] << ")";
 
     delete request;
-    return false;
+    return;
   }
 
   // Treat this as an HTTP request. Start by checking that the path
@@ -2260,7 +2315,7 @@ bool ProcessManager::handle(
 
     // Cleanup request.
     delete request;
-    return false;
+    return;
   }
 
   // Ignore requests with relative paths (i.e., contain "/..").
@@ -2277,32 +2332,32 @@ bool ProcessManager::handle(
 
     // Cleanup request.
     delete request;
-    return false;
+    return;
   }
 
   // Split the path by '/'.
   vector<string> tokens = strings::tokenize(request->url.path, "/");
 
   // Try and determine a receiver, otherwise try and delegate.
-  ProcessReference receiver;
+  UPID receiver;
 
   if (tokens.size() == 0 && delegate != "") {
     request->url.path = "/" + delegate;
-    receiver = use(UPID(delegate, __address__));
+    receiver = UPID(delegate, __address__);
   } else if (tokens.size() > 0) {
     // Decode possible percent-encoded path.
     Try<string> decode = http::decode(tokens[0]);
     if (!decode.isError()) {
-      receiver = use(UPID(decode.get(), __address__));
+      receiver = UPID(decode.get(), __address__);
     } else {
       VLOG(1) << "Failed to decode URL path: " << decode.error();
     }
   }
 
-  if (!receiver && delegate != "") {
+  if (!use(receiver) && delegate != "") {
     // Try and delegate the request.
     request->url.path = "/" + delegate + request->url.path;
-    receiver = use(UPID(delegate, __address__));
+    receiver = UPID(delegate, __address__);
   }
 
   synchronized (firewall_mutex) {
@@ -2330,15 +2385,27 @@ bool ProcessManager::handle(
 
         // Cleanup request.
         delete request;
-        return false;
+        return;
       }
     }
   }
 
-  if (receiver) {
+  if (use(receiver)) {
+    // The promise is created here but its ownership is passed
+    // into the HttpEvent created below.
+    Promise<Response>* promise(new Promise<Response>());
+
+    PID<HttpProxy> proxy = socket_manager->proxy(socket);
+
+    // Enqueue the response with the HttpProxy so that it respects the
+    // order of requests to account for HTTP/1.1 pipelining.
+    dispatch(proxy, &HttpProxy::handle, promise->future(), *request);
+
     // TODO(benh): Use the sender PID in order to capture
     // happens-before timing relationships for testing.
-    return deliver(receiver, new HttpEvent(socket, request));
+    deliver(receiver, new HttpEvent(request, promise));
+
+    return;
   }
 
   // This has no receiver, send error response.
@@ -2353,7 +2420,6 @@ bool ProcessManager::handle(
 
   // Cleanup request.
   delete request;
-  return false;
 }
 
 
@@ -3075,11 +3141,17 @@ void ProcessBase::visit(const HttpEvent& event)
   VLOG(1) << "Handling HTTP event for process '" << pid.id << "'"
           << " with path: '" << event.request->url.path << "'";
 
+  // Lazily initialize the Sequence needed for ordering requests
+  // across authentication.
+  if (handlers.httpSequence.get() == NULL) {
+    handlers.httpSequence.reset(new Sequence());
+  }
+
   CHECK(event.request->url.path.find('/') == 0); // See ProcessManager::handle.
 
   // Split the path by '/'.
   vector<string> tokens = strings::tokenize(event.request->url.path, "/");
-  CHECK(tokens.size() >= 1);
+  CHECK(!tokens.empty());
   CHECK_EQ(pid.id, http::decode(tokens[0]).get());
 
   // First look to see if there is an HTTP handler that can handle the
@@ -3092,26 +3164,77 @@ void ProcessBase::visit(const HttpEvent& event)
   name = strings::trim(name, strings::PREFIX, "/");
 
   while (Path(name).dirname() != name) {
-    if (handlers.http.count(name) > 0) {
-      // Create the promise to link with whatever gets returned, as well
-      // as a future to wait for the response.
-      std::shared_ptr<Promise<Response>> promise(new Promise<Response>());
-
-      Future<Response>* future = new Future<Response>(promise->future());
-
-      // Get the HttpProxy pid for this socket.
-      PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
-
-      // Let the HttpProxy know about this request (via the future).
-      dispatch(proxy, &HttpProxy::handle, future, *event.request);
-
-      // Now call the handler and associate the response with the promise.
-      promise->associate(handlers.http[name](*event.request));
-
-      return;
+    if (handlers.http.count(name) == 0) {
+      name = Path(name).dirname();
+      continue;
     }
 
-    name = Path(name).dirname();
+    HttpEndpoint endpoint = handlers.http[name];
+    Future<Option<AuthenticationResult>> authentication = None();
+
+    if (endpoint.realm.isSome()) {
+      authentication = authenticator_manager->authenticate(
+          *event.request, endpoint.realm.get());
+    }
+
+    // Sequence the authentication future to ensure the handlers
+    // are invoked in the same order that requests arrive.
+    authentication = handlers.httpSequence->add<Option<AuthenticationResult>>(
+        [authentication]() { return authentication; });
+
+    Request request = *event.request;
+    Promise<Response>* response = new Promise<Response>();
+    event.response->associate(response->future());
+
+    authentication
+      .onAny(defer(self(), [endpoint, request, response](
+          const Future<Option<AuthenticationResult>>& authentication) {
+        if (!authentication.isReady()) {
+          response->set(InternalServerError());
+
+          VLOG(1) << "Returning '" << response->future()->status << "'"
+                  << " for '" << request.url.path << "'"
+                  << " (authentication failed: "
+                  << (authentication.isFailed()
+                      ? authentication.failure()
+                      : "discarded") << ")";
+
+          delete response;
+          return;
+        }
+
+        if (authentication->isNone()) {
+          // Request didn't need authentication or authentication
+          // is not applicable, just forward the request.
+          if (endpoint.realm.isNone()) {
+            response->associate(endpoint.handler.get()(request));
+          } else {
+            response->associate(endpoint.authenticatedHandler.get()(
+                request, None()));
+          }
+
+          delete response;
+          return;
+        }
+
+        if (authentication.get()->unauthorized.isSome()) {
+          // Request was not authenticated, challenged issued.
+          response->set(authentication.get()->unauthorized.get());
+        } else if (authentication.get()->forbidden.isSome()) {
+          // Request was not authenticated, no challenge issued.
+          response->set(authentication.get()->forbidden.get());
+        } else {
+          Option<string> principal = authentication.get()->principal;
+
+          response->associate(endpoint.authenticatedHandler.get()(
+              request, principal));
+        }
+
+        delete response;
+        return;
+    }));
+
+    return;
   }
 
   // If no HTTP handler is found look in assets.
@@ -3128,25 +3251,17 @@ void ProcessBase::visit(const HttpEvent& event)
     }
 
     // Try and determine the Content-Type from an extension.
-    string basename = Path(response.path).basename();
-    size_t index = basename.find_last_of('.');
-    if (index != string::npos) {
-      string extension = basename.substr(index);
-      if (assets[name].types.count(extension) > 0) {
-        response.headers["Content-Type"] = assets[name].types[extension];
-      }
+    Option<string> extension = Path(response.path).extension();
+
+    if (extension.isSome() && assets[name].types.count(extension.get()) > 0) {
+      response.headers["Content-Type"] = assets[name].types[extension.get()];
     }
 
     // TODO(benh): Use "text/plain" for assets that don't have an
     // extension or we don't have a mapping for? It might be better to
     // just let the browser guess (or do it's own default).
 
-    // Get the HttpProxy pid for this socket.
-    PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
-
-    // Enqueue the response with the HttpProxy so that it respects the
-    // order of requests to account for HTTP/1.1 pipelining.
-    dispatch(proxy, &HttpProxy::enqueue, response, *event.request);
+    event.response->associate(response);
 
     return;
   }
@@ -3154,12 +3269,7 @@ void ProcessBase::visit(const HttpEvent& event)
   VLOG(1) << "Returning '404 Not Found' for"
           << " '" << event.request->url.path << "'";
 
-  // Get the HttpProxy pid for this socket.
-  PID<HttpProxy> proxy = socket_manager->proxy(event.socket);
-
-  // Enqueue the response with the HttpProxy so that it respects the
-  // order of requests to account for HTTP/1.1 pipelining.
-  dispatch(proxy, &HttpProxy::enqueue, NotFound(), *event.request);
+  event.response->associate(NotFound());
 }
 
 
@@ -3194,10 +3304,33 @@ void ProcessBase::route(
 {
   // Routes must start with '/'.
   CHECK(name.find('/') == 0);
-  handlers.http[name.substr(1)] = handler;
+
+  HttpEndpoint endpoint;
+  endpoint.handler = handler;
+
+  handlers.http[name.substr(1)] = endpoint;
+
   dispatch(help, &Help::add, pid.id, name, help_);
 }
 
+
+void ProcessBase::route(
+    const string& name,
+    const std::string& realm,
+    const Option<string>& help_,
+    const AuthenticatedHttpRequestHandler& handler)
+{
+  // Routes must start with '/'.
+  CHECK(name.find('/') == 0);
+
+  HttpEndpoint endpoint;
+  endpoint.realm = realm;
+  endpoint.authenticatedHandler = handler;
+
+  handlers.http[name.substr(1)] = endpoint;
+
+  dispatch(help, &Help::add, pid.id, name, help_);
+}
 
 
 UPID spawn(ProcessBase* process, bool manage)
