@@ -150,6 +150,8 @@ ALLOCATOR_PROTO = $(top_srcdir)/include/mesos/master/allocator.proto
 AUTHENTICATION_PROTO = $(top_srcdir)/include/mesos/authentication/authentication.proto
 AUTHORIZATION_PROTO = $(top_srcdir)/include/mesos/authorizer/authorizer.proto
 CONTAINERIZER_PROTO = $(top_srcdir)/include/mesos/containerizer/containerizer.proto
+DOCKER_V1_PROTO = $(top_srcdir)/include/mesos/docker/v1.proto
+DOCKER_V2_PROTO = $(top_srcdir)/include/mesos/docker/v2.proto
 EXECUTOR_PROTO = $(top_srcdir)/include/mesos/executor/executor.proto
 FETCHER_PROTO = $(top_srcdir)/include/mesos/fetcher/fetcher.proto
 MAINTENANCE_PROTO = $(top_srcdir)/include/mesos/maintenance/maintenance.proto
@@ -370,7 +372,8 @@ authentication_HEADERS =						\
   $(top_srcdir)/include/mesos/authentication/authenticatee.hpp		\
   $(top_srcdir)/include/mesos/authentication/authentication.hpp		\
   $(top_srcdir)/include/mesos/authentication/authentication.proto	\
-  $(top_srcdir)/include/mesos/authentication/authenticator.hpp
+  $(top_srcdir)/include/mesos/authentication/authenticator.hpp		\
+  $(top_srcdir)/include/mesos/authentication/http/basic_authenticator_factory.hpp
 
 nodist_authentication_HEADERS =						\
   ../include/mesos/authentication/authentication.pb.h
@@ -451,6 +454,7 @@ module_HEADERS =							\
   $(top_srcdir)/include/mesos/module/authorizer.hpp			\
   $(top_srcdir)/include/mesos/module/container_logger.hpp		\
   $(top_srcdir)/include/mesos/module/hook.hpp				\
+  $(top_srcdir)/include/mesos/module/http_authenticator.hpp		\
   $(top_srcdir)/include/mesos/module/isolator.hpp			\
   $(top_srcdir)/include/mesos/module/module.hpp				\
   $(top_srcdir)/include/mesos/module/module.proto			\
@@ -556,6 +560,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   authentication/cram_md5/authenticatee.cpp				\
   authentication/cram_md5/authenticator.cpp				\
   authentication/cram_md5/auxprop.cpp					\
+  authentication/http/basic_authenticator_factory.cpp			\
   authorizer/authorizer.cpp						\
   authorizer/local/authorizer.cpp					\
   common/attributes.cpp							\
@@ -646,6 +651,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   uri/fetcher.cpp							\
   uri/utils.cpp								\
   uri/fetchers/curl.cpp							\
+  uri/fetchers/docker.cpp						\
   uri/fetchers/hadoop.cpp						\
   usage/usage.cpp							\
   v1/attributes.cpp							\
@@ -775,6 +781,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   uri/fetcher.hpp							\
   uri/utils.hpp								\
   uri/fetchers/curl.hpp							\
+  uri/fetchers/docker.hpp						\
   uri/fetchers/hadoop.hpp						\
   uri/schemes/file.hpp							\
   uri/schemes/hdfs.hpp							\
@@ -986,6 +993,8 @@ libmesos_la_SOURCES =							\
   $(AUTHORIZATION_PROTO)						\
   $(CONTAINERIZER_PROTO)						\
   $(EXECUTOR_PROTO)							\
+  $(DOCKER_V1_PROTO)							\
+  $(DOCKER_V2_PROTO)							\
   $(FETCHER_PROTO)							\
   $(MAINTENANCE_PROTO)							\
   $(MESOS_PROTO)							\
@@ -1668,6 +1677,12 @@ libtestauthorizer_la_SOURCES = examples/test_authorizer_module.cpp
 libtestauthorizer_la_CPPFLAGS = $(MESOS_CPPFLAGS)
 libtestauthorizer_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
 
+# Library containing the test http authenticator module.
+noinst_LTLIBRARIES += libtesthttpauthenticator.la
+libtesthttpauthenticator_la_SOURCES = examples/test_http_authenticator_module.cpp
+libtesthttpauthenticator_la_CPPFLAGS = $(MESOS_CPPFLAGS)
+libtesthttpauthenticator_la_LDFLAGS = $(MESOS_TEST_MODULE_LDFLAGS)
+
 # Library containing the test DRF allocator module.
 noinst_LTLIBRARIES += libtestallocator.la
 libtestallocator_la_SOURCES = examples/test_allocator_module.cpp
@@ -1733,6 +1748,7 @@ mesos_tests_SOURCES =						\
   tests/health_check_tests.cpp					\
   tests/hierarchical_allocator_tests.cpp			\
   tests/hook_tests.cpp						\
+  tests/http_authentication_tests.cpp				\
   tests/log_tests.cpp						\
   tests/logging_tests.cpp					\
   tests/main.cpp						\

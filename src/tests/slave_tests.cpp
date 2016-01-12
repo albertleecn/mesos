@@ -293,6 +293,7 @@ TEST_F(SlaveTest, RemoveUnregisteredTerminatedExecutor)
   Future<Nothing> schedule =
     FUTURE_DISPATCH(_, &GarbageCollectorProcess::schedule);
 
+  EXPECT_CALL(sched, executorLost(&driver, DEFAULT_EXECUTOR_ID, _, _));
   // Now kill the executor.
   containerizer.destroy(offers.get()[0].framework_id(), DEFAULT_EXECUTOR_ID);
 
@@ -1133,6 +1134,9 @@ TEST_F(SlaveTest, MetricsSlaveLaunchErrors)
 
   EXPECT_CALL(sched, statusUpdate(&driver, _));
 
+  // The above injected containerizer failure also triggers executorLost.
+  EXPECT_CALL(sched, executorLost(&driver, DEFAULT_EXECUTOR_ID, _, _));
+
   // Try to start a task
   TaskInfo task = createTask(
       offer.slave_id(),
@@ -1316,7 +1320,7 @@ TEST_F(SlaveTest, StateEndpoint)
 
 // This test ensures that when a slave is shutting down, it will not
 // try to re-register with the master.
-TEST_F(SlaveTest, TerminatingSlaveDoesNotReregister)
+TEST_F(SlaveTest, DISABLED_TerminatingSlaveDoesNotReregister)
 {
   // Start a master.
   Try<PID<Master>> master = StartMaster();
@@ -1396,6 +1400,10 @@ TEST_F(SlaveTest, TerminatingSlaveDoesNotReregister)
   // stay in TERMINATING for a while.
   DROP_PROTOBUFS(ShutdownExecutorMessage(), slave.get(), _);
 
+  Future<Nothing> executorLost;
+  EXPECT_CALL(sched, executorLost(&driver, DEFAULT_EXECUTOR_ID, _, _))
+    .WillOnce(FutureSatisfy(&executorLost));
+
   // Send a ShutdownMessage instead of calling Stop() directly
   // to avoid blocking.
   post(master.get(), slave.get(), ShutdownMessage());
@@ -1404,6 +1412,8 @@ TEST_F(SlaveTest, TerminatingSlaveDoesNotReregister)
   Clock::advance(slave::REGISTER_RETRY_INTERVAL_MAX * 2);
   Clock::settle();
   Clock::resume();
+
+  AWAIT_READY(executorLost);
 
   // Clean up.
   driver.stop();
@@ -1491,6 +1501,10 @@ TEST_F(SlaveTest, TerminalTaskContainerizerUpdateFails)
   EXPECT_CALL(exec, killTask(_, _))
     .WillOnce(SendStatusUpdateFromTaskID(TASK_KILLED));
 
+  Future<Nothing> executorLost;
+  EXPECT_CALL(sched, executorLost(&driver, DEFAULT_EXECUTOR_ID, _, _))
+    .WillOnce(FutureSatisfy(&executorLost));
+
   // Kill one of the tasks. The failed update should result in the
   // second task going lost when the container is destroyed.
   driver.killTask(tasks[0].task_id());
@@ -1503,6 +1517,8 @@ TEST_F(SlaveTest, TerminalTaskContainerizerUpdateFails)
   EXPECT_EQ(TASK_LOST, status4->state());
   EXPECT_EQ(TaskStatus::SOURCE_SLAVE, status4->source());
   EXPECT_EQ(TaskStatus::REASON_CONTAINER_UPDATE_FAILED, status4->reason());
+
+  AWAIT_READY(executorLost);
 
   driver.stop();
   driver.join();
@@ -1607,6 +1623,7 @@ TEST_F(SlaveTest, TaskLaunchContainerizerUpdateFails)
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
     .WillOnce(FutureArg<1>(&status));
+  EXPECT_CALL(sched, executorLost(&driver, DEFAULT_EXECUTOR_ID, _, _));
 
   driver.start();
 
@@ -2189,24 +2206,15 @@ TEST_F(SlaveTest, DiscoveryInfoAndPorts)
   Port* port1 = ports.add_ports();
   port1->set_number(80);
   port1->mutable_labels()->CopyFrom(labels1);
-  port1->set_instance_port(2222);
 
   Port* port2 = ports.add_ports();
   port2->set_number(8081);
   port2->mutable_labels()->CopyFrom(labels2);
-  port2->set_instance_port(2223);
-
 
   DiscoveryInfo discovery;
   discovery.set_name("test_discovery");
   discovery.set_visibility(DiscoveryInfo::CLUSTER);
   discovery.mutable_ports()->CopyFrom(ports);
-
-  IPAddress* vip1 = discovery.add_vips()->mutable_vip();
-  vip1->set_ip_address("10.0.0.1");
-
-  IPAddress* vip2 = discovery.add_vips()->mutable_vip();
-  vip2->set_ip_address("10.0.0.2");
 
   task.mutable_discovery()->CopyFrom(discovery);
 
@@ -2237,23 +2245,18 @@ TEST_F(SlaveTest, DiscoveryInfoAndPorts)
   JSON::Object discoveryObject = discoveryResult.get();
   EXPECT_EQ(JSON::Object(JSON::protobuf(discovery)), discoveryObject);
 
-  // Verify that the VIPs retrieved from state.json are the ones that were set.
-  Result<JSON::Object> vipResult1 = parse.get().find<JSON::Object>(
-      "frameworks[0].executors[0].tasks[0].discovery.vips[0]");
-  Result<JSON::Object> vipResult2 = parse.get().find<JSON::Object>(
-      "frameworks[0].executors[0].tasks[0].discovery.vips[1]");
-
-  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(discovery.vips(0))), vipResult1);
-  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(discovery.vips(1))), vipResult2);
-
-  // Verify that the ports retrieved from state.json are the ones that were set.
+  // Check the ports are set in the `DiscoveryInfo` object.
   Result<JSON::Object> portResult1 = parse.get().find<JSON::Object>(
       "frameworks[0].executors[0].tasks[0].discovery.ports.ports[0]");
   Result<JSON::Object> portResult2 = parse.get().find<JSON::Object>(
       "frameworks[0].executors[0].tasks[0].discovery.ports.ports[1]");
 
-  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(*port1)), portResult1);
-  EXPECT_SOME_EQ(JSON::Object(JSON::protobuf(*port2)), portResult2);
+  EXPECT_SOME(portResult1);
+  EXPECT_SOME(portResult2);
+
+  // Verify that the ports retrieved from state.json are the ones that were set.
+  EXPECT_EQ(JSON::Object(JSON::protobuf(*port1)), portResult1.get());
+  EXPECT_EQ(JSON::Object(JSON::protobuf(*port2)), portResult2.get());
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));

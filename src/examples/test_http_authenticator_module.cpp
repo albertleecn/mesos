@@ -14,35 +14,40 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <string>
+
+#include <mesos/authentication/http/basic_authenticator_factory.hpp>
+
 #include <mesos/mesos.hpp>
 #include <mesos/module.hpp>
 
-#include <mesos/authorizer/authorizer.hpp>
+#include <mesos/module/http_authenticator.hpp>
 
-#include <mesos/module/authorizer.hpp>
+#include <process/authenticator.hpp>
 
-#include "authorizer/local/authorizer.hpp"
+#include <stout/hashmap.hpp>
 
 using namespace mesos;
 
-static Authorizer* createAuthorizer(const Parameters& parameters)
-{
-  Try<Authorizer*> local = mesos::internal::LocalAuthorizer::create();
-  if (local.isError()) {
-    return NULL;
-  }
+using mesos::http::authentication::BasicAuthenticatorFactory;
 
-  return local.get();
+using process::http::authentication::Authenticator;
+
+
+static Authenticator* createHttpAuthenticator(const Parameters& parameters)
+{
+  return BasicAuthenticatorFactory::create(parameters).get();
 }
 
 
-// Declares an Authorizer module named
-// 'org_apache_mesos_TestLocalAuthorizer'.
-mesos::modules::Module<Authorizer> org_apache_mesos_TestLocalAuthorizer(
+// Declares an HTTP Authenticator module named
+// 'org_apache_mesos_TestHttpBasicAuthenticator'.
+mesos::modules::Module<Authenticator>
+org_apache_mesos_TestHttpBasicAuthenticator(
     MESOS_MODULE_API_VERSION,
     MESOS_VERSION,
     "Apache Mesos",
     "modules@mesos.apache.org",
-    "Test Authorizer module.",
+    "Test HTTP Authenticator module.",
     NULL,
-    createAuthorizer);
+    createHttpAuthenticator);

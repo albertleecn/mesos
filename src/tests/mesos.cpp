@@ -95,6 +95,7 @@ master::Flags MesosTest::CreateMasterFlags()
 
   CHECK_SOME(os::mkdir(flags.work_dir.get()));
 
+  flags.authenticate_http = true;
   flags.authenticate_frameworks = true;
   flags.authenticate_slaves = true;
 
@@ -432,6 +433,11 @@ void MesosTest::Stop(const PID<slave::Slave>& pid, bool shutdown)
 
 void MesosTest::Shutdown()
 {
+  // TODO(arojas): Authenticators' lifetimes are tied to libprocess's lifetime.
+  // Consider unsetting the authenticator in the master shutdown.
+  // NOTE: This means that multiple masters in tests are not supported.
+  process::http::authentication::unsetAuthenticator(
+      master::DEFAULT_HTTP_AUTHENTICATION_REALM);
   ShutdownMasters();
   ShutdownSlaves();
 }
@@ -708,6 +714,9 @@ MockAuthorizer::MockAuthorizer()
     .WillRepeatedly(Return(true));
 
   EXPECT_CALL(*this, authorize(An<const mesos::ACL::SetQuota&>()))
+    .WillRepeatedly(Return(true));
+
+  EXPECT_CALL(*this, authorize(An<const mesos::ACL::RemoveQuota&>()))
     .WillRepeatedly(Return(true));
 
   EXPECT_CALL(*this, initialize(An<const Option<ACLs>&>()))

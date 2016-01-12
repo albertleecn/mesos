@@ -99,7 +99,7 @@ public interface Scheduler {
    * whatever reason an offer is never rescinded (e.g., dropped
    * message, failing over framework, etc.), a framework that attempts
    * to launch tasks using an invalid offer will receive TASK_LOST
-   * status updats for those tasks (see {@link #resourceOffers}).
+   * status updates for those tasks (see {@link #resourceOffers}).
    *
    * @param driver  The driver that was used to run this scheduler.
    * @param offerId The ID of the offer that was rescinded.
@@ -176,6 +176,8 @@ public interface Scheduler {
    * Invoked when an executor has exited/terminated. Note that any
    * tasks running will have TASK_LOST status updates automagically
    * generated.
+   *
+   * NOTE: This callback is not reliably delivered.
    *
    * @param driver      The driver that was used to run this scheduler.
    * @param executorId  The ID of the executor that was lost.
