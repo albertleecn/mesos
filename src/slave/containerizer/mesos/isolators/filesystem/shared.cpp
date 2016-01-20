@@ -28,8 +28,9 @@ using std::list;
 using std::set;
 using std::string;
 
+using mesos::slave::ContainerConfig;
+using mesos::slave::ContainerLaunchInfo;
 using mesos::slave::ContainerLimitation;
-using mesos::slave::ContainerPrepareInfo;
 using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
@@ -74,11 +75,10 @@ Future<Nothing> SharedFilesystemIsolatorProcess::recover(
 }
 
 
-Future<Option<ContainerPrepareInfo>> SharedFilesystemIsolatorProcess::prepare(
+Future<Option<ContainerLaunchInfo>> SharedFilesystemIsolatorProcess::prepare(
     const ContainerID& containerId,
     const ExecutorInfo& executorInfo,
-    const string& directory,
-    const Option<string>& user)
+    const ContainerConfig& containerConfig)
 {
   if (executorInfo.has_container() &&
       executorInfo.container().type() != ContainerInfo::MESOS) {
@@ -99,10 +99,10 @@ Future<Option<ContainerPrepareInfo>> SharedFilesystemIsolatorProcess::prepare(
   // to another container path as this can mask entries. We'll keep
   // track of all container paths so we can check this.
   set<string> containerPaths;
-  containerPaths.insert(directory);
+  containerPaths.insert(containerConfig.directory());
 
-  ContainerPrepareInfo prepareInfo;
-  prepareInfo.set_namespaces(CLONE_NEWNS);
+  ContainerLaunchInfo launchInfo;
+  launchInfo.set_namespaces(CLONE_NEWNS);
 
   foreach (const Volume& volume, executorInfo.container().volumes()) {
     // Because the filesystem is shared we require the container path
@@ -149,7 +149,7 @@ Future<Option<ContainerPrepareInfo>> SharedFilesystemIsolatorProcess::prepare(
     // directory, otherwise check it already exists.
     string hostPath;
     if (!strings::startsWith(volume.host_path(), "/")) {
-      hostPath = path::join(directory, volume.host_path());
+      hostPath = path::join(containerConfig.directory(), volume.host_path());
 
       // Do not support any relative components in the resulting path.
       // There should not be any links in the work directory to
@@ -207,11 +207,11 @@ Future<Option<ContainerPrepareInfo>> SharedFilesystemIsolatorProcess::prepare(
       }
     }
 
-    prepareInfo.add_commands()->set_value(
+    launchInfo.add_commands()->set_value(
         "mount -n --bind " + hostPath + " " + volume.container_path());
   }
 
-  return prepareInfo;
+  return launchInfo;
 }
 
 

@@ -35,6 +35,7 @@
 #include <stout/hashmap.hpp>
 #include <stout/ip.hpp>
 #include <stout/json.hpp>
+#include <stout/jsonify.hpp>
 #include <stout/none.hpp>
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
@@ -491,6 +492,8 @@ struct OK : Response
   explicit OK(const std::string& body) : Response(body, Status::OK) {}
 
   OK(const JSON::Value& value, const Option<std::string>& jsonp = None());
+
+  OK(JSON::Proxy&& value, const Option<std::string>& jsonp = None());
 };
 
 
@@ -713,6 +716,14 @@ std::string encode(const std::string& s);
 // The input string must not already be decoded.
 // Returns error on the occurrence of a malformed % escape in s.
 Try<std::string> decode(const std::string& s);
+
+
+/**
+ * Decode HTTP responses from the given string.
+ *
+ * @param s the given string.
+ */
+Try<std::vector<Response>> decodeResponses(const std::string& s);
 
 
 namespace query {

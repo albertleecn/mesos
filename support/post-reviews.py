@@ -94,6 +94,21 @@ if diff_stat:
   print 'Please commit staged changes before using post-reviews!'
   sys.exit(1)
 
+# Grab a reference to the repo's git directory. Usually this is simply .git in
+# the repo's top level directory. However, when submodules are used, it may
+# appear elsewhere. The most up-to-date way of finding this directory is to use
+# `git rev-parse --git-common-dir`. This is necessary to support things like
+# git worktree in addition to git submodules. However, as of January 2016,
+# support for the '--git-common-dir' flag is fairly new, forcing us to fall
+# back to the older '--git-dir' flag if '--git-common-dir' is not supported. We
+# do this by checking the output of `git rev-parse --git-common-dir` and seeing
+# if it gives us a valid directory back. If not, we set the git directory using
+# the '--git-dir' flag instead.
+git_dir = execute(['git', 'rev-parse', '--git-common-dir']).strip()
+if not os.path.isdir(git_dir):
+  git_dir = execute(['git', 'rev-parse', '--git-dir']).strip()
+
+# Grab a reference to the top level directory of this repo.
 top_level_dir = execute(['git', 'rev-parse', '--show-toplevel']).strip()
 
 # Use the tracking_branch specified by the user if exists.
@@ -233,6 +248,16 @@ for i in range(len(shas)):
         parent_review_request_id = review_request_id
         continue
 
+    # Strip the review url from the commit message, so that it is not included
+    # in the summary message when GUESS_FIELDS is set in .reviewboardc. Update
+    # the sha appropriately.
+    if review_request_id:
+        stripped_message = message[:pos]
+        execute(['git', 'checkout', sha])
+        execute(['git', 'commit', '--amend', '-m', stripped_message])
+        sha = execute(['git', 'rev-parse', 'HEAD']).strip()
+        execute(['git', 'checkout', branch])
+
     revision_range = previous + ':' + sha
 
     # Build the post-review/rbt command up to the point where they are common.
@@ -265,12 +290,17 @@ for i in range(len(shas)):
     print output
 
 
+    # If we already have a request_id, continue on to the next commit in the
+    # chain. We update 'previous' from the shas[] array because we have
+    # overwritten the temporary sha variable above.
     if review_request_id is not None:
-        i = i + 1
-        previous = sha
+        previous = shas[i]
         parent_review_request_id = review_request_id
+        i = i + 1
         continue
 
+    # Otherwise, get the request_id from the output of post-review, append it
+    # to the commit message and rebase all other commits on top of it.
     lines = output.split('\n')
 
     # The last line of output in post-review is the review url.
@@ -295,7 +325,7 @@ for i in range(len(shas)):
 
     # Now rebase all remaining shas on top of this amended commit.
     j = i + 1
-    old_sha = execute(['cat', os.path.join(top_level_dir, '.git/refs/heads', temporary_branch)]).strip()
+    old_sha = execute(['cat', os.path.join(git_dir, 'refs/heads', temporary_branch)]).strip()
     previous = old_sha
     while j < len(shas):
         execute(['git', 'checkout', shas[j]])
@@ -313,7 +343,7 @@ for i in range(len(shas)):
 
     # Okay, now update the actual branch to our temporary branch.
     new_sha = old_sha
-    old_sha = execute(['cat', os.path.join(top_level_dir, '.git/refs/heads', branch)]).strip()
+    old_sha = execute(['cat', os.path.join(git_dir, 'refs/heads', branch)]).strip()
     execute(['git', 'update-ref', 'refs/heads/' + branch, new_sha, old_sha])
 
     i = i + 1

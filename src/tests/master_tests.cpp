@@ -81,6 +81,9 @@ using process::Future;
 using process::PID;
 using process::Promise;
 
+using process::http::OK;
+using process::http::Response;
+
 using std::shared_ptr;
 using std::string;
 using std::vector;
@@ -279,9 +282,10 @@ TEST_F(MasterTest, ShutdownFrameworkWhileTaskRunning)
   Clock::resume();
 
   // Request master state.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state");
-  AWAIT_READY(response);
+  Future<Response> response = process::http::get(master.get(), "state");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   // These checks are not essential for the test, but may help
   // understand what went wrong.
@@ -1629,17 +1633,12 @@ TEST_F(MasterTest, SlavesEndpointWithoutSlaves)
   ASSERT_SOME(master);
 
   // Query the master.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "slaves");
+  Future<Response> response = process::http::get(master.get(), "slaves");
 
-  AWAIT_READY(response);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
-
-  const Try<JSON::Value> parse =
-    JSON::parse(response.get().body);
+  const Try<JSON::Value> parse = JSON::parse(response.get().body);
   ASSERT_SOME(parse);
 
   Try<JSON::Value> expected = JSON::parse(
@@ -1678,14 +1677,10 @@ TEST_F(MasterTest, SlavesEndpointTwoSlaves)
   AWAIT_READY(slave2RegisteredMessage);
 
   // Query the master.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "slaves");
+  Future<Response> response = process::http::get(master.get(), "slaves");
 
-  AWAIT_READY(response);
-
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   const Try<JSON::Object> parse =
     JSON::parse<JSON::Object>(response.get().body);
@@ -2270,13 +2265,10 @@ TEST_F(MasterTest, OrphanTasks)
   EXPECT_EQ(TASK_RUNNING, status.get().state());
 
   // Get the master's state.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state");
-  AWAIT_READY(response);
+  Future<Response> response = process::http::get(master.get(), "state");
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -2338,11 +2330,9 @@ TEST_F(MasterTest, OrphanTasks)
 
   // Get the master's state.
   response = process::http::get(master.get(), "state");
-  AWAIT_READY(response);
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -2373,11 +2363,9 @@ TEST_F(MasterTest, OrphanTasks)
 
   // Get the master's state.
   response = process::http::get(master.get(), "state");
-  AWAIT_READY(response);
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -2838,14 +2826,10 @@ TEST_F(MasterTest, StateEndpoint)
   Try<PID<Master>> master = StartMaster(flags);
   ASSERT_SOME(master);
 
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state");
+  Future<Response> response = process::http::get(master.get(), "state");
 
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
-
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -2935,7 +2919,7 @@ TEST_F(MasterTest, StateSummaryEndpoint)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .Times(1);
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2984,14 +2968,10 @@ TEST_F(MasterTest, StateSummaryEndpoint)
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
 
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state-summary");
+  Future<Response> response = process::http::get(master.get(), "state-summary");
 
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
-
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3044,9 +3024,8 @@ TEST_F(MasterTest, FrameworkWebUIUrlandCapabilities)
 
   AWAIT_READY(registered);
 
-  Future<process::http::Response> masterState =
-    process::http::get(master.get(), "state");
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, masterState);
+  Future<Response> masterState = process::http::get(master.get(), "state");
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, masterState);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(masterState.get().body);
   ASSERT_SOME(parse);
@@ -3151,13 +3130,10 @@ TEST_F(MasterTest, TaskLabels)
   AWAIT_READY(update);
 
   // Verify label key and value in the master's state endpoint.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state");
-  AWAIT_READY(response);
+  Future<Response> response = process::http::get(master.get(), "state");
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3253,13 +3229,10 @@ TEST_F(MasterTest, TaskStatusLabels)
   AWAIT_READY(status);
 
   // Verify label key and value in master state.json.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state.json");
-  AWAIT_READY(response);
+  Future<Response> response = process::http::get(master.get(), "state.json");
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3348,13 +3321,10 @@ TEST_F(MasterTest, TaskStatusContainerStatus)
   EXPECT_EQ(slaveIPAddress, containerStatus.network_infos(0).ip_address());
 
   // Now do the same validation with state endpoint.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state.json");
-  AWAIT_READY(response);
+  Future<Response> response = process::http::get(master.get(), "state.json");
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3433,9 +3403,10 @@ TEST_F(MasterTest, SlaveActiveEndpoint)
   AWAIT_READY(slaveRegisteredMessage);
 
   // Verify slave is active.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state");
-  AWAIT_READY(response);
+  Future<Response> response = process::http::get(master.get(), "state");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3555,13 +3526,10 @@ TEST_F(MasterTest, TaskDiscoveryInfo)
   AWAIT_READY(update);
 
   // Verify label key and value in the master's state endpoint.
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state");
-  AWAIT_READY(response);
+  Future<Response> response = process::http::get(master.get(), "state");
 
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3839,9 +3807,10 @@ TEST_F(MasterTest, FrameworkInfoLabels)
 
   AWAIT_READY(registered);
 
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "state.json");
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
+  Future<Response> response = process::http::get(master.get(), "state.json");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3884,13 +3853,10 @@ TEST_F(MasterTest, FrameworksEndpointWithoutFrameworks)
   Try<PID<Master>> master = StartMaster(flags);
   ASSERT_SOME(master);
 
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "frameworks");
+  Future<Response> response = process::http::get(master.get(), "frameworks");
 
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
-  EXPECT_SOME_EQ(
-      "application/json",
-      response.get().headers.get("Content-Type"));
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3933,9 +3899,10 @@ TEST_F(MasterTest, FrameworksEndpointOneFramework)
 
   AWAIT_READY(registered);
 
-  Future<process::http::Response> response =
-    process::http::get(master.get(), "frameworks");
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(process::http::OK().status, response);
+  Future<Response> response = process::http::get(master.get(), "frameworks");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
 
   Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
   ASSERT_SOME(parse);
@@ -3948,6 +3915,174 @@ TEST_F(MasterTest, FrameworksEndpointOneFramework)
   driver.join();
 
   Shutdown();
+}
+
+
+// Test the max_completed_frameworks flag for master.
+TEST_F(MasterTest, MaxCompletedFrameworksFlag)
+{
+  // In order to verify that the proper amount of history
+  // is maintained, we launch exactly 2 frameworks when
+  // 'max_completed_frameworks' is set to 0, 1, and 2. This
+  // covers the cases of maintaining no history, some history
+  // less than the total number of frameworks launched, and
+  // history equal to the total number of frameworks launched.
+  const size_t totalFrameworks = 2;
+  const size_t maxFrameworksArray[] = {0, 1, 2};
+
+  foreach (const size_t maxFrameworks, maxFrameworksArray) {
+    master::Flags masterFlags = CreateMasterFlags();
+    masterFlags.max_completed_frameworks = maxFrameworks;
+
+    Try<PID<Master>> master = StartMaster(masterFlags);
+    ASSERT_SOME(master);
+
+    Try<PID<Slave>> slave = StartSlave();
+    ASSERT_SOME(slave);
+
+    for (size_t i = 0; i < totalFrameworks; i++) {
+      MockScheduler sched;
+      MesosSchedulerDriver schedDriver(
+          &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+      // Ignore any incoming resource offers to the scheduler.
+      EXPECT_CALL(sched, resourceOffers(_, _))
+        .WillRepeatedly(Return());
+
+      Future<Nothing> schedRegistered;
+      EXPECT_CALL(sched, registered(_, _, _))
+        .WillOnce(FutureSatisfy(&schedRegistered));
+
+      schedDriver.start();
+
+      AWAIT_READY(schedRegistered);
+
+      schedDriver.stop();
+      schedDriver.join();
+    }
+
+    Future<process::http::Response> response =
+      process::http::get(master.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response->body);
+    ASSERT_SOME(parse);
+    JSON::Object state = parse.get();
+
+    // The number of completed frameworks should match the limit.
+    Result<JSON::Array> completedFrameworks =
+      state.values["completed_frameworks"].as<JSON::Array>();
+
+    EXPECT_EQ(maxFrameworks, completedFrameworks->values.size());
+
+    Stop(slave.get());
+    Stop(master.get());
+  }
+}
+
+
+// Test the max_completed_tasks_per_framework flag for master.
+TEST_F(MasterTest, MaxCompletedTasksPerFrameworkFlag)
+{
+  // We verify that the proper amount of history is maintained
+  // by launching a single framework with exactly 2 tasks. We
+  // do this when setting `max_completed_tasks_per_framework`
+  // to 0, 1, and 2. This covers the cases of maintaining no
+  // history, some history less than the total number of tasks
+  // launched, and history equal to the total number of tasks
+  // launched.
+  const size_t totalTasksPerFramework = 2;
+  const size_t maxTasksPerFrameworkArray[] = {0, 1, 2};
+
+  foreach (const size_t maxTasksPerFramework, maxTasksPerFrameworkArray) {
+    master::Flags masterFlags = CreateMasterFlags();
+    masterFlags.max_completed_tasks_per_framework = maxTasksPerFramework;
+
+    Try<PID<Master>> master = StartMaster(masterFlags);
+    ASSERT_SOME(master);
+
+    MockExecutor exec(DEFAULT_EXECUTOR_ID);
+    EXPECT_CALL(exec, registered(_, _, _, _));
+
+    Try<PID<Slave>> slave = StartSlave(&exec);
+    ASSERT_SOME(slave);
+
+    MockScheduler sched;
+    MesosSchedulerDriver schedDriver(
+        &sched, DEFAULT_FRAMEWORK_INFO, master.get(), DEFAULT_CREDENTIAL);
+
+    Future<Nothing> schedRegistered;
+    EXPECT_CALL(sched, registered(_, _, _))
+      .WillOnce(FutureSatisfy(&schedRegistered));
+
+    schedDriver.start();
+
+    AWAIT_READY(schedRegistered);
+
+    for (size_t i = 0; i < totalTasksPerFramework; i++) {
+      Future<vector<Offer>> offers;
+      EXPECT_CALL(sched, resourceOffers(&schedDriver, _))
+        .WillOnce(FutureArg<1>(&offers))
+        .WillRepeatedly(Return());
+
+      AWAIT_READY(offers);
+      EXPECT_NE(0u, offers->size());
+      Offer offer = offers.get()[0];
+
+      TaskInfo task;
+      task.set_name("");
+      task.mutable_task_id()->set_value(stringify(i));
+      task.mutable_slave_id()->MergeFrom(offer.slave_id());
+      task.mutable_resources()->MergeFrom(offer.resources());
+      task.mutable_executor()->MergeFrom(DEFAULT_EXECUTOR_INFO);
+
+      // Make sure the task passes through its TASK_FINISHED
+      // state properly. We force this state change through
+      // the launchTask() callback on our MockExecutor.
+      Future<TaskStatus> statusFinished;
+      EXPECT_CALL(exec, launchTask(_, _))
+        .WillOnce(SendStatusUpdateFromTask(TASK_FINISHED));
+      EXPECT_CALL(sched, statusUpdate(_, _))
+        .WillOnce(FutureArg<1>(&statusFinished));
+
+      schedDriver.launchTasks(offer.id(), {task});
+
+      AWAIT_READY(statusFinished);
+      EXPECT_EQ(TASK_FINISHED, statusFinished->state());
+    }
+
+    EXPECT_CALL(exec, shutdown(_))
+      .Times(AtMost(1));
+
+    schedDriver.stop();
+    schedDriver.join();
+
+    Future<process::http::Response> response =
+      process::http::get(master.get(), "state");
+    AWAIT_READY(response);
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response->body);
+    ASSERT_SOME(parse);
+    JSON::Object state = parse.get();
+
+    // There should be only 1 completed framework.
+    Result<JSON::Array> completedFrameworks =
+      state.values["completed_frameworks"].as<JSON::Array>();
+
+    ASSERT_EQ(1u, completedFrameworks->values.size());
+
+    // The number of completed tasks in the completed framework
+    // should match the limit.
+    JSON::Object completedFramework =
+      completedFrameworks->values[0].as<JSON::Object>();
+    Result<JSON::Array> completedTasksPerFramework =
+      completedFramework.values["completed_tasks"].as<JSON::Array>();
+
+    EXPECT_EQ(maxTasksPerFramework, completedTasksPerFramework->values.size());
+
+    Stop(slave.get());
+    Stop(master.get());
+  }
 }
 
 } // namespace tests {

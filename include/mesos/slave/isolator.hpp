@@ -55,11 +55,10 @@ public:
   // will be run by the Launcher.
   // TODO(idownes): Any URIs or Environment in the CommandInfo will be
   // ignored; only the command value is used.
-  virtual process::Future<Option<ContainerPrepareInfo>> prepare(
+  virtual process::Future<Option<ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user) = 0;
+      const ContainerConfig& containerConfig) = 0;
 
   // Isolate the executor.
   virtual process::Future<Nothing> isolate(

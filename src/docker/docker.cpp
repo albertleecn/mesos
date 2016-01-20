@@ -93,7 +93,8 @@ static Future<Nothing> checkError(const string& cmd, const Subprocess& s)
     .then(lambda::bind(_checkError, cmd, s));
 }
 
-Try<Docker*> Docker::create(
+
+Try<Owned<Docker>> Docker::create(
     const string& path,
     const string& socket,
     bool validate)
@@ -102,7 +103,7 @@ Try<Docker*> Docker::create(
     return Error("Invalid Docker socket path: " + socket);
   }
 
-  Docker* docker = new Docker(path, socket);
+  Owned<Docker> docker(new Docker(path, socket));
   if (!validate) {
     return docker;
   }
@@ -113,7 +114,6 @@ Try<Docker*> Docker::create(
   Result<string> hierarchy = cgroups::hierarchy("cpu");
 
   if (hierarchy.isNone()) {
-    delete docker;
     return Error("Failed to find a mounted cgroups hierarchy "
                  "for the 'cpu' subsystem; you probably need "
                  "to mount cgroups manually");
@@ -122,7 +122,6 @@ Try<Docker*> Docker::create(
 
   Try<Nothing> validateVersion = docker->validateVersion(Version(1, 0, 0));
   if (validateVersion.isError()) {
-    delete docker;
     return Error(validateVersion.error());
   }
 
@@ -436,14 +435,14 @@ Future<Nothing> Docker::run(
     if (cpus.isSome()) {
       uint64_t cpuShare =
         std::max((uint64_t) (CPU_SHARES_PER_CPU * cpus.get()), MIN_CPU_SHARES);
-      argv.push_back("-c");
+      argv.push_back("--cpu-shares");
       argv.push_back(stringify(cpuShare));
     }
 
     Option<Bytes> mem = resources.get().mem();
     if (mem.isSome()) {
       Bytes memLimit = std::max(mem.get(), MIN_MEMORY);
-      argv.push_back("-m");
+      argv.push_back("--memory");
       argv.push_back(stringify(memLimit.bytes()));
     }
   }

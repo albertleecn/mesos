@@ -154,11 +154,10 @@ public:
       const std::list<mesos::slave::ContainerState>& states,
       const hashset<ContainerID>& orphans);
 
-  virtual process::Future<Option<mesos::slave::ContainerPrepareInfo>> prepare(
+  virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user);
+      const mesos::slave::ContainerConfig& containerConfig);
 
   virtual process::Future<Nothing> isolate(
       const ContainerID& containerId,

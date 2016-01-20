@@ -61,11 +61,10 @@ public:
     return Nothing();
   }
 
-  virtual process::Future<Option<mesos::slave::ContainerPrepareInfo>> prepare(
+  virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
       const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user)
+      const mesos::slave::ContainerConfig& containerConfig)
   {
     if (promises.contains(containerId)) {
       return process::Failure("Container " + stringify(containerId) +

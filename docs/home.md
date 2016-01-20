@@ -15,10 +15,10 @@ layout: documentation
 * [Upgrades](/documentation/latest/upgrades/) for upgrading a Mesos cluster.
 * [Configuration](/documentation/latest/configuration/) for command-line arguments.
 * [Containerizer](/documentation/latest/containerizer/) for containerizer overview and use cases.
-* [Containerizer Internals](/documentation/latest/containerizer-internals) for implementation details of containerizers.
-* [Mesos Containerizer](/documentation/latest/mesos-containerizer/) default containerizer, supports both Linux and POSIX systems.
-* [Docker Containerizer](/documentation/latest/docker-containerizer/) for launching a Docker image as a Task, or as an Executor.
-* [External Containerizer](/documentation/latest/external-containerizer/) for custom containerization implementations (deprecated).
+  * [Containerizer Internals](/documentation/latest/containerizer-internals) for implementation details of containerizers.
+  * [Mesos Containerizer](/documentation/latest/mesos-containerizer/) default containerizer, supports both Linux and POSIX systems.
+  * [Docker Containerizer](/documentation/latest/docker-containerizer/) for launching a Docker image as a Task, or as an Executor.
+  * [External Containerizer](/documentation/latest/external-containerizer/) for custom containerization implementations (deprecated).
 * [Roles](/documentation/latest/roles/)
 * [Framework Authentication](/documentation/latest/authentication/)
 * [Framework Authorization](/documentation/latest/authorization/)
@@ -40,7 +40,8 @@ layout: documentation
 * [Networking for Mesos-managed Containers](/documentation/latest/networking-for-mesos-managed-containers/)
 * [Oversubscription](/documentation/latest/oversubscription/) for how to configure Mesos to take advantage of unused resources to launch "best-effort" tasks.
 * [Persistent Volume](/documentation/latest/persistent-volume/) for how to allow tasks to access persistent storage resources.
-* [Reservation](/documentation/latest/reservation/) for how operators and frameworks can reserve resources for use by a role.
+* [Quota](/documentation/latest/quota/) for how to configure Mesos to provide guaranteed resource allocations for use by a role.
+* [Reservation](/documentation/latest/reservation/) for how operators and frameworks can reserve resources on individual agents for use by a role.
 
 ## Running Mesos Frameworks
 
@@ -50,6 +51,7 @@ layout: documentation
 ## Developing Mesos Frameworks
 
 * [Framework Development Guide](/documentation/latest/app-framework-development-guide/) describes how to build applications on top of Mesos.
+* [Designing Highly Available Mesos Frameworks](/documentation/latest/high-availability-framework-guide/)
 * [Reconciliation](/documentation/latest/reconciliation/) for ensuring a framework's state remains eventually consistent in the face of failures.
 * [Scheduler HTTP API](/documentation/latest/scheduler-http-api/) describes the new HTTP API for communication between schedulers and the Mesos master.
 * [Executor HTTP API](/documentation/latest/executor-http-api/) describes the new HTTP API for communication between executors and the Mesos agent.

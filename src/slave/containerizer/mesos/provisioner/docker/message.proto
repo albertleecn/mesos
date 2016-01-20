@@ -24,6 +24,7 @@ package mesos.internal.slave.docker;
  * and the leaf layer id last.
  */
 message Image {
+  // TODO(jieyu): Remove this in favor of using spec::ImageReference.
   message Name {
     optional string registry = 1;
     required string repository = 2;

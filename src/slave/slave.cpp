@@ -2406,8 +2406,9 @@ void Slave::subscribe(
 
   LOG(INFO) << "Received Subscribe request for HTTP executor " << *executor;
 
-  CHECK(state == DISCONNECTED || state == RUNNING ||
-        state == TERMINATING) << state;
+  CHECK(state == RECOVERING || state == DISCONNECTED ||
+        state == RUNNING || state == TERMINATING)
+    << state;
 
   if (state == TERMINATING) {
     LOG(WARNING) << "Shutting down executor " << *executor << " as the slave "
@@ -3561,6 +3562,7 @@ ExecutorInfo Slave::getExecutorInfo(
         executor.mutable_command()->add_arguments(
             "--sandbox_directory=" + flags.sandbox_directory);
 
+#ifndef __WINDOWS__
         // NOTE: if switch_user flag is false and the slave runs under
         // a non-root user, the task will be rejected by the Posix
         // filesystem isolator. Linux filesystem isolator requires slave
@@ -3578,6 +3580,7 @@ ExecutorInfo Slave::getExecutorInfo(
                 "--user=" + user.get());
           }
         }
+#endif // __WINDOWS__
       }
 
       executor.mutable_command()->set_value(path.get());
@@ -5168,6 +5171,7 @@ Executor* Framework::launchExecutor(
   containerId.set_value(UUID::random().toString());
 
   Option<string> user = None();
+#ifndef __WINDOWS__
   if (slave->flags.switch_user) {
     // The command (either in form of task or executor command) can
     // define a specific user to run as. If present, this precedes the
@@ -5183,6 +5187,7 @@ Executor* Framework::launchExecutor(
       user = executorInfo.command().user();
     }
   }
+#endif // __WINDOWS__
 
   // Create a directory for the executor.
   const string directory = paths::createExecutorDirectory(
@@ -5459,7 +5464,8 @@ Executor::Executor(
     containerId(_containerId),
     directory(_directory),
     checkpoint(_checkpoint),
-    pid(UPID()),
+    http(None()),
+    pid(None()),
     resources(_info.resources()),
     completedTasks(MAX_COMPLETED_TASKS_PER_EXECUTOR)
 {

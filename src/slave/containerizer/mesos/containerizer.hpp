@@ -34,6 +34,8 @@
 
 #include "slave/containerizer/mesos/launcher.hpp"
 
+#include "slave/containerizer/mesos/provisioner/provisioner.hpp"
+
 namespace mesos {
 namespace internal {
 namespace slave {
@@ -57,6 +59,7 @@ public:
       Fetcher* fetcher,
       const process::Owned<mesos::slave::ContainerLogger>& logger,
       const process::Owned<Launcher>& launcher,
+      const process::Owned<Provisioner>& provisioner,
       const std::vector<process::Owned<mesos::slave::Isolator>>& isolators);
 
   // Used for testing.
@@ -115,12 +118,14 @@ public:
       Fetcher* _fetcher,
       const process::Owned<mesos::slave::ContainerLogger>& _logger,
       const process::Owned<Launcher>& _launcher,
+      const process::Owned<Provisioner>& _provisioner,
       const std::vector<process::Owned<mesos::slave::Isolator>>& _isolators)
     : flags(_flags),
       local(_local),
       fetcher(_fetcher),
       logger(_logger),
       launcher(_launcher),
+      provisioner(_provisioner),
       isolators(_isolators) {}
 
   virtual ~MesosContainerizerProcess() {}
@@ -166,15 +171,24 @@ private:
       const std::list<mesos::slave::ContainerState>& recoverable,
       const hashset<ContainerID>& orphans);
 
+  process::Future<std::list<Nothing>> recoverIsolators(
+      const std::list<mesos::slave::ContainerState>& recoverable,
+      const hashset<ContainerID>& orphans);
+
+  process::Future<Nothing> recoverProvisioner(
+      const std::list<mesos::slave::ContainerState>& recoverable,
+      const hashset<ContainerID>& orphans);
+
   process::Future<Nothing> __recover(
       const std::list<mesos::slave::ContainerState>& recovered,
       const hashset<ContainerID>& orphans);
 
-  process::Future<std::list<Option<mesos::slave::ContainerPrepareInfo>>>
+  process::Future<std::list<Option<mesos::slave::ContainerLaunchInfo>>>
     prepare(const ContainerID& containerId,
             const ExecutorInfo& executorInfo,
             const std::string& directory,
-            const Option<std::string>& user);
+            const Option<std::string>& user,
+            const Option<ProvisionInfo>& provisionInfo);
 
   process::Future<Nothing> fetch(
       const ContainerID& containerId,
@@ -191,7 +205,17 @@ private:
       const SlaveID& slaveId,
       const process::PID<Slave>& slavePid,
       bool checkpoint,
-      const std::list<Option<mesos::slave::ContainerPrepareInfo>>& scripts);
+      const Option<ProvisionInfo>& provisionInfo);
+
+  process::Future<bool> __launch(
+      const ContainerID& containerId,
+      const ExecutorInfo& executorInfo,
+      const std::string& directory,
+      const Option<std::string>& user,
+      const SlaveID& slaveId,
+      const process::PID<Slave>& slavePid,
+      bool checkpoint,
+      const std::list<Option<mesos::slave::ContainerLaunchInfo>>& launchInfos);
 
   process::Future<bool> isolate(
       const ContainerID& containerId,
@@ -219,6 +243,13 @@ private:
       const process::Future<std::list<process::Future<Nothing>>>& cleanups,
       Option<std::string> message);
 
+  // Continues '____destroy()' once provisioner have completed destroy.
+  void _____destroy(
+      const ContainerID& containerId,
+      const process::Future<Option<int>>& status,
+      const process::Future<bool>& destroy,
+      Option<std::string> message);
+
   // Call back for when an isolator limits a container and impacts the
   // processes. This will trigger container destruction.
   void limited(
@@ -239,6 +270,7 @@ private:
   Fetcher* fetcher;
   process::Owned<mesos::slave::ContainerLogger> logger;
   const process::Owned<Launcher> launcher;
+  const process::Owned<Provisioner> provisioner;
   const std::vector<process::Owned<mesos::slave::Isolator>> isolators;
 
   enum State
@@ -263,8 +295,8 @@ private:
     // We keep track of the future that is waiting for all the
     // isolators' prepare futures, so that destroy will only start
     // calling cleanup after all isolators has finished preparing.
-    process::Future<std::list<Option<mesos::slave::ContainerPrepareInfo>>>
-      prepareInfos;
+    process::Future<std::list<Option<mesos::slave::ContainerLaunchInfo>>>
+      launchInfos;
 
     // We keep track of the future that is waiting for all the
     // isolators' isolate futures, so that destroy will only start

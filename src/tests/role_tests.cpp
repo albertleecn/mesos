@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <mesos/http.hpp>
+#include <mesos/roles.hpp>
 
 #include <process/pid.hpp>
 
@@ -36,6 +37,8 @@ using process::PID;
 
 using process::http::OK;
 using process::http::Response;
+
+using testing::AtMost;
 
 namespace mesos {
 namespace internal {
@@ -241,6 +244,9 @@ TEST_F(RoleTest, ImplicitRoleStaticReservation)
   driver.acceptOffers({offer.id()}, {LAUNCH({taskInfo})}, filters);
 
   AWAIT_READY(launchTask);
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
 
   driver.stop();
   driver.join();
@@ -471,8 +477,7 @@ TEST_F(RoleTest, EndpointImplicitRolesQuotas)
   Try<PID<Master>> master = StartMaster();
   ASSERT_SOME(master);
 
-  Resources quotaResources =
-    Resources::parse("cpus:1;mem:512", "non-existent-role").get();
+  Resources quotaResources = Resources::parse("cpus:1;mem:512").get();
   const RepeatedPtrField<Resource>& jsonQuotaResources =
     static_cast<const RepeatedPtrField<Resource>&>(quotaResources);
 
@@ -481,7 +486,7 @@ TEST_F(RoleTest, EndpointImplicitRolesQuotas)
   // currently be satisfied by the resources in the cluster (because
   // there are no slaves registered).
   string quotaRequestBody = strings::format(
-      "{\"resources\":%s,\"force\":true}",
+      "{\"role\":\"non-existent-role\",\"resources\":%s,\"force\":true}",
       JSON::protobuf(jsonQuotaResources)).get();
 
   Future<Response> quotaResponse = process::http::post(
@@ -574,6 +579,56 @@ TEST_F(RoleTest, EndpointImplicitRolesQuotas)
   EXPECT_EQ(expected.get(), parse.get());
 
   Shutdown();
+}
+
+
+// This tests the parse function of roles.
+TEST(RolesTest, Parsing)
+{
+  vector<string> v = {"abc", "edf", "hgi"};
+
+  Try<vector<string>> r1 = roles::parse("abc,edf,hgi");
+  EXPECT_SOME_EQ(v, r1);
+
+  Try<vector<string>> r2 = roles::parse("abc,edf,hgi,");
+  EXPECT_SOME_EQ(v, r2);
+
+  Try<vector<string>> r3 = roles::parse(",abc,edf,hgi");
+  EXPECT_SOME_EQ(v, r3);
+
+  Try<vector<string>> r4 = roles::parse("abc,,edf,hgi");
+  EXPECT_SOME_EQ(v, r4);
+
+  EXPECT_ERROR(roles::parse("foo,.,*"));
+}
+
+
+// This tests the validate functions of roles. Keep in mind that
+// roles::validate returns Option<Error>, so it will return None() when
+// validation succeeds, or Error() when validation fails.
+TEST(RolesTest, Validate)
+{
+  EXPECT_NONE(roles::validate("foo"));
+  EXPECT_NONE(roles::validate("123"));
+  EXPECT_NONE(roles::validate("foo_123"));
+  EXPECT_NONE(roles::validate("*"));
+  EXPECT_NONE(roles::validate("foo-bar"));
+  EXPECT_NONE(roles::validate("foo.bar"));
+  EXPECT_NONE(roles::validate("foo..bar"));
+
+  EXPECT_SOME(roles::validate(""));
+  EXPECT_SOME(roles::validate("."));
+  EXPECT_SOME(roles::validate(".."));
+  EXPECT_SOME(roles::validate("-foo"));
+  EXPECT_SOME(roles::validate("/"));
+  EXPECT_SOME(roles::validate("/foo"));
+  EXPECT_SOME(roles::validate("foo bar"));
+  EXPECT_SOME(roles::validate("foo\tbar"));
+  EXPECT_SOME(roles::validate("foo\nbar"));
+
+  EXPECT_NONE(roles::validate({"foo", "bar", "*"}));
+
+  EXPECT_SOME(roles::validate({"foo", ".", "*"}));
 }
 
 }  // namespace tests {

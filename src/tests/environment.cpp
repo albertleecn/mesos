@@ -104,23 +104,12 @@ public:
 };
 
 
-class RootFilter : public TestFilter
+class BenchmarkFilter : public TestFilter
 {
 public:
   bool disable(const ::testing::TestInfo* test) const
   {
-    Result<string> user = os::user();
-    CHECK_SOME(user);
-
-#ifdef __linux__
-    // On Linux non-privileged users are limited to 64k of locked
-    // memory so we cannot run the MemIsolatorTest.Usage.
-    if (matches(test, "MemIsolatorTest")) {
-      return user.get() != "root";
-    }
-#endif // __linux__
-
-    return matches(test, "ROOT_") && user.get() != "root";
+    return matches(test, "BENCHMARK_") && !flags.benchmark;
   }
 };
 
@@ -236,102 +225,6 @@ private:
 };
 
 
-class DockerFilter : public TestFilter
-{
-public:
-  DockerFilter()
-  {
-#ifdef __linux__
-    Try<Docker*> docker = Docker::create(flags.docker, flags.docker_socket);
-    if (docker.isError()) {
-      dockerError = docker.error();
-    } else {
-      delete docker.get();
-    }
-#else
-    dockerError = Error("Docker tests not supported on non-Linux systems");
-#endif // __linux__
-
-    if (dockerError.isSome()) {
-      std::cerr
-        << "-------------------------------------------------------------\n"
-        << "We cannot run any Docker tests because:\n"
-        << dockerError.get().message << "\n"
-        << "-------------------------------------------------------------"
-        << std::endl;
-    }
-  }
-
-  bool disable(const ::testing::TestInfo* test) const
-  {
-    return matches(test, "DOCKER_") && dockerError.isSome();
-  }
-
-private:
-  Option<Error> dockerError;
-};
-
-
-class PerfFilter : public TestFilter
-{
-public:
-  PerfFilter()
-  {
-#ifdef __linux__
-    perfError = os::system("perf help >&-") != 0;
-    if (perfError) {
-      std::cerr
-        << "-------------------------------------------------------------\n"
-        << "No 'perf' command found so no 'perf' tests will be run\n"
-        << "-------------------------------------------------------------"
-        << std::endl;
-    }
-#else
-    perfError = true;
-#endif // __linux__
-  }
-
-  bool disable(const ::testing::TestInfo* test) const
-  {
-    // Currently all tests that require 'perf' are part of the
-    // 'PerfTest' test fixture, hence we check for 'Perf' here.
-    //
-    // TODO(ijimenez): Replace all tests which require 'perf' with
-    // the prefix 'PERF_' to be more consistent with the filter
-    // naming we've done (i.e., ROOT_, CGROUPS_, etc).
-    return matches(test, "Perf") && perfError;
-  }
-
-private:
-  bool perfError;
-};
-
-
-class NetcatFilter : public TestFilter
-{
-public:
-  NetcatFilter()
-  {
-    netcatError = os::system("which nc") != 0;
-    if (netcatError) {
-      std::cerr
-        << "-------------------------------------------------------------\n"
-        << "No 'nc' command found so no tests depending on 'nc' will run\n"
-        << "-------------------------------------------------------------"
-        << std::endl;
-    }
-  }
-
-  bool disable(const ::testing::TestInfo* test) const
-  {
-    return matches(test, "NC_") && netcatError;
-  }
-
-private:
-  bool netcatError;
-};
-
-
 class CurlFilter : public TestFilter
 {
 public:
@@ -357,13 +250,90 @@ private:
 };
 
 
-class BenchmarkFilter : public TestFilter
+class DockerFilter : public TestFilter
 {
 public:
+  DockerFilter()
+  {
+#ifdef __linux__
+    Try<Owned<Docker>> docker = Docker::create(
+        flags.docker,
+        flags.docker_socket);
+
+    if (docker.isError()) {
+      dockerError = docker.error();
+    }
+#else
+    dockerError = Error("Docker tests not supported on non-Linux systems");
+#endif // __linux__
+
+    if (dockerError.isSome()) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "We cannot run any Docker tests because:\n"
+        << dockerError.get().message << "\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
+  }
+
   bool disable(const ::testing::TestInfo* test) const
   {
-    return matches(test, "BENCHMARK_") && !flags.benchmark;
+    return matches(test, "DOCKER_") && dockerError.isSome();
   }
+
+private:
+  Option<Error> dockerError;
+};
+
+
+class InternetFilter : public TestFilter
+{
+public:
+  InternetFilter()
+  {
+    error = os::system("ping -c 1 -W 1 google.com") != 0;
+    if (error) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "We cannot run any INTERNET tests because no internet access\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
+  }
+
+  bool disable(const ::testing::TestInfo* test) const
+  {
+    return matches(test, "INTERNET_") && error;
+  }
+
+private:
+  bool error;
+};
+
+
+class NetcatFilter : public TestFilter
+{
+public:
+  NetcatFilter()
+  {
+    netcatError = os::system("which nc") != 0;
+    if (netcatError) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "No 'nc' command found so no tests depending on 'nc' will run\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
+  }
+
+  bool disable(const ::testing::TestInfo* test) const
+  {
+    return matches(test, "NC_") && netcatError;
+  }
+
+private:
+  bool netcatError;
 };
 
 
@@ -402,6 +372,112 @@ public:
 
 private:
   Option<Error> portMappingError;
+};
+
+
+class PerfCPUCyclesFilter : public TestFilter
+{
+public:
+  PerfCPUCyclesFilter()
+  {
+#ifdef __linux__
+    bool perfUnavailable = os::system("perf help >&-") != 0;
+    if (perfUnavailable) {
+      perfError = Error(
+          "The 'perf' command wasn't found so tests using it\n"
+          "to sample the 'cpu-cycles' hardware event will not be run.");
+    } else {
+      bool cyclesUnavailable =
+        os::system("perf list hw | grep cpu-cycles >/dev/null") != 0;
+      if (cyclesUnavailable) {
+        perfError = Error(
+            "The 'cpu-cycles' hardware event of 'perf' is not available on\n"
+            "this platform so tests using it will not be run.\n"
+            "One likely reason is that the tests are run in a virtual\n"
+            "machine that does not provide CPU performance counters");
+      }
+    }
+#else
+    perfError = Error("Tests using 'perf' cannot be run on non-Linux systems");
+#endif // __linux__
+
+    if (perfError.isSome()) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << perfError.get().message << "\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
+  }
+
+  bool disable(const ::testing::TestInfo* test) const
+  {
+    // Disable all tests that try to sample 'cpu-cycles' events using 'perf'.
+    return (matches(test, "ROOT_CGROUPS_Perf") ||
+            matches(test, "ROOT_CGROUPS_Sample") ||
+            matches(test, "ROOT_CGROUPS_UserCgroup") ||
+            matches(test, "CGROUPS_ROOT_PerfRollForward") ||
+            matches(test, "ROOT_Sample")) && perfError.isSome();
+  }
+
+private:
+  Option<Error> perfError;
+};
+
+
+class PerfFilter : public TestFilter
+{
+public:
+  PerfFilter()
+  {
+#ifdef __linux__
+    perfError = os::system("perf help >&-") != 0;
+    if (perfError) {
+      std::cerr
+        << "-------------------------------------------------------------\n"
+        << "No 'perf' command found so no 'perf' tests will be run\n"
+        << "-------------------------------------------------------------"
+        << std::endl;
+    }
+#else
+    perfError = true;
+#endif // __linux__
+  }
+
+  bool disable(const ::testing::TestInfo* test) const
+  {
+    // Currently all tests that require 'perf' are part of the
+    // 'PerfTest' test fixture, hence we check for 'Perf' here.
+    //
+    // TODO(ijimenez): Replace all tests which require 'perf' with
+    // the prefix 'PERF_' to be more consistent with the filter
+    // naming we've done (i.e., ROOT_, CGROUPS_, etc).
+    return matches(test, "Perf") && perfError;
+  }
+
+private:
+  bool perfError;
+};
+
+
+class RootFilter : public TestFilter
+{
+public:
+  bool disable(const ::testing::TestInfo* test) const
+  {
+    Result<string> user = os::user();
+    CHECK_SOME(user);
+
+#ifdef __linux__
+    // On Linux non-privileged users are limited to 64k of locked
+    // memory so we cannot run the MemIsolatorTest.Usage.
+    if (matches(test, "MemIsolatorTest")) {
+      return user.get() != "root";
+    }
+#endif // __linux__
+
+    return matches(test, "ROOT_") && user.get() != "root";
+  }
 };
 
 
@@ -471,15 +547,17 @@ Environment::Environment(const Flags& _flags) : flags(_flags)
 
   vector<Owned<TestFilter> > filters;
 
-  filters.push_back(Owned<TestFilter>(new RootFilter()));
+  filters.push_back(Owned<TestFilter>(new BenchmarkFilter()));
   filters.push_back(Owned<TestFilter>(new CfsFilter()));
   filters.push_back(Owned<TestFilter>(new CgroupsFilter()));
-  filters.push_back(Owned<TestFilter>(new DockerFilter()));
-  filters.push_back(Owned<TestFilter>(new BenchmarkFilter()));
-  filters.push_back(Owned<TestFilter>(new NetworkIsolatorTestFilter()));
-  filters.push_back(Owned<TestFilter>(new PerfFilter()));
-  filters.push_back(Owned<TestFilter>(new NetcatFilter()));
   filters.push_back(Owned<TestFilter>(new CurlFilter()));
+  filters.push_back(Owned<TestFilter>(new DockerFilter()));
+  filters.push_back(Owned<TestFilter>(new InternetFilter()));
+  filters.push_back(Owned<TestFilter>(new NetcatFilter()));
+  filters.push_back(Owned<TestFilter>(new NetworkIsolatorTestFilter()));
+  filters.push_back(Owned<TestFilter>(new PerfCPUCyclesFilter()));
+  filters.push_back(Owned<TestFilter>(new PerfFilter()));
+  filters.push_back(Owned<TestFilter>(new RootFilter()));
 
   // Construct the filter string to handle system or platform specific tests.
   ::testing::UnitTest* unitTest = ::testing::UnitTest::GetInstance();

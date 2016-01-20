@@ -25,6 +25,7 @@
 #include <sstream>
 
 #include <mesos/module.hpp>
+#include <mesos/roles.hpp>
 
 #include <mesos/authentication/authenticator.hpp>
 
@@ -292,6 +293,7 @@ Master::Master(
     contender(_contender),
     detector(_detector),
     authorizer(_authorizer),
+    frameworks(flags),
     authenticator(None()),
     metrics(new Metrics(*this)),
     electedTime(None())
@@ -628,11 +630,18 @@ void Master::initialize()
                  << "removed in the future. See the Mesos 0.27 upgrade "
                  << "notes for more information";
 
-    vector<string> tokens = strings::tokenize(flags.roles.get(), ",");
+    Try<vector<string>> roles = roles::parse(flags.roles.get());
+    if (roles.isError()) {
+      EXIT(1) << "Failed to parse roles: " << roles.error();
+    }
 
     roleWhitelist = hashset<string>();
-    foreach (const std::string& role, tokens) {
+    foreach (const std::string& role, roles.get()) {
       roleWhitelist.get().insert(role);
+    }
+
+    if (roleWhitelist.get().size() < roles.get().size()) {
+      LOG(WARNING) << "Duplicate values in '--roles': " << flags.roles.get();
     }
 
     // The default role is always allowed.
@@ -2062,7 +2071,7 @@ void Master::_subscribe(
     FrameworkInfo frameworkInfo_ = frameworkInfo;
     frameworkInfo_.mutable_id()->CopyFrom(newFrameworkId());
 
-    Framework* framework = new Framework(this, frameworkInfo_, http);
+    Framework* framework = new Framework(this, flags, frameworkInfo_, http);
 
     addFramework(framework);
 
@@ -2149,7 +2158,7 @@ void Master::_subscribe(
     // elected Mesos master to which either an existing scheduler or a
     // failed-over one is connecting. Create a Framework object and add
     // any tasks it has that have been reported by reconnecting slaves.
-    Framework* framework = new Framework(this, frameworkInfo, http);
+    Framework* framework = new Framework(this, flags, frameworkInfo, http);
 
     // Add active tasks and executors to the framework.
     foreachvalue (Slave* slave, slaves.registered) {
@@ -2361,7 +2370,7 @@ void Master::_subscribe(
     FrameworkInfo frameworkInfo_ = frameworkInfo;
     frameworkInfo_.mutable_id()->CopyFrom(newFrameworkId());
 
-    Framework* framework = new Framework(this, frameworkInfo_, from);
+    Framework* framework = new Framework(this, flags, frameworkInfo_, from);
 
     addFramework(framework);
 
@@ -2469,7 +2478,7 @@ void Master::_subscribe(
     // elected Mesos master to which either an existing scheduler or a
     // failed-over one is connecting. Create a Framework object and add
     // any tasks it has that have been reported by reconnecting slaves.
-    Framework* framework = new Framework(this, frameworkInfo, from);
+    Framework* framework = new Framework(this, flags, frameworkInfo, from);
 
     // Add active tasks and executors to the framework.
     foreachvalue (Slave* slave, slaves.registered) {
