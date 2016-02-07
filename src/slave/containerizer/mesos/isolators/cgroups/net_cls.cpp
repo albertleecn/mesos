@@ -15,12 +15,14 @@
 // limitations under the License.
 
 #include <list>
+#include <sstream>
 #include <vector>
 
 #include <process/defer.hpp>
 #include <process/future.hpp>
 #include <process/pid.hpp>
 
+#include <stout/numify.hpp>
 #include <stout/os.hpp>
 #include <stout/path.hpp>
 #include <stout/try.hpp>
@@ -31,9 +33,11 @@
 
 #include "slave/containerizer/mesos/isolators/cgroups/net_cls.hpp"
 
+using std::bitset;
 using std::list;
 using std::set;
 using std::string;
+using std::stringstream;
 using std::vector;
 
 using process::Failure;
@@ -51,14 +55,149 @@ namespace mesos {
 namespace internal {
 namespace slave {
 
-CgroupsNetClsIsolatorProcess::CgroupsNetClsIsolatorProcess(
-    const Flags& _flags,
-    const string& _hierarchy)
-  : flags(_flags),
-    hierarchy(_hierarchy) {}
+static string hexify(uint32_t handle)
+{
+  stringstream stream;
+  stream << std::hex << handle;
+  return "0x" + stream.str();
+};
 
 
-CgroupsNetClsIsolatorProcess::~CgroupsNetClsIsolatorProcess() {}
+// For each primary handle, we maintain a bitmap to keep track of
+// allocated and free secondary handles. To find a free secondary
+// handle we scan the bitmap from the first element till we find a
+// free handle.
+//
+// TODO(asridharan): Currently the bitmap search is naive, since the
+// assumption is that the number of containers running on an agent
+// will be O(100). If we start facing any performance issues, we might
+// want to revisit this logic and make the search for a free secondary
+// handle more efficient. One idea for making it more efficient would
+// be to store the last allocated handle and start the search at this
+// position and performing a circular search on the bitmap.
+Try<NetClsHandle> NetClsHandleManager::alloc(
+    const Option<uint16_t>& _primary)
+{
+  uint16_t primary;
+  if (_primary.isNone()) {
+    // Currently, the interval set `primaries` is assumed to be a
+    // singleton. The singleton is used as the primary handle for all
+    // net_cls operations in this isolator. In the future, the
+    // `cgroups/net_cls` isolator will take in ranges instead of a
+    // singleton value. At that point we might not need a default
+    // primary handle.
+    primary = (*primaries.begin()).lower();
+  } else {
+    primary = _primary.get();
+  }
+
+  if (!primaries.contains(primary)) {
+    return Error(
+        "Primary handle " + hexify(primary) +
+        " not present in primary handle range");
+  }
+
+  if (!used.contains(primary)) {
+    // NOTE: We never use 0 as a secondary handle, so mark it used.
+    used[primary].set(0);
+  } else if (used[primary].all()) {
+    return Error(
+        "No free handles remaining for primary handle " +
+        hexify(primary));
+  }
+
+  // At least one secondary handle is free for this primary handle.
+  for (size_t count = 1; count < used[primary].size(); count++) {
+    if (!used[primary].test(count)) {
+      used[primary].set(count);
+
+      return NetClsHandle(primary, count);
+    }
+  }
+
+  UNREACHABLE();
+}
+
+
+Try<Nothing> NetClsHandleManager::reserve(const NetClsHandle& handle)
+{
+  if (!primaries.contains(handle.primary)) {
+    return Error(
+        "Primary handle " + hexify(handle.primary) +
+        " not present in primary handle range");
+  }
+
+  if (handle.secondary == 0) {
+    return Error("0 is an invalid secondary handle");
+  }
+
+  if (!used.contains(handle.primary)) {
+    // NOTE: We never use 0 as a secondary handle, so mark it used.
+    used[handle.primary].set(0);
+  }
+
+  if (used[handle.primary].test(handle.secondary)) {
+    return Error(
+        "The secondary handle " + hexify(handle.secondary) +
+        ", for the primary handle " + hexify(handle.primary) +
+        " has already been allocated");
+  }
+
+  used[handle.primary].set(handle.secondary);
+
+  return Nothing();
+}
+
+
+Try<Nothing> NetClsHandleManager::free(const NetClsHandle& handle)
+{
+  if (!primaries.contains(handle.primary)) {
+    return Error(
+        "Primary handle " + hexify(handle.primary) +
+        " not present in primary handle range");
+  }
+
+  if (handle.secondary == 0) {
+    return Error("0 is an invalid secondary handle");
+  }
+
+  if (!used.contains(handle.primary)) {
+    return Error(
+        "No secondary handles have been allocated from this primary handle " +
+        hexify(handle.primary));
+  }
+
+  if (!used[handle.primary].test(handle.secondary)) {
+    return Error(
+        "Secondary handle " + hexify(handle.secondary) +
+        " is not allocated for primary handle " +
+        hexify(handle.primary));
+  }
+
+  used[handle.primary].reset(handle.secondary);
+
+  return Nothing();
+}
+
+
+Try<bool> NetClsHandleManager::isUsed(const NetClsHandle& handle)
+{
+  if (!primaries.contains(handle.primary)) {
+    return Error(
+        "Primary handle: " + hexify(handle.primary) +
+        " is not within the primary's range");
+  }
+
+  if (handle.secondary == 0) {
+    return Error("Secondary handle is 0");
+  }
+
+  if (!used.contains(handle.primary)) {
+    return false;
+  }
+
+  return used[handle.primary].test(handle.secondary);
+}
 
 
 Try<Isolator*> CgroupsNetClsIsolatorProcess::create(const Flags& flags)
@@ -94,11 +233,48 @@ Try<Isolator*> CgroupsNetClsIsolatorProcess::create(const Flags& flags)
     }
   }
 
+  IntervalSet<uint16_t> primaries;
+
+  if (flags.cgroups_net_cls_primary_handle.isSome()) {
+    Try<uint16_t> primary = numify<uint16_t>(
+        flags.cgroups_net_cls_primary_handle.get());
+
+    if (primary.isError()) {
+      return Error(
+          "Failed to parse the primary handle '" +
+          flags.cgroups_net_cls_primary_handle.get() +
+          "' set in flag --cgroups_net_cls_primary_handle");
+    }
+
+    primaries +=
+      (Bound<uint16_t>::closed(primary.get()),
+       Bound<uint16_t>::closed(primary.get()));
+  }
+
   process::Owned<MesosIsolatorProcess> process(
-      new CgroupsNetClsIsolatorProcess(flags, hierarchy.get()));
+      new CgroupsNetClsIsolatorProcess(
+          flags,
+          hierarchy.get(),
+          primaries));
 
   return new MesosIsolator(process);
 }
+
+
+CgroupsNetClsIsolatorProcess::CgroupsNetClsIsolatorProcess(
+    const Flags& _flags,
+    const string& _hierarchy,
+    const IntervalSet<uint16_t>& primaries)
+  : flags(_flags),
+    hierarchy(_hierarchy)
+{
+  if (!primaries.empty()) {
+    handleManager = NetClsHandleManager(primaries);
+  }
+}
+
+
+CgroupsNetClsIsolatorProcess::~CgroupsNetClsIsolatorProcess() {}
 
 
 Future<Nothing> CgroupsNetClsIsolatorProcess::recover(
@@ -112,8 +288,8 @@ Future<Nothing> CgroupsNetClsIsolatorProcess::recover(
     Try<bool> exists = cgroups::exists(hierarchy, cgroup);
     if (exists.isError()) {
       infos.clear();
-      return Failure("Failed to check cgroup for container '" +
-                     stringify(containerId) + "'");
+      return Failure(
+          "Failed to check cgroup for container " + stringify(containerId));
     }
 
     if (!exists.get()) {
@@ -125,7 +301,20 @@ Future<Nothing> CgroupsNetClsIsolatorProcess::recover(
       continue;
     }
 
-    infos.emplace(containerId, Info(cgroup));
+    // Read the net_cls handle.
+    Result<NetClsHandle> handle = recoverHandle(hierarchy, cgroup);
+    if (handle.isError()) {
+      infos.clear();
+      return Failure(
+          "Failed to recover the net_cls handle for " +
+          stringify(containerId) + ": " + handle.error());
+    }
+
+    if (handle.isSome()) {
+      infos.emplace(containerId, Info(cgroup, handle.get()));
+    } else {
+      infos.emplace(containerId, Info(cgroup));
+    }
   }
 
   // Remove orphan cgroups.
@@ -150,16 +339,30 @@ Future<Nothing> CgroupsNetClsIsolatorProcess::recover(
       continue;
     }
 
+    Result<NetClsHandle> handle = recoverHandle(hierarchy, cgroup);
+    if (handle.isError()) {
+      infos.clear();
+      return Failure(
+          "Failed to recover the net_cls handle for orphan container " +
+          stringify(containerId) + ": " + handle.error());
+    }
+
     // Known orphan cgroups will be destroyed by the containerizer
     // using the normal cleanup path. See MESOS-2367 for details.
     if (orphans.contains(containerId)) {
-      infos.emplace(containerId, Info(cgroup));
+      if (handle.isSome()) {
+        infos.emplace(containerId, Info(cgroup, handle.get()));
+      } else {
+        infos.emplace(containerId, Info(cgroup));
+      }
+
       continue;
     }
 
     LOG(INFO) << "Removing unknown orphaned cgroup '" << cgroup << "'";
 
     // We don't wait on the destroy as we don't want to block recovery.
+    // TODO(jieyu): Release the handle after destroy has been done.
     cgroups::destroy(hierarchy, cgroup, cgroups::DESTROY_TIMEOUT);
   }
 
@@ -167,10 +370,11 @@ Future<Nothing> CgroupsNetClsIsolatorProcess::recover(
 }
 
 
-// TODO(asridharan): Currently we haven't decided on the entity who will
-// allocate the net_cls handles, or the interfaces through which the net_cls
-// handles will be exposed to network isolators and frameworks. Once the
-// management entity is decided we might need to revisit this implementation.
+// TODO(asridharan): Currently we haven't decided on the entity who
+// will allocate the net_cls handles, or the interfaces through which
+// the net_cls handles will be exposed to network isolators and
+// frameworks. Once the management entity is decided we might need to
+// revisit this implementation.
 Future<Nothing> CgroupsNetClsIsolatorProcess::update(
     const ContainerID& containerId,
     const Resources& resources)
@@ -179,9 +383,9 @@ Future<Nothing> CgroupsNetClsIsolatorProcess::update(
 }
 
 
-// The net_cls handles aren't treated as resources. Further, they have fixed
-// values and hence don't have a notion of usage. We are therefore returning an
-// empty 'ResourceStatistics' object.
+// The net_cls handles aren't treated as resources. Further, they have
+// fixed values and hence don't have a notion of usage. We are
+// therefore returning an empty 'ResourceStatistics' object.
 Future<ResourceStatistics> CgroupsNetClsIsolatorProcess::usage(
     const ContainerID& containerId)
 {
@@ -203,18 +407,18 @@ Future<Option<ContainerLaunchInfo>> CgroupsNetClsIsolatorProcess::prepare(
 
   // Use this info to create the cgroup, but do not insert it into
   // infos till the cgroup has been created successfully.
-  Info info(path::join(flags.cgroups_root, containerId.value()));
+  const string cgroup = path::join(flags.cgroups_root, containerId.value());
 
   // Create a cgroup for this container.
-  Try<bool> exists = cgroups::exists(hierarchy, info.cgroup);
+  Try<bool> exists = cgroups::exists(hierarchy, cgroup);
   if (exists.isError()) {
-    return Failure("Failed to check if the cgroup already exists: " +
-                   exists.error());
+    return Failure(
+        "Failed to check if the cgroup already exists: " + exists.error());
   } else if (exists.get()) {
     return Failure("The cgroup already exists");
   }
 
-  Try<Nothing> create = cgroups::create(hierarchy, info.cgroup);
+  Try<Nothing> create = cgroups::create(hierarchy, cgroup);
   if (create.isError()) {
     return Failure("Failed to create the cgroup: " + create.error());
   }
@@ -225,16 +429,27 @@ Future<Option<ContainerLaunchInfo>> CgroupsNetClsIsolatorProcess::prepare(
   if (containerConfig.has_user()) {
     Try<Nothing> chown = os::chown(
         containerConfig.user(),
-        path::join(hierarchy, info.cgroup),
+        path::join(hierarchy, cgroup),
         false);
 
     if (chown.isError()) {
-      return Failure("Failed to change ownership of cgroup hierarchy: " +
-                     chown.error());
+      return Failure(
+          "Failed to change ownership of cgroup hierarchy: " + chown.error());
     }
   }
 
-  infos.emplace(containerId, info);
+  if (handleManager.isSome()) {
+    Try<NetClsHandle> handle = handleManager->alloc();
+    if (handle.isError()) {
+      return Failure (
+          "Failed to allocate a net_cls handle: " +
+          handle.error());
+    }
+
+    infos.emplace(containerId, Info(cgroup, handle.get()));
+  } else {
+    infos.emplace(containerId, Info(cgroup));
+  }
 
   return update(containerId, containerConfig.executor_info().resources())
     .then([]() -> Future<Option<ContainerLaunchInfo>> {
@@ -255,19 +470,34 @@ Future<Nothing> CgroupsNetClsIsolatorProcess::isolate(
 
   Try<Nothing> assign = cgroups::assign(hierarchy, info.cgroup, pid);
   if (assign.isError()) {
-    return Failure("Failed to assign container '" +
-                   stringify(containerId) + "' to its own cgroup '" +
-                   path::join(hierarchy, info.cgroup) +
-                   "': " + assign.error());
+    return Failure(
+        "Failed to assign container " + stringify(containerId) +
+        " to its own cgroup '" + path::join(hierarchy, info.cgroup) +
+        "': " + assign.error());
+  }
+
+  // If info.handle is not specified, the assumption is that the
+  // operator is responsible for assigning the net_cls handles.
+  if (info.handle.isSome()) {
+    Try<Nothing> write = cgroups::net_cls::classid(
+        hierarchy,
+        info.cgroup,
+        info.handle->get());
+
+    if (write.isError()) {
+      return Failure(
+          "Failed to assign a net_cls handle to the cgroup: " +
+          write.error());
+    }
   }
 
   return Nothing();
 }
 
 
-// The net_cls handles are labels and hence there are no limitations associated
-// with them . This function would therefore always return a pending future
-// since the limitation is never reached.
+// The net_cls handles are labels and hence there are no limitations
+// associated with them. This function would therefore always return
+// a pending future since the limitation is never reached.
 Future<ContainerLimitation> CgroupsNetClsIsolatorProcess::watch(
     const ContainerID& containerId)
 {
@@ -292,10 +522,58 @@ Future<Nothing> CgroupsNetClsIsolatorProcess::cleanup(
   const Info& info = infos.at(containerId);
 
   return cgroups::destroy(hierarchy, info.cgroup, cgroups::DESTROY_TIMEOUT)
-    .then(defer(PID<CgroupsNetClsIsolatorProcess>(this), [=]() {
-      infos.erase(containerId);
-      return Nothing();
-    }));
+    .then(defer(PID<CgroupsNetClsIsolatorProcess>(this),
+                &CgroupsNetClsIsolatorProcess::_cleanup,
+                containerId));
+}
+
+
+Future<Nothing> CgroupsNetClsIsolatorProcess::_cleanup(
+    const ContainerID& containerId)
+{
+  if (!infos.contains(containerId)) {
+    return Nothing();
+  }
+
+  const Info& info = infos.at(containerId);
+
+  if (info.handle.isSome()) {
+    Try<Nothing> free = handleManager->free(info.handle.get());
+    if (free.isError()) {
+      return Failure("Could not free the net_cls handle: " + free.error());
+    }
+  }
+
+  infos.erase(containerId);
+
+  return Nothing();
+}
+
+
+Result<NetClsHandle> CgroupsNetClsIsolatorProcess::recoverHandle(
+    const std::string& hierarchy,
+    const std::string& cgroup)
+{
+  Try<uint32_t> classid = cgroups::net_cls::classid(hierarchy, cgroup);
+  if (classid.isError()) {
+    return Error("Failed to read 'net_cls.classid': " + classid.error());
+  }
+
+  if (classid.get() == 0) {
+    return None();
+  }
+
+  NetClsHandle handle(classid.get());
+
+  // Mark the handle as used in handle manager.
+  if (handleManager.isSome()) {
+    Try<Nothing> reserve = handleManager->reserve(handle);
+    if (reserve.isError()) {
+      return Error("Failed to reserve the handle: " + reserve.error());
+    }
+  }
+
+  return handle;
 }
 
 } // namespace slave {

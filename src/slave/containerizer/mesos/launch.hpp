@@ -35,7 +35,8 @@ public:
     Flags();
 
     Option<JSON::Object> command;
-    Option<std::string> directory;
+    Option<std::string> sandbox;
+    Option<std::string> working_directory;
     Option<std::string> rootfs;
     Option<std::string> user;
     Option<int> pipe_read;

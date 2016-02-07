@@ -39,6 +39,7 @@
 
 #include <stout/duration.hpp>
 #include <stout/flags.hpp>
+#include <stout/json.hpp>
 #include <stout/lambda.hpp>
 #include <stout/option.hpp>
 #include <stout/os.hpp>
@@ -81,7 +82,9 @@ public:
       const Option<char**>& override,
       const string& _healthCheckDir,
       const Option<string>& _sandboxDirectory,
-      const Option<string>& _user)
+      const Option<string>& _workingDirectory,
+      const Option<string>& _user,
+      const Option<string>& _taskCommand)
     : state(REGISTERING),
       launched(false),
       killed(false),
@@ -93,7 +96,9 @@ public:
       healthCheckDir(_healthCheckDir),
       override(override),
       sandboxDirectory(_sandboxDirectory),
-      user(_user) {}
+      workingDirectory(_workingDirectory),
+      user(_user),
+      taskCommand(_taskCommand) {}
 
   virtual ~CommandExecutorProcess() {}
 
@@ -137,26 +142,46 @@ public:
       return;
     }
 
-    // Skip sanity checks for TaskInfo if override is provided since
-    // the executor will be running the override command.
-    if (override.isNone()) {
-      // Sanity checks.
-      CHECK(task.has_command()) << "Expecting task " << task.task_id()
-                                << " to have a command!";
+    // Determine the command to launch the task.
+    CommandInfo command;
 
+    if (taskCommand.isSome()) {
+      // Get CommandInfo from a JSON string.
+      Try<JSON::Object> object = JSON::parse<JSON::Object>(taskCommand.get());
+      if (object.isError()) {
+        cerr << "Failed to parse JSON: " << object.error() << endl;
+        abort();
+      }
+
+      Try<CommandInfo> parse = protobuf::parse<CommandInfo>(object.get());
+      if (parse.isError()) {
+        cerr << "Failed to parse protobuf: " << parse.error() << endl;
+        abort();
+      }
+
+      command = parse.get();
+    } else if (task.has_command()) {
+      command = task.command();
+    } else {
+      CHECK_SOME(override)
+        << "Expecting task '" << task.task_id()
+        << "' to have a command!";
+    }
+
+    if (override.isNone()) {
       // TODO(jieyu): For now, we just fail the executor if the task's
       // CommandInfo is not valid. The framework will receive
       // TASK_FAILED for the task, and will most likely find out the
       // cause with some debugging. This is a temporary solution. A more
       // correct solution is to perform this validation at master side.
-      if (task.command().shell()) {
-        CHECK(task.command().has_value())
-          << "Shell command of task " << task.task_id()
-          << " is not specified!";
+      if (command.shell()) {
+        CHECK(command.has_value())
+          << "Shell command of task '" << task.task_id()
+          << "' is not specified!";
       } else {
-        CHECK(task.command().has_value())
-          << "Executable of task " << task.task_id()
-          << " is not specified!";
+        CHECK(command.has_value())
+          << "Executable of task '" << task.task_id()
+          << "' is not specified!";
       }
     }
 
@@ -190,9 +215,12 @@ public:
       // If 'sandbox_diretory' is specified, that means the user
       // task specifies a root filesystem, and that root filesystem has
       // already been prepared at COMMAND_EXECUTOR_ROOTFS_CONTAINER_PATH.
-      // The command executor is reponsible for mounting the sandbox
+      // The command executor is responsible for mounting the sandbox
       // into the root filesystem, chrooting into it and changing the
       // user before exec-ing the user process.
+      //
+      // TODO(gilbert): Consider a better way to detect if a root
+      // filesystem is specified for the command task.
 #ifdef __linux__
       Result<string> user = os::user();
       if (user.isError()) {
@@ -241,31 +269,31 @@ public:
     }
 
     // Prepare the argv before fork as it's not async signal safe.
-    char **argv = new char*[task.command().arguments().size() + 1];
-    for (int i = 0; i < task.command().arguments().size(); i++) {
-      argv[i] = (char*) task.command().arguments(i).c_str();
+    char **argv = new char*[command.arguments().size() + 1];
+    for (int i = 0; i < command.arguments().size(); i++) {
+      argv[i] = (char*) command.arguments(i).c_str();
     }
-    argv[task.command().arguments().size()] = NULL;
+    argv[command.arguments().size()] = NULL;
 
     // Prepare the command log message.
-    string command;
+    string commandString;
     if (override.isSome()) {
       char** argv = override.get();
       // argv is guaranteed to be NULL terminated and we rely on
       // that fact to print command to be executed.
       for (int i = 0; argv[i] != NULL; i++) {
-        command += string(argv[i]) + " ";
+        commandString += string(argv[i]) + " ";
       }
-    } else if (task.command().shell()) {
-      command = "sh -c '" + task.command().value() + "'";
+    } else if (command.shell()) {
+      commandString = "sh -c '" + command.value() + "'";
     } else {
-      command =
-        "[" + task.command().value() + ", " +
-        strings::join(", ", task.command().arguments()) + "]";
+      commandString =
+        "[" + command.value() + ", " +
+        strings::join(", ", command.arguments()) + "]";
     }
 
     if ((pid = fork()) == -1) {
-      cerr << "Failed to fork to run " << command << ": "
+      cerr << "Failed to fork to run " << commandString << ": "
            << os::strerror(errno) << endl;
       abort();
     }
@@ -322,10 +350,19 @@ public:
           abort();
         }
 
-        Try<Nothing> chdir = os::chdir(sandboxDirectory.get());
+        // Determine the current working directory for the executor.
+        string cwd;
+        if (workingDirectory.isSome()) {
+          cwd = workingDirectory.get();
+        } else {
+          CHECK_SOME(sandboxDirectory);
+          cwd = sandboxDirectory.get();
+        }
+
+        Try<Nothing> chdir = os::chdir(cwd);
         if (chdir.isError()) {
-          cerr << "Failed to change directory to sandbox dir '"
-               << sandboxDirectory.get() << "': " << chdir.error();
+          cerr << "Failed to chdir into current working directory '"
+               << cwd << "': " << chdir.error() << endl;
           abort();
         }
 
@@ -344,19 +381,19 @@ public:
       }
 
 
-      cout << command << endl;
+      cout << commandString << endl;
 
       // The child has successfully setsid, now run the command.
       if (override.isNone()) {
-        if (task.command().shell()) {
+        if (command.shell()) {
           execlp(
               "sh",
               "sh",
               "-c",
-              task.command().value().c_str(),
+              command.value().c_str(),
               (char*) NULL);
         } else {
-          execvp(task.command().value().c_str(), argv);
+          execvp(command.value().c_str(), argv);
         }
       } else {
         char** argv = override.get();
@@ -623,7 +660,9 @@ private:
   string healthCheckDir;
   Option<char**> override;
   Option<string> sandboxDirectory;
+  Option<string> workingDirectory;
   Option<string> user;
+  Option<string> taskCommand;
 };
 
 
@@ -634,10 +673,17 @@ public:
       const Option<char**>& override,
       const string& healthCheckDir,
       const Option<string>& sandboxDirectory,
-      const Option<string>& user)
+      const Option<string>& workingDirectory,
+      const Option<string>& user,
+      const Option<string>& taskCommand)
   {
-    process = new CommandExecutorProcess(
-        override, healthCheckDir, sandboxDirectory, user);
+    process = new CommandExecutorProcess(override,
+                                         healthCheckDir,
+                                         sandboxDirectory,
+                                         workingDirectory,
+                                         user,
+                                         taskCommand);
+
     spawn(process);
   }
 
@@ -715,6 +761,8 @@ class Flags : public flags::FlagsBase
 public:
   Flags()
   {
+    // TODO(gilbert): Deprecate the 'override' flag since no one is
+    // using it, and it may cause confusing with 'task_command' flag.
     add(&override,
         "override",
         "Whether to override the command the executor should run when the\n"
@@ -723,16 +771,25 @@ public:
         "subsequent 'argv' to be used with 'execvp'",
         false);
 
-    // The following flags are only applicable when a rootfs is provisioned
-    // for this command.
+    // The following flags are only applicable when a rootfs is
+    // provisioned for this command.
     add(&sandbox_directory,
         "sandbox_directory",
         "The absolute path for the directory in the container where the\n"
         "sandbox is mapped to");
 
+    add(&working_directory,
+        "working_directory",
+        "The working directory for the task in the container.");
+
     add(&user,
         "user",
         "The user that the task should be running as.");
+
+    add(&task_command,
+        "task_command",
+        "If specified, this is the overrided command for launching the\n"
+        "task (instead of the command from TaskInfo).");
 
     // TODO(nnielsen): Add 'prefix' option to enable replacing
     // 'sh -c' with user specified wrapper.
@@ -740,7 +797,9 @@ public:
 
   bool override;
   Option<string> sandbox_directory;
+  Option<string> working_directory;
   Option<string> user;
+  Option<string> task_command;
 };
 
 
@@ -774,11 +833,20 @@ int main(int argc, char** argv)
   }
 
   const Option<string> envPath = os::getenv("MESOS_LAUNCHER_DIR");
-  string path =
-    envPath.isSome() ? envPath.get()
-                     : os::realpath(Path(argv[0]).dirname()).get();
+
+  string path = envPath.isSome()
+    ? envPath.get()
+    : os::realpath(Path(argv[0]).dirname()).get();
+
   mesos::internal::CommandExecutor executor(
-      override, path, flags.sandbox_directory, flags.user);
+      override,
+      path,
+      flags.sandbox_directory,
+      flags.working_directory,
+      flags.user,
+      flags.task_command);
+
   mesos::MesosExecutorDriver driver(&executor);
+
   return driver.run() == mesos::DRIVER_STOPPED ? EXIT_SUCCESS : EXIT_FAILURE;
 }

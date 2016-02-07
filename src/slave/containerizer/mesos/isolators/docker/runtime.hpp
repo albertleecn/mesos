@@ -65,6 +65,13 @@ private:
       const ContainerID& containerId,
       const mesos::slave::ContainerConfig& containerConfig);
 
+  Result<CommandInfo> getExecutorLaunchCommand(
+      const ContainerID& containerId,
+      const mesos::slave::ContainerConfig& containerConfig);
+
+  Option<std::string> getWorkingDirectory(
+      const mesos::slave::ContainerConfig& containerConfig);
+
   const Flags flags;
 };
 

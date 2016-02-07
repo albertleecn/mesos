@@ -924,6 +924,13 @@ Future<bool> MesosContainerizerProcess::__launch(
   // Determine the root filesystem for the container. Only one
   // isolator should return the container root filesystem.
   Option<string> rootfs;
+
+  // Determine the executor launch command for the container.
+  // At most one command can be returned from docker runtime
+  // isolator if a docker image is specifed.
+  Option<CommandInfo> executorLaunchCommand;
+  Option<string> workingDirectory;
+
   foreach (const Option<ContainerLaunchInfo>& launchInfo, launchInfos) {
     if (launchInfo.isSome() && launchInfo->has_rootfs()) {
       if (rootfs.isSome()) {
@@ -948,6 +955,23 @@ Future<bool> MesosContainerizerProcess::__launch(
         }
 
         environment[name] = value;
+      }
+    }
+
+    if (launchInfo.isSome() && launchInfo->has_command()) {
+      if (executorLaunchCommand.isSome()) {
+        return Failure("At most one command can be returned from isolators");
+      } else {
+        executorLaunchCommand = launchInfo->command();
+      }
+    }
+
+    if (launchInfo.isSome() && launchInfo->has_working_directory()) {
+      if (workingDirectory.isSome()) {
+        return Failure(
+            "At most one working directory can be returned from isolators");
+      } else {
+        workingDirectory = launchInfo->working_directory();
       }
     }
   }
@@ -1001,18 +1025,33 @@ Future<bool> MesosContainerizerProcess::__launch(
     // Use a pipe to block the child until it's been isolated.
     int pipes[2];
 
-    // We assume this should not fail under reasonable conditions so we
-    // use CHECK.
+    // We assume this should not fail under reasonable conditions so
+    // we use CHECK.
     CHECK(pipe(pipes) == 0);
 
     // Prepare the flags to pass to the launch process.
     MesosContainerizerLaunch::Flags launchFlags;
 
-    launchFlags.command = JSON::protobuf(executorInfo.command());
+    launchFlags.command = executorLaunchCommand.isSome()
+      ? JSON::protobuf(executorLaunchCommand.get())
+      : JSON::protobuf(executorInfo.command());
 
-    launchFlags.directory = rootfs.isSome()
+    launchFlags.sandbox = rootfs.isSome()
       ? flags.sandbox_directory
       : directory;
+
+    // NOTE: If the executor shares the host filesystem, we should not
+    // allow them to 'cd' into an arbitrary directory because that'll
+    // create security issues.
+    if (rootfs.isNone() && workingDirectory.isSome()) {
+      LOG(WARNING) << "Ignore working directory '" << workingDirectory.get()
+                   << "' specified in container launch info for container "
+                   << containerId << " since the executor is using the "
+                   << "host filesystem";
+    } else {
+      launchFlags.working_directory = workingDirectory;
+    }
+
     launchFlags.rootfs = rootfs;
     launchFlags.user = user;
     launchFlags.pipe_read = pipes[0];
