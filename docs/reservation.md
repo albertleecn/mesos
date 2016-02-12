@@ -41,7 +41,7 @@ __NOTE:__ This feature is supported for backwards compatibility.
 
 As mentioned in [Static Reservation](#static-reservation-since-0140), specifying
 the reserved resources via the `--resources` flag makes the reservation static.
-This is, statically reserved resources cannot be reserved for another role nor
+That is, statically reserved resources cannot be reserved for another role nor
 be unreserved. Dynamic Reservation enables operators and authorized frameworks
 to reserve and unreserve resources post slave-startup.
 
@@ -53,22 +53,38 @@ see the [authorization documentation](authorization.md).
 
 * `Offer::Operation::Reserve` and `Offer::Operation::Unreserve` messages are
   available for __frameworks__ to send back via the `acceptOffers` API as a
-  response to a resource offer.
+  response to a resource offer. Each framework may only reserve resources for
+  its own role.
 * `/reserve` and `/unreserve` HTTP endpoints allow __operators__ to manage
-  dynamic reservations through the master. NOTE: As of 0.27.0, these endpoints
-  cannot be used when HTTP authentication is disabled due to the current
-  implementation. This will change in version 0.28.0.
+  dynamic reservations through the master. Operators may currently reserve
+  resources for any role, although this
+  [will change](https://issues.apache.org/jira/browse/MESOS-4591). NOTE: As of
+  0.27.0, these endpoints cannot be used when HTTP authentication is disabled
+  due to the current implementation. This will change in version 0.28.0.
 
 In the following sections, we will walk through examples of each of the
 interfaces described above.
 
-Note that if two dynamic reservations are made for resources at a single slave,
-the reservations will be combined by adding together the resources reserved by
-each request. Similarly, "partial" unreserve operations are allowed: an
-unreserve operation can release only some of the resources at a slave that have
-been reserved for a given role. In this case, the unreserved resources will be
-subtracted from the previous reservation, and any remaining resources will still
-be reserved.
+If two dynamic reservations are made for the same role at a single slave (using
+the same labels, if any; see below), the reservations will be combined by adding
+together the resources reserved by each request. This will result in a single
+reserved resource at the slave. Similarly, "partial" unreserve operations are
+allowed: an unreserve operation can release some but not all of the resources at
+a slave that have been reserved for a role. In this case, the unreserved
+resources will be subtracted from the previous reservation and any remaining
+resources will still be reserved.
+
+
+### Labeled Reservations
+
+Dynamic reservations can optionally include a list of _labels_, which are
+arbitrary key-value pairs. Labels can be used to associate arbitrary metadata
+with a resource reservation. For example, frameworks can use labels to identify
+the intended purpose for a portion of the resources that have been reserved at a
+given slave. Note that two reservations with different labels will not be
+combined together into a single reservation, even if the reservations are at the
+same slave and use the same role.
+
 
 ### Framework Scheduler API
 
@@ -241,8 +257,10 @@ operators and administrative tools.
 Suppose we want to reserve 8 CPUs and 4096 MB of RAM for the `ads` role on a
 slave with id=`<slave_id>` (note that it is up to the user to find the ID of the
 slave that hosts the desired resources; the request will fail if sufficient
-unreserved resources cannot be found on the slave). We send an HTTP POST request
-to the `/reserve` HTTP endpoint like so:
+unreserved resources cannot be found on the slave). In this case, the principal
+included in the request will be the principal of an authorized operator rather
+than the principal of a framework registered under the `ads` role. We send an
+HTTP POST request to the `/reserve` HTTP endpoint like so:
 
         $ curl -i \
           -u <operator_principal>:<password> \
