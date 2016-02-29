@@ -1,4 +1,5 @@
 ---
+title: Apache Mesos - Logging
 layout: documentation
 ---
 
@@ -24,8 +25,8 @@ library, see the [configuration documentation](configuration.md).
 Google logging options that are not explicitly mentioned there can be
 configured via environment variables.
 
-Both Master and Agent also expose an HTTP endpoint which temporarily toggles
-verbose logging:
+Both Master and Agent also expose a [/logging/toggle](endpoints/logging/toggle.md)
+HTTP endpoint which temporarily toggles verbose logging:
 
 ```
 POST <ip:port>/logging/toggle?level=[1|2|3]&duration=VALUE

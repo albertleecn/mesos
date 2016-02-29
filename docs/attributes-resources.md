@@ -1,10 +1,11 @@
 ---
+title: Apache Mesos - Attributes and Resources
 layout: documentation
 ---
 
 # Mesos Attributes & Resources
 
-The Mesos system has two basic methods to describe the slaves that comprise a cluster.  One of these is managed by the Mesos master, the other is simply passed onwards to the frameworks using the cluster.
+Mesos has two basic methods to describe the slaves that comprise a cluster.  One of these is managed by the Mesos master, the other is simply passed onwards to the frameworks using the cluster.
 
 ## Types
 
@@ -28,7 +29,7 @@ The following are the definitions of these types:
 
 ## Attributes
 
-Attributes are key-value pairs (where value is optional) that Mesos passes along when it sends offers to frameworks. An attribute value supports 3 different *types*: scalar, range or text.
+Attributes are key-value pairs (where value is optional) that Mesos passes along when it sends offers to frameworks. An attribute value supports three different *types*: scalar, range or text.
 
     attributes : attribute ( ";" attribute )*
 
@@ -36,7 +37,9 @@ Attributes are key-value pairs (where value is optional) that Mesos passes along
 
 ## Resources
 
-The Mesos system can manage 3 different *types* of resources: scalars, ranges, and sets.  These are used to represent the different resources that a Mesos slave has to offer.  For example, a scalar resource type could be used to represent the amount of memory on a slave.  Resources can be specified either with a JSON array or a semicolon-delimited string of key:value pairs.  If, after examining the examples below, you have questions about the format of the JSON, inspect the `Resource` protobuf message definition in `include/mesos/mesos.proto`.
+Mesos can manage three different *types* of resources: scalars, ranges, and sets.  These are used to represent the different resources that a Mesos slave has to offer.  For example, a scalar resource type could be used to represent the amount of memory on a slave. Scalar resources are represented using floating point numbers to allow fractional values to be specified (e.g., "1.5 CPUs"). Mesos only supports three decimal digits of precision for scalar resources (e.g., reserving "1.5123 CPUs" is considered equivalent to reserving "1.512 CPUs").
+
+Resources can be specified either with a JSON array or a semicolon-delimited string of key-value pairs.  If, after examining the examples below, you have questions about the format of the JSON, inspect the `Resource` protobuf message definition in `include/mesos/mesos.proto`.
 
 As JSON:
 
@@ -75,7 +78,7 @@ As JSON:
       ...
     ]
 
-As a list of key:value pairs:
+As a list of key-value pairs:
 
     resources : resource ( ";" resource )*
 

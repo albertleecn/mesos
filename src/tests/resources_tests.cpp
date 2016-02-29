@@ -793,19 +793,19 @@ TEST(ResourcesTest, PrintingExtendedAttributes)
   // Standard resource.
   ostringstream stream;
   stream << disk;
-  EXPECT_EQ(stream.str(), "disk(*):1");
+  EXPECT_EQ("disk(*):1", stream.str());
 
   // Standard resource with role (statically reserved).
   stream.str("");
   disk.set_role("alice");
   stream << disk;
-  EXPECT_EQ(stream.str(), "disk(alice):1");
+  EXPECT_EQ("disk(alice):1", stream.str());
 
   // Standard revocable resource.
   stream.str("");
   disk.mutable_revocable();
   stream << disk;
-  EXPECT_EQ(stream.str(), "disk(alice){REV}:1");
+  EXPECT_EQ("disk(alice){REV}:1", stream.str());
   disk.clear_revocable();
 
   // Disk resource with persistent volume.
@@ -813,13 +813,13 @@ TEST(ResourcesTest, PrintingExtendedAttributes)
   disk.mutable_disk()->mutable_persistence()->set_id("hadoop");
   disk.mutable_disk()->mutable_volume()->set_container_path("/data");
   stream << disk;
-  EXPECT_EQ(stream.str(), "disk(alice)[hadoop:/data]:1");
+  EXPECT_EQ("disk(alice)[hadoop:/data]:1", stream.str());
 
   // Ensure {REV} comes after [disk].
   stream.str("");
   disk.mutable_revocable();
   stream << disk;
-  EXPECT_EQ(stream.str(), "disk(alice)[hadoop:/data]{REV}:1");
+  EXPECT_EQ("disk(alice)[hadoop:/data]{REV}:1", stream.str());
   disk.clear_revocable();
 
   // Disk resource with host path.
@@ -827,13 +827,13 @@ TEST(ResourcesTest, PrintingExtendedAttributes)
   disk.mutable_disk()->mutable_volume()->set_host_path("/hdfs");
   disk.mutable_disk()->mutable_volume()->set_mode(Volume::RW);
   stream << disk;
-  EXPECT_EQ(stream.str(), "disk(alice)[hadoop:/hdfs:/data:rw]:1");
+  EXPECT_EQ("disk(alice)[hadoop:/hdfs:/data:rw]:1", stream.str());
 
   // Disk resource with host path and dynamic reservation without labels.
   stream.str("");
   disk.mutable_reservation()->set_principal("hdfs-p");
   stream << disk;
-  EXPECT_EQ(stream.str(), "disk(alice, hdfs-p)[hadoop:/hdfs:/data:rw]:1");
+  EXPECT_EQ("disk(alice, hdfs-p)[hadoop:/hdfs:/data:rw]:1", stream.str());
 
   // Disk resource with host path and dynamic reservation with labels.
   stream.str("");
@@ -841,8 +841,39 @@ TEST(ResourcesTest, PrintingExtendedAttributes)
   labels->add_labels()->CopyFrom(createLabel("foo", "bar"));
   labels->add_labels()->CopyFrom(createLabel("foo"));
   stream << disk;
-  EXPECT_EQ(stream.str(),
-            "disk(alice, hdfs-p, {foo: bar, foo})[hadoop:/hdfs:/data:rw]:1");
+  EXPECT_EQ("disk(alice, hdfs-p, {foo: bar, foo})[hadoop:/hdfs:/data:rw]:1",
+            stream.str());
+}
+
+
+TEST(ResourcesTest, PrintingScalarPrecision)
+{
+  Resource scalar;
+  scalar.set_name("cpus");
+  scalar.set_type(Value::SCALAR);
+  scalar.mutable_scalar()->set_value(1.234);
+
+  // Three decimal digits of precision are supported.
+  ostringstream stream;
+  stream << scalar;
+  EXPECT_EQ("cpus(*):1.234", stream.str());
+
+  // Additional precision is discarded via rounding.
+  scalar.mutable_scalar()->set_value(1.2345);
+  stream.str("");
+  stream << scalar;
+  EXPECT_EQ("cpus(*):1.235", stream.str());
+
+  scalar.mutable_scalar()->set_value(1.2344);
+  stream.str("");
+  stream << scalar;
+  EXPECT_EQ("cpus(*):1.234", stream.str());
+
+  // Trailing zeroes are not printed.
+  scalar.mutable_scalar()->set_value(1.1);
+  stream.str("");
+  stream << scalar;
+  EXPECT_EQ("cpus(*):1.1", stream.str());
 }
 
 
@@ -1541,15 +1572,79 @@ TEST(ResourcesTest, Types)
 }
 
 
-// NOTE: This is disabled due to MESOS-1187.
-TEST(ResourcesTest, DISABLED_Precision)
+TEST(ResourcesTest, PrecisionSimple)
 {
-  Resources cpu = Resources::parse("cpus:0.1").get();
+  Resources cpu = Resources::parse("cpus:1.001").get();
+  EXPECT_EQ(1.001, cpu.cpus().get());
 
   Resources r1 = cpu + cpu + cpu - cpu - cpu;
-  Resources r2 = cpu;
 
-  EXPECT_EQ(r1, r2);
+  EXPECT_EQ(cpu, r1);
+  EXPECT_EQ(1.001, r1.cpus().get());
+
+  Resources zero = Resources::parse("cpus:0").get();
+
+  EXPECT_EQ(cpu, cpu - zero);
+  EXPECT_EQ(cpu, cpu + zero);
+}
+
+
+TEST(ResourcesTest, PrecisionManyOps)
+{
+  Resources start = Resources::parse("cpus:1.001").get();
+  Resources current = start;
+  Resources next;
+
+  for (int i = 0; i < 2500; i++) {
+    next = current + current + current - current - current;
+    EXPECT_EQ(1.001, next.cpus().get());
+    EXPECT_EQ(current, next);
+    EXPECT_EQ(start, next);
+    current = next;
+  }
+}
+
+
+TEST(ResourcesTest, PrecisionManyConsecutiveOps)
+{
+  Resources start = Resources::parse("cpus:1.001").get();
+  Resources increment = start;
+  Resources current = start;
+
+  for (int i = 0; i < 100000; i++) {
+    current += increment;
+  }
+
+  for (int i = 0; i < 100000; i++) {
+    current -= increment;
+  }
+
+  EXPECT_EQ(start, current);
+}
+
+
+TEST(ResourcesTest, PrecisionLost)
+{
+  Resources cpu = Resources::parse("cpus:1.5011").get();
+  EXPECT_EQ(1.501, cpu.cpus().get());
+
+  Resources r1 = cpu + cpu + cpu - cpu - cpu;
+
+  EXPECT_EQ(cpu, r1);
+  EXPECT_EQ(1.501, r1.cpus().get());
+}
+
+
+TEST(ResourcesTest, PrecisionRounding)
+{
+  // Round up (away from zero) at the half-way point.
+  Resources cpu = Resources::parse("cpus:1.5015").get();
+  EXPECT_EQ(1.502, cpu.cpus().get());
+
+  Resources r1 = cpu + cpu + cpu - cpu - cpu;
+
+  EXPECT_EQ(cpu, r1);
+  EXPECT_EQ(1.502, r1.cpus().get());
 }
 
 

@@ -106,7 +106,6 @@ set(AUTHORIZER_SRC
 set(COMMON_SRC
   common/attributes.cpp
   common/command_utils.cpp
-  common/date_utils.cpp
   common/http.cpp
   common/protobuf_utils.cpp
   common/resources.cpp
@@ -137,6 +136,7 @@ set(LINUX_SRC
   slave/containerizer/mesos/isolators/filesystem/shared.cpp
   slave/containerizer/mesos/isolators/namespaces/pid.cpp
   slave/containerizer/mesos/provisioner/backends/bind.cpp
+  slave/containerizer/mesos/provisioner/backends/overlay.cpp
   )
 
 set(DOCKER_SRC
@@ -209,10 +209,15 @@ set(SCHEDULER_SRC
 set(AGENT_SRC
   ${AGENT_SRC}
   slave/constants.cpp
+  slave/http.cpp
   slave/metrics.cpp
   slave/paths.cpp
+  slave/qos_controller.cpp
+  slave/qos_controllers/noop.cpp
+  slave/resource_estimators/noop.cpp
   slave/state.cpp
-  slave/resource_estimator.cpp
+  slave/status_update_manager.cpp
+  slave/validation.cpp
   )
 
 if (NOT WIN32)
@@ -220,13 +225,8 @@ if (NOT WIN32)
     ${AGENT_SRC}
     slave/gc.cpp
     slave/flags.cpp
-    slave/http.cpp
     slave/monitor.cpp
-    slave/qos_controller.cpp
-    slave/qos_controllers/noop.cpp
     slave/slave.cpp
-    slave/status_update_manager.cpp
-    slave/validation.cpp
     slave/containerizer/composing.cpp
     slave/containerizer/composing.hpp
     slave/containerizer/containerizer.cpp
@@ -255,7 +255,6 @@ if (NOT WIN32)
     slave/containerizer/mesos/provisioner/docker/puller.cpp
     slave/containerizer/mesos/provisioner/docker/registry_puller.cpp
     slave/containerizer/mesos/provisioner/docker/store.cpp
-    slave/resource_estimators/noop.cpp
     )
 endif (NOT WIN32)
 

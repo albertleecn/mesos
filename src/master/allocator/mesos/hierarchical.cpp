@@ -883,9 +883,7 @@ void HierarchicalAllocatorProcess::recoverResources(
   // which it might not in the event that we dispatched Master::offer
   // before we received Allocator::removeSlave).
   if (slaves.contains(slaveId)) {
-    // NOTE: We cannot add the following CHECK due to the double
-    // precision errors. See MESOS-1187 for details.
-    // CHECK(slaves[slaveId].allocated.contains(resources));
+    CHECK(slaves[slaveId].allocated.contains(resources));
 
     slaves[slaveId].allocated -= resources;
 
@@ -1065,6 +1063,11 @@ void HierarchicalAllocatorProcess::updateWeights(
     CHECK(weightInfo.has_role());
     weights[weightInfo.role()] = weightInfo.weight();
 
+    // The allocator only needs to rebalance if there is a framework
+    // registered with this role. The roleSorter contains only roles
+    // for registered frameworks, but quotaRoleSorter contains any role
+    // with quota set, regardless of whether any frameworks are registered
+    // with that role.
     if (quotas.contains(weightInfo.role())) {
       quotaRoleSorter->update(weightInfo.role(), weightInfo.weight());
     }

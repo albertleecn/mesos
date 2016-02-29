@@ -38,11 +38,6 @@
 #include <stout/protobuf.hpp>
 #include <stout/strings.hpp>
 
-// TODO(bernd-mesos): Remove this interim dependency in the course of
-// solving MESOS-3997.
-#include <master/constants.hpp>
-
-
 using std::map;
 using std::ostream;
 using std::set;
@@ -50,9 +45,6 @@ using std::string;
 using std::vector;
 
 using google::protobuf::RepeatedPtrField;
-
-using mesos::internal::master::MIN_CPUS;
-
 
 namespace mesos {
 namespace v1 {
@@ -65,7 +57,11 @@ bool operator==(
     const Resource::ReservationInfo& left,
     const Resource::ReservationInfo& right)
 {
-  if (left.principal() != right.principal()) {
+  if (left.has_principal() != right.has_principal()) {
+    return false;
+  }
+
+  if (left.has_principal() && left.principal() != right.principal()) {
     return false;
   }
 
@@ -1093,17 +1089,10 @@ Try<Resources> Resources::apply(const Offer::Operation& operation) const
   // TODO(jieyu): Currently, we only check known resource types like
   // cpus, mem, disk, ports, etc. We should generalize this.
 
-  CHECK(result.mem() == mem() &&
-        result.disk() == disk() &&
-        result.ports() == ports());
-
-  // This comparison is an interim fix - see MESOS-3552. We are making it
-  // reasonably certain that almost equal values are correctly regarded as
-  // equal. Small, usually acceptable, differences occur due to numeric
-  // operations such as unparsing and then parsing a floating point number.
-  // TODO(bernd-mesos): Of course, they might also accumulate, so we need a
-  // better long-term fix. Apply one here when solving MESOS-3997.
-  CHECK_NEAR(result.cpus().getOrElse(0.0), cpus().getOrElse(0.0), MIN_CPUS);
+  CHECK(result.cpus() == cpus());
+  CHECK(result.mem() == mem());
+  CHECK(result.disk() == disk());
+  CHECK(result.ports() == ports());
 
   return result;
 }
@@ -1520,7 +1509,9 @@ ostream& operator<<(ostream& stream, const Resource& resource)
   if (resource.has_reservation()) {
     const Resource::ReservationInfo& reservation = resource.reservation();
 
-    stream << ", " << reservation.principal();
+    if (reservation.has_principal()) {
+      stream << ", " << reservation.principal();
+    }
 
     if (reservation.has_labels()) {
       stream << ", " << reservation.labels();

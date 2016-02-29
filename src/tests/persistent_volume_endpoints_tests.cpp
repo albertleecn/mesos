@@ -720,10 +720,10 @@ TEST_F(PersistentVolumeEndpointsTest, GoodCreateAndDestroyACL)
   ACLs acls;
 
   // This ACL asserts that the principal of `DEFAULT_CREDENTIAL`
-  // can create ANY volumes.
+  // can create volumes for any role.
   mesos::ACL::CreateVolume* create = acls.add_create_volumes();
   create->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
-  create->mutable_volume_types()->set_type(mesos::ACL::Entity::ANY);
+  create->mutable_roles()->set_type(mesos::ACL::Entity::ANY);
 
   // This ACL asserts that the principal of `DEFAULT_CREDENTIAL`
   // can destroy volumes that it created.
@@ -831,6 +831,72 @@ TEST_F(PersistentVolumeEndpointsTest, GoodCreateAndDestroyACL)
 }
 
 
+// Tests that correct setup of `CreateVolume` ACLs allows an operator to perform
+// volume creation operations successfully when volumes for multiple roles are
+// included in the request.
+TEST_F(PersistentVolumeEndpointsTest, GoodCreateACLMultipleRoles)
+{
+  const string AUTHORIZED_ROLE_1 = "potato_head";
+  const string AUTHORIZED_ROLE_2 = "gumby";
+
+  TestAllocator<> allocator;
+  ACLs acls;
+
+  // This ACL asserts that the principal of `DEFAULT_CREDENTIAL`
+  // can create volumes for any role.
+  mesos::ACL::CreateVolume* create = acls.add_create_volumes();
+  create->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  create->mutable_roles()->set_type(mesos::ACL::Entity::ANY);
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
+
+  Try<PID<Master>> master = StartMaster(&allocator, masterFlags);
+  ASSERT_SOME(master);
+
+  // Create a slave. Disk resources are statically reserved to allow the
+  // creation of a persistent volume.
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources =
+    "cpus:1;mem:512;disk(" + AUTHORIZED_ROLE_1 +"):1024;disk(" +
+    AUTHORIZED_ROLE_2 + "):1024";
+
+  Future<SlaveID> slaveId;
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+    .WillOnce(DoAll(InvokeAddSlave(&allocator), FutureArg<0>(&slaveId)));
+
+  Try<PID<Slave>> slave = StartSlave(slaveFlags);
+  ASSERT_SOME(slave);
+
+  Resources volume1 = createPersistentVolume(
+      Megabytes(64),
+      AUTHORIZED_ROLE_1,
+      "id1",
+      "path1");
+
+  Resources volume2 = createPersistentVolume(
+      Megabytes(64),
+      AUTHORIZED_ROLE_2,
+      "id2",
+      "path2");
+
+  Resources volumesMultipleRoles = volume1 + volume2;
+
+  Future<Response> response = process::http::post(
+      master.get(),
+      "create-volumes",
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+      createRequestBody(slaveId.get(), "volumes", volumesMultipleRoles));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+
+  Shutdown();
+}
+
+
 // This tests that an ACL prohibiting the creation of a persistent volume by a
 // principal will lead to a properly failed request.
 TEST_F(PersistentVolumeEndpointsTest, BadCreateAndDestroyACL)
@@ -846,13 +912,13 @@ TEST_F(PersistentVolumeEndpointsTest, BadCreateAndDestroyACL)
   mesos::ACL::CreateVolume* cannotCreate = acls.add_create_volumes();
   cannotCreate->mutable_principals()->add_values(
       DEFAULT_CREDENTIAL.principal());
-  cannotCreate->mutable_volume_types()->set_type(mesos::ACL::Entity::NONE);
+  cannotCreate->mutable_roles()->set_type(mesos::ACL::Entity::NONE);
 
   // This ACL asserts that the principal of `DEFAULT_CREDENTIAL_2`
-  // can create persistent volumes.
+  // can create persistent volumes for any role.
   mesos::ACL::CreateVolume* canCreate = acls.add_create_volumes();
   canCreate->mutable_principals()->add_values(DEFAULT_CREDENTIAL_2.principal());
-  canCreate->mutable_volume_types()->set_type(mesos::ACL::Entity::ANY);
+  canCreate->mutable_roles()->set_type(mesos::ACL::Entity::ANY);
 
   // This ACL asserts that the principal of `DEFAULT_CREDENTIAL`
   // cannot destroy persistent volumes.
@@ -949,6 +1015,78 @@ TEST_F(PersistentVolumeEndpointsTest, BadCreateAndDestroyACL)
 }
 
 
+// Tests that a request to create volumes will fail if volumes for multiple
+// roles are included in the request and the operator is not authorized to
+// create volumes for one of them.
+TEST_F(PersistentVolumeEndpointsTest, BadCreateACLMultipleRoles)
+{
+  const string AUTHORIZED_ROLE = "potato_head";
+  const string UNAUTHORIZED_ROLE = "gumby";
+
+  TestAllocator<> allocator;
+  ACLs acls;
+
+  // This ACL asserts that the principal of `DEFAULT_CREDENTIAL`
+  // can create volumes for `AUTHORIZED_ROLE`.
+  mesos::ACL::CreateVolume* create1 = acls.add_create_volumes();
+  create1->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  create1->mutable_roles()->add_values(AUTHORIZED_ROLE);
+
+  // This ACL asserts that the principal of `DEFAULT_CREDENTIAL`
+  // cannot create volumes for any other role.
+  mesos::ACL::CreateVolume* create2 = acls.add_create_volumes();
+  create2->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+  create2->mutable_roles()->set_type(mesos::ACL::Entity::NONE);
+
+  // Create a master.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.acls = acls;
+
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
+
+  Try<PID<Master>> master = StartMaster(&allocator, masterFlags);
+  ASSERT_SOME(master);
+
+  // Create a slave. Disk resources are statically reserved to allow the
+  // creation of a persistent volume.
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources =
+    "cpus:1;mem:512;disk(" + AUTHORIZED_ROLE +"):1024;disk(" +
+    UNAUTHORIZED_ROLE + "):1024";
+
+  Future<SlaveID> slaveId;
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+    .WillOnce(DoAll(InvokeAddSlave(&allocator), FutureArg<0>(&slaveId)));
+
+  Try<PID<Slave>> slave = StartSlave(slaveFlags);
+  ASSERT_SOME(slave);
+
+  Resources volume1 = createPersistentVolume(
+      Megabytes(64),
+      AUTHORIZED_ROLE,
+      "id1",
+      "path1");
+
+  Resources volume2 = createPersistentVolume(
+      Megabytes(64),
+      UNAUTHORIZED_ROLE,
+      "id2",
+      "path2");
+
+  Resources volumesMultipleRoles = volume1 + volume2;
+
+  Future<Response> response = process::http::post(
+      master.get(),
+      "create-volumes",
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+      createRequestBody(slaveId.get(), "volumes", volumesMultipleRoles));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
+
+  Shutdown();
+}
+
+
 // This tests that a request containing a credential which is not listed in the
 // master for authentication will not succeed, even if a good authorization ACL
 // is provided.
@@ -967,10 +1105,10 @@ TEST_F(PersistentVolumeEndpointsTest, GoodCreateAndDestroyACLBadCredential)
   ACLs acls;
 
   // This ACL asserts that the principal of `failedCredential`
-  // can create persistent volumes.
+  // can create persistent volumes for any role.
   mesos::ACL::CreateVolume* failedCreate = acls.add_create_volumes();
   failedCreate->mutable_principals()->add_values(failedCredential.principal());
-  failedCreate->mutable_volume_types()->set_type(mesos::ACL::Entity::ANY);
+  failedCreate->mutable_roles()->set_type(mesos::ACL::Entity::ANY);
 
   // This ACL asserts that the principal of `failedCredential`
   // can destroy persistent volumes.
@@ -980,10 +1118,10 @@ TEST_F(PersistentVolumeEndpointsTest, GoodCreateAndDestroyACLBadCredential)
       mesos::ACL::Entity::ANY);
 
   // This ACL asserts that the principal of `DEFAULT_CREDENTIAL`
-  // can create persistent volumes.
+  // can create persistent volumes for any role.
   mesos::ACL::CreateVolume* canCreate = acls.add_create_volumes();
   canCreate->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
-  canCreate->mutable_volume_types()->set_type(mesos::ACL::Entity::ANY);
+  canCreate->mutable_roles()->set_type(mesos::ACL::Entity::ANY);
 
   // Create a master.
   master::Flags masterFlags = CreateMasterFlags();
@@ -1248,6 +1386,319 @@ TEST_F(PersistentVolumeEndpointsTest, NoVolumes)
     process::http::post(master.get(), "destroy-volumes", headers, body);
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(BadRequest().status, response);
+
+  Shutdown();
+}
+
+
+// This tests that dynamic reservations and persistent volumes are
+// reflected in the "/slaves" master endpoint.
+TEST_F(PersistentVolumeEndpointsTest, SlavesEndpointFullResources)
+{
+  TestAllocator<> allocator;
+
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
+
+  Try<PID<Master>> master = StartMaster(&allocator);
+  ASSERT_SOME(master);
+
+  Future<SlaveID> slaveId;
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+    .WillOnce(DoAll(InvokeAddSlave(&allocator),
+                    FutureArg<0>(&slaveId)));
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  slaveFlags.resources = "cpus:4;mem:2048;disk:4096";
+
+  Try<PID<Slave>> slave = StartSlave(slaveFlags);
+  ASSERT_SOME(slave);
+
+  FrameworkInfo frameworkInfo = createFrameworkInfo();
+
+  Resources unreserved = Resources::parse("cpus:1;mem:512;disk:1024").get();
+  Resources dynamicallyReserved = unreserved.flatten(
+      frameworkInfo.role(),
+      createReservationInfo(DEFAULT_CREDENTIAL.principal()));
+
+  Future<Response> response = process::http::post(
+      master.get(),
+      "reserve",
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+      createRequestBody(slaveId.get(), "resources", dynamicallyReserved));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+
+  Resources volume = createPersistentVolume(
+      Megabytes(64),
+      frameworkInfo.role(),
+      "id1",
+      "path1",
+      DEFAULT_CREDENTIAL.principal());
+
+  response = process::http::post(
+      master.get(),
+      "create-volumes",
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+      createRequestBody(slaveId.get(), "volumes", volume));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+
+  // Start a framework and launch a task on some (but not all) of the
+  // reserved resources at the slave.
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get(), DEFAULT_CREDENTIAL);
+
+  Future<vector<Offer>> offers;
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  driver.start();
+
+  AWAIT_READY(offers);
+
+  ASSERT_EQ(1u, offers.get().size());
+  Offer offer = offers.get()[0];
+
+  EXPECT_TRUE(Resources(offer.resources()).contains(volume));
+
+  Resources taskUnreserved = Resources::parse("cpus:1;mem:256").get();
+  Resources taskResources = taskUnreserved.flatten(
+      frameworkInfo.role(),
+      createReservationInfo(DEFAULT_CREDENTIAL.principal()));
+
+  TaskInfo taskInfo = createTask(offer.slave_id(), taskResources, "sleep 1000");
+
+  // We use the filter explicitly here so that the resources will not
+  // be filtered for 5 seconds (the default).
+  Filters filters;
+  filters.set_refuse_seconds(0);
+
+  // Expect a TASK_RUNNING status.
+  EXPECT_CALL(sched, statusUpdate(&driver, _));
+
+  Future<Nothing> _statusUpdateAcknowledgement =
+    FUTURE_DISPATCH(_, &Slave::_statusUpdateAcknowledgement);
+
+  // Expect another resource offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  driver.acceptOffers({offer.id()}, {LAUNCH({taskInfo})}, filters);
+
+  // Wait for TASK_RUNNING update ack.
+  AWAIT_READY(_statusUpdateAcknowledgement);
+
+  response = process::http::get(master.get(), "slaves");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ(APPLICATION_JSON, "Content-Type", response);
+
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+
+  ASSERT_SOME(parse);
+
+  JSON::Object slavesObject = parse.get();
+
+  ASSERT_TRUE(slavesObject.values["slaves"].is<JSON::Array>());
+  JSON::Array slaveArray = slavesObject.values["slaves"].as<JSON::Array>();
+
+  EXPECT_EQ(1u, slaveArray.values.size());
+
+  ASSERT_TRUE(slaveArray.values[0].is<JSON::Object>());
+  JSON::Object slaveObject = slaveArray.values[0].as<JSON::Object>();
+
+  Try<JSON::Value> expectedReserved = JSON::parse(
+      R"~(
+      {
+        "role1": [
+          {
+            "name": "cpus",
+            "type": "SCALAR",
+            "scalar": {
+              "value": 1.0
+            },
+            "role": "role1",
+            "reservation": {
+              "principal": "test-principal"
+            }
+          },
+          {
+            "name": "mem",
+            "type": "SCALAR",
+            "scalar": {
+              "value": 512.0
+            },
+            "role": "role1",
+            "reservation": {
+              "principal": "test-principal"
+            }
+          },
+          {
+            "name": "disk",
+            "type": "SCALAR",
+            "scalar": {
+              "value": 960.0
+            },
+            "role": "role1",
+            "reservation": {
+              "principal": "test-principal"
+            }
+          },
+          {
+            "name": "disk",
+            "type": "SCALAR",
+            "scalar": {
+              "value": 64.0
+            },
+            "role": "role1",
+            "reservation": {
+              "principal": "test-principal"
+            },
+            "disk": {
+              "persistence": {
+                "id": "id1"
+              },
+              "volume": {
+                "mode": "RW",
+                "container_path": "path1"
+              }
+            }
+          }
+        ]
+      })~");
+
+  ASSERT_SOME(expectedReserved);
+
+  Try<JSON::Value> expectedUsed = JSON::parse(
+      R"~(
+      [
+        {
+          "name": "cpus",
+          "reservation": {
+            "principal": "test-principal"
+          },
+          "role": "role1",
+          "scalar": {
+            "value": 1.0
+          },
+          "type": "SCALAR"
+        },
+        {
+          "name": "mem",
+          "reservation": {
+            "principal": "test-principal"
+          },
+          "role": "role1",
+          "scalar": {
+            "value": 256.0
+          },
+          "type": "SCALAR"
+        }
+      ])~");
+
+  ASSERT_SOME(expectedUsed);
+
+  Try<JSON::Value> expectedOffered = JSON::parse(
+      R"~(
+      [
+        {
+          "disk": {
+            "persistence": {
+              "id": "id1"
+            },
+            "volume": {
+              "container_path": "path1",
+              "mode": "RW"
+            }
+          },
+          "name": "disk",
+          "reservation": {
+            "principal": "test-principal"
+          },
+          "role": "role1",
+          "scalar": {
+            "value": 64.0
+          },
+          "type": "SCALAR"
+        },
+        {
+          "name": "mem",
+          "reservation": {
+            "principal": "test-principal"
+          },
+          "role": "role1",
+          "scalar": {
+            "value": 256.0
+          },
+          "type": "SCALAR"
+        },
+        {
+          "name": "disk",
+          "reservation": {
+            "principal": "test-principal"
+          },
+          "role": "role1",
+          "scalar": {
+            "value": 960.0
+          },
+          "type": "SCALAR"
+        },
+        {
+          "name": "cpus",
+          "role": "*",
+          "scalar": {
+            "value": 3.0
+          },
+          "type": "SCALAR"
+        },
+        {
+          "name": "mem",
+          "role": "*",
+          "scalar": {
+            "value": 1536.0
+          },
+          "type": "SCALAR"
+        },
+        {
+          "name": "disk",
+          "role": "*",
+          "scalar": {
+            "value": 3072.0
+          },
+          "type": "SCALAR"
+        },
+        {
+          "name": "ports",
+          "ranges": {
+            "range": [
+              {
+                "begin": 31000,
+                "end": 32000
+              }
+            ]
+          },
+          "role": "*",
+          "type": "RANGES"
+        }
+      ])~");
+
+  ASSERT_SOME(expectedOffered);
+
+  JSON::Value reservedValue = slaveObject.values["reserved_resources_full"];
+  EXPECT_EQ(expectedReserved.get(), reservedValue);
+
+  JSON::Value usedValue = slaveObject.values["used_resources_full"];
+  EXPECT_EQ(expectedUsed.get(), usedValue);
+
+  JSON::Value offeredValue = slaveObject.values["offered_resources_full"];
+  EXPECT_EQ(expectedOffered.get(), offeredValue);
+
+  driver.stop();
+  driver.join();
 
   Shutdown();
 }

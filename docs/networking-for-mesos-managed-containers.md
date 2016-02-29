@@ -1,8 +1,9 @@
 ---
+title: Apache Mesos - Networking for Mesos-Managed Containers
 layout: documentation
 ---
 
-# Networking for Mesos-managed containers
+# Networking for Mesos-Managed Containers
 
 While networking plays a key role in data center infrastructure, it is -- for
 now -- beyond the scope of Mesos to try to address the concerns of networking
@@ -93,7 +94,7 @@ isolation using new data structures in the TaskInfo message.
 
 6. NIM then "decorates" the TaskStatus with the IP information.
    * The IP address(es) from TaskStatus are made available at Master's
-     state endpoint.
+     [/state](endpoints/master/state.md) endpoint.
    * The TaskStatus is also forwarded to the framework to inform it of the IP
      addresses.
    * When a task is killed or lost, NIM communicates with IPAM client to release
