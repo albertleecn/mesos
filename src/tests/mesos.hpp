@@ -508,6 +508,22 @@ inline Resource::ReservationInfo createReservationInfo(
 }
 
 
+inline Resource createReservedResource(
+    const std::string& name,
+    const std::string& value,
+    const std::string& role,
+    const Option<Resource::ReservationInfo>& reservation)
+{
+  Resource resource = Resources::parse(name, value, role).get();
+
+  if (reservation.isSome()) {
+    resource.mutable_reservation()->CopyFrom(reservation.get());
+  }
+
+  return resource;
+}
+
+
 // NOTE: We only set the volume in DiskInfo if 'containerPath' is set.
 // If volume mode is not specified, Volume::RW will be used (assuming
 // 'containerPath' is set).
@@ -1006,7 +1022,7 @@ public:
   MOCK_METHOD2_T(launch, void(Mesos*, const typename Event::Launch&));
   MOCK_METHOD2_T(kill, void(Mesos*, const typename Event::Kill&));
   MOCK_METHOD2_T(message, void(Mesos*, const typename Event::Message&));
-  MOCK_METHOD2_T(shutdown, void(Mesos*, const typename Event::Shutdown&));
+  MOCK_METHOD1_T(shutdown, void(Mesos*));
   MOCK_METHOD2_T(error, void(Mesos*, const typename Event::Error&));
   MOCK_METHOD2_T(acknowledged,
                  void(Mesos*, const typename Event::Acknowledged&));
@@ -1030,7 +1046,7 @@ public:
         message(mesos, event.message());
         break;
       case Event::SHUTDOWN:
-        shutdown(mesos, event.shutdown());
+        shutdown(mesos);
         break;
       case Event::ERROR:
         error(mesos, event.error());

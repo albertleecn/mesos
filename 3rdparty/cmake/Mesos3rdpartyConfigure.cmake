@@ -20,6 +20,7 @@ set(MESOS_3RDPARTY_SRC ${CMAKE_SOURCE_DIR}/3rdparty)
 set(MESOS_3RDPARTY_BIN ${CMAKE_BINARY_DIR}/3rdparty)
 
 if (NOT WIN32)
+  EXTERNAL("leveldb"   ${LEVELDB_VERSION}   "${MESOS_3RDPARTY_BIN}")
   EXTERNAL("zookeeper" ${ZOOKEEPER_VERSION} "${MESOS_3RDPARTY_BIN}")
 elseif (WIN32)
   # The latest release of ZK, 3.4.7, does not compile on Windows. Therefore, we
@@ -29,18 +30,28 @@ endif (NOT WIN32)
 
 # Intermediate convenience variables for oddly-structured directories.
 set(ZOOKEEPER_C_ROOT ${ZOOKEEPER_ROOT}/src/c)
-set(ZOOKEEPER_LIB    ${ZOOKEEPER_ROOT}-lib/lib)
+set(ZOOKEEPER_LIB    ${ZOOKEEPER_ROOT}/src/c)
 
 # Convenience variables for include directories of third-party dependencies.
+set(LEVELDB_INCLUDE_DIR ${LEVELDB_ROOT}/include)
 set(ZOOKEEPER_INCLUDE_GENDIR ${ZOOKEEPER_C_ROOT}/generated)
 set(ZOOKEEPER_INCLUDE_DIR ${ZOOKEEPER_C_ROOT}/include)
 
 # Convenience variables for `lib` directories of built third-party dependencies.
-set(ZOOKEEPER_LIB_DIR ${ZOOKEEPER_LIB}/lib)
+if (NOT WIN32)
+  set(ZOOKEEPER_LIB_DIR ${ZOOKEEPER_LIB})
+else (NOT WIN32)
+  set(ZOOKEEPER_LIB_DIR ${ZOOKEEPER_LIB}/x64/${CMAKE_BUILD_TYPE})
+endif (NOT WIN32)
 
 # Convenience variables for "lflags", the symbols we pass to CMake to generate
 # things like `-L/path/to/glog` or `-lglog`.
-set(ZOOKEEPER_LFLAG  zookeeper_mt)
+if (NOT WIN32)
+  set(LEVELDB_LFLAG   ${LEVELDB_ROOT}/libleveldb.a)
+  set(ZOOKEEPER_LFLAG ${ZOOKEEPER_LIB}/lib/libzookeeper_mt.a)
+else (NOT WIN32)
+  set(ZOOKEEPER_LFLAG zookeeper)
+endif (NOT WIN32)
 
 # Configure Windows use of the GNU patch utility;
 # we attempt to find it in its default location,

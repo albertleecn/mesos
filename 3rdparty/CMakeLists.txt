@@ -27,8 +27,10 @@ set(UPSTREAM_URL ${3RDPARTY_DEPENDENCIES})
 set(REBUNDLED_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 if (REBUNDLED)
+  set(LEVELDB_URL   ${REBUNDLED_DIR}/leveldb-${LEVELDB_VERSION}.tar.gz)
   set(ZOOKEEPER_URL ${REBUNDLED_DIR}/zookeeper-${ZOOKEEPER_VERSION}.tar.gz)
 else (REBUNDLED)
+  set(LEVELDB_URL   ${UPSTREAM_URL}/leveldb-${LEVELDB_VERSION}.tar.gz)
   set(ZOOKEEPER_URL ${UPSTREAM_URL}/zookeeper-${ZOOKEEPER_VERSION}.tar.gz)
 endif (REBUNDLED)
 
@@ -54,13 +56,15 @@ elseif (WIN32)
   # Set the patch command which will utilize patch.exe in temp location for no elevation prompt
   set(
     ZOOKEEPER_PATCH_CMD
-    ${PATCHEXE_LOCATION} --binary -p1 < ${MESOS_3RDPARTY_SRC}/zookeeper-${ZOOKEEPER_VERSION}.patch)
+    ${PATCHEXE_LOCATION} -p1 < ${MESOS_3RDPARTY_SRC}/zookeeper-${ZOOKEEPER_VERSION}.patch)
 
   VS_BUILD_CMD(
     ZOOKEEPER
     ${ZOOKEEPER_C_ROOT}/zookeeper-vs2015.sln
     ${CMAKE_BUILD_TYPE}
-    "zookeeper")
+    ${ZOOKEEPER_C_ROOT}
+    "zookeeper"
+    )
 
   set(ZOOKEEPER_CONFIG_CMD  ${CMAKE_NOOP})
   set(ZOOKEEPER_INSTALL_CMD ${CMAKE_NOOP})
@@ -78,3 +82,22 @@ ExternalProject_Add(
   INSTALL_COMMAND   ${ZOOKEEPER_INSTALL_CMD}
   URL               ${ZOOKEEPER_URL}
   )
+
+if (NOT WIN32)
+  set(LEVELDB_CONFIG_CMD  cd ${LEVELDB_ROOT} && ./configure --prefix=${LEVELDB_ROOT}-lib)
+  set(LEVELDB_BUILD_CMD   cd ${LEVELDB_ROOT} && make)
+  set(LEVELDB_INSTALL_CMD cd ${LEVELDB_ROOT} && make install)
+  PATCH_CMD(
+    ${MESOS_3RDPARTY_SRC}/leveldb-${LEVELDB_VERSION}.patch
+    LEVELDB_PATCH_CMD)
+
+  ExternalProject_Add(
+    ${LEVELDB_TARGET}
+    PREFIX            ${LEVELDB_TARGET}
+    PATCH_COMMAND     ${LEVELDB_PATCH_CMD}
+    CONFIGURE_COMMAND ${CMAKE_NOOP}
+    BUILD_COMMAND     ${LEVELDB_BUILD_CMD}
+    INSTALL_COMMAND   ${CMAKE_NOOP}
+    URL               ${LEVELDB_URL}
+    )
+endif (NOT WIN32)

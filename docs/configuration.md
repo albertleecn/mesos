@@ -84,7 +84,7 @@ Example:
   "disabled_endpoints" : {
     "paths" : [
       "/files/browse",
-      "/slave(0)/stats.json"
+      "/metrics/snapshot"
     ]
   }
 }</code></pre>
@@ -589,6 +589,7 @@ ping from the master. Slaves that do not respond within
 Duration of time before an offer is rescinded from a framework.
 This helps fairness when running frameworks that hold on to offers,
 or frameworks that accidentally drop offers.
+If not set, offers do not timeout.
   </td>
 </tr>
 <tr>
@@ -926,6 +927,16 @@ the primary handle for the net_cls cgroup.
 </tr>
 <tr>
   <td>
+    --cgroups_net_cls_secondary_handles
+  </td>
+  <td>
+A range of the form 0xAAAA,0xBBBB, specifying the valid secondary
+handles that can be used with the primary handle. This will take
+effect only when the <code>--cgroups_net_cls_primary_handle</code> is set.
+  </td>
+</tr>
+<tr>
+  <td>
     --cgroups_root=VALUE
   </td>
   <td>
@@ -1210,6 +1221,7 @@ the available disk usage. (default: 1weeks)
 </tr>
 <tr>
   <td>
+    <a name="gc_disk_headroom"></a>
     --gc_disk_headroom=VALUE
   </td>
   <td>
