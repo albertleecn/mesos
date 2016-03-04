@@ -250,6 +250,11 @@ public:
       // Send a streaming request for Subscribe call.
       response = connections->subscribe.send(request, true);
     } else {
+      CHECK_SOME(streamId);
+
+      // Set the stream ID associated with this connection.
+      request.headers["Mesos-Stream-Id"] = streamId.get().toString();
+
       response = connections->nonSubscribe.send(request);
     }
 
@@ -506,6 +511,11 @@ protected:
 
       subscribed = SubscribedResponse {reader, decoder};
 
+      // Responses to SUBSCRIBE calls should always include a stream ID.
+      CHECK(response.get().headers.contains("Mesos-Stream-Id"));
+
+      streamId = UUID::fromString(response.get().headers.at("Mesos-Stream-Id"));
+
       read();
 
       return;
@@ -666,6 +676,7 @@ private:
   shared_ptr<MasterDetector> detector;
   queue<Event> events;
   Option<::URL> master;
+  Option<UUID> streamId;
 
   // Master detection future.
   process::Future<Option<mesos::MasterInfo>> detection;
@@ -703,15 +714,27 @@ Mesos::Mesos(
 
 Mesos::~Mesos()
 {
-  terminate(process);
-  wait(process);
-  delete process;
+  if (process != NULL) {
+    stop();
+  }
 }
 
 
 void Mesos::send(const Call& call)
 {
   dispatch(process, &MesosProcess::send, call);
+}
+
+
+void Mesos::stop()
+{
+  if (process != NULL) {
+    terminate(process);
+    wait(process);
+
+    delete process;
+    process = NULL;
+  }
 }
 
 } // namespace scheduler {
