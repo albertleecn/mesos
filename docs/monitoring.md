@@ -868,6 +868,84 @@ and resource allocations in the allocator.
 </thead>
 <tr>
   <td>
+  <code>allocator/mesos/allocation_run_ms</code>
+  </td>
+  <td>Allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/count</code>
+  </td>
+  <td>Number of allocation algorithm latency measurements in the window</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/max</code>
+  </td>
+  <td>Maximum allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/min</code>
+  </td>
+  <td>Minimum allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/p50</code>
+  </td>
+  <td>Median allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/p90</code>
+  </td>
+  <td>90th percentile allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/p95</code>
+  </td>
+  <td>95th percentile allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/p99</code>
+  </td>
+  <td>99th percentile allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/p999</code>
+  </td>
+  <td>99.9th percentile allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_run_ms/p9999</code>
+  </td>
+  <td>99.99th percentile allocation algorithm latency in ms</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/allocation_runs</code>
+  </td>
+  <td>Number of times the allocation algorithm has run</td>
+  <td>Counter</td>
+</tr>
+<tr>
+<tr>
+  <td>
   <code>allocator/mesos/event_queue_dispatches</code>
   </td>
   <td>Number of dispatch events in the event queue</td>
@@ -886,6 +964,48 @@ and resource allocations in the allocator.
   <code>allocator/mesos/quota/roles/&lt;role&gt;/resources/&lt;resource&gt;/guarantee</code>
   </td>
   <td>Amount of resources guaranteed for a role via quota</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/resources/cpus/offered_or_allocated</code>
+  </td>
+  <td>Number of CPUs offered or allocated</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/resources/cpus/total</code>
+  </td>
+  <td>Number of CPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/resources/disk/offered_or_allocated</code>
+  </td>
+  <td>Allocated or offered disk space in MB</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/resources/disk/total</code>
+  </td>
+  <td>Total disk space in MB</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/resources/mem/offered_or_allocated</code>
+  </td>
+  <td>Allocated or offered memory in MB</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>allocator/mesos/resources/mem/total</code>
+  </td>
+  <td>Total memory in MB</td>
   <td>Gauge</td>
 </tr>
 </table>

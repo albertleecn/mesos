@@ -62,6 +62,7 @@ using process::Future;
 using std::atomic;
 using std::cout;
 using std::endl;
+using std::map;
 using std::string;
 using std::vector;
 
@@ -2459,6 +2460,186 @@ TEST_F(HierarchicalAllocatorTest, DeactivateAndReactivateFramework)
   AWAIT_READY(allocation);
   EXPECT_EQ(framework.id(), allocation.get().frameworkId);
   EXPECT_EQ(agent.resources(), Resources::sum(allocation.get().resources));
+}
+
+
+// This test checks that total and allocator resources
+// are correctly reflected in the metrics endpoint.
+TEST_F(HierarchicalAllocatorTest, ResourceMetrics)
+{
+  // Pausing the clock is not necessary, but ensures that the test
+  // doesn't rely on the batch allocation in the allocator, which
+  // would slow down the test.
+  Clock::pause();
+
+  initialize();
+
+  SlaveInfo agent = createSlaveInfo("cpus:2;mem:1024;disk:0");
+  allocator->addSlave(agent.id(), agent, None(), agent.resources(), {});
+  Clock::settle();
+
+  JSON::Object expected;
+
+  // No frameworks are registered yet, so nothing is allocated.
+  expected.values = {
+      {"allocator/mesos/resources/cpus/total",   2},
+      {"allocator/mesos/resources/mem/total", 1024},
+      {"allocator/mesos/resources/disk/total",   0},
+      {"allocator/mesos/resources/cpus/offered_or_allocated", 0},
+      {"allocator/mesos/resources/mem/offered_or_allocated",  0},
+      {"allocator/mesos/resources/disk/offered_or_allocated", 0},
+  };
+
+  JSON::Value metrics = Metrics();
+
+  EXPECT_TRUE(metrics.contains(expected));
+
+  FrameworkInfo framework = createFrameworkInfo("role1");
+  allocator->addFramework(framework.id(), framework, {});
+  Clock::settle();
+
+  // All of the resources should be offered.
+  expected.values = {
+      {"allocator/mesos/resources/cpus/total",   2},
+      {"allocator/mesos/resources/mem/total", 1024},
+      {"allocator/mesos/resources/disk/total",   0},
+      {"allocator/mesos/resources/cpus/offered_or_allocated",   2},
+      {"allocator/mesos/resources/mem/offered_or_allocated", 1024},
+      {"allocator/mesos/resources/disk/offered_or_allocated",   0},
+  };
+
+  metrics = Metrics();
+
+  EXPECT_TRUE(metrics.contains(expected));
+
+  allocator->removeSlave(agent.id());
+  Clock::settle();
+
+  // No frameworks are registered yet, so nothing is allocated.
+  expected.values = {
+      {"allocator/mesos/resources/cpus/total", 0},
+      {"allocator/mesos/resources/mem/total",  0},
+      {"allocator/mesos/resources/disk/total", 0},
+      {"allocator/mesos/resources/cpus/offered_or_allocated", 0},
+      {"allocator/mesos/resources/mem/offered_or_allocated",  0},
+      {"allocator/mesos/resources/disk/offered_or_allocated", 0},
+  };
+
+  metrics = Metrics();
+
+  EXPECT_TRUE(metrics.contains(expected));
+}
+
+
+// This test checks that the number of times the allocation
+// algorithm has run is correctly reflected in the metric.
+TEST_F(HierarchicalAllocatorTest, AllocationRunsMetric)
+{
+  // Pausing the clock is not necessary, but ensures that the test
+  // doesn't rely on the batch allocation in the allocator, which
+  // would slow down the test.
+  Clock::pause();
+
+  initialize();
+
+  size_t allocations = 0;
+
+  JSON::Object expected;
+
+  expected.values = { {"allocator/mesos/allocation_runs", allocations} };
+
+  JSON::Value metrics = Metrics();
+
+  EXPECT_TRUE(metrics.contains(expected));
+
+  SlaveInfo agent = createSlaveInfo("cpus:2;mem:1024;disk:0");
+  allocator->addSlave(agent.id(), agent, None(), agent.resources(), {});
+  ++allocations; // Adding an agent triggers allocations.
+
+  FrameworkInfo framework = createFrameworkInfo("role");
+  allocator->addFramework(framework.id(), framework, {});
+  ++allocations; // Adding a framework triggers allocations.
+
+  Clock::settle();
+
+  expected.values = { {"allocator/mesos/allocation_runs", allocations} };
+
+  metrics = Metrics();
+
+  EXPECT_TRUE(metrics.contains(expected));
+}
+
+
+// This test checks that the allocation run timer
+// metrics are reported in the metrics endpoint.
+TEST_F(HierarchicalAllocatorTest, AllocationRunTimerMetrics)
+{
+  Clock::pause();
+
+  initialize();
+
+  // These time series statistics will be generated
+  // once at least 2 allocation runs occur.
+  auto statistics = {
+    "allocator/mesos/allocation_run_ms/count",
+    "allocator/mesos/allocation_run_ms/min",
+    "allocator/mesos/allocation_run_ms/max",
+    "allocator/mesos/allocation_run_ms/p50",
+    "allocator/mesos/allocation_run_ms/p95",
+    "allocator/mesos/allocation_run_ms/p99",
+    "allocator/mesos/allocation_run_ms/p999",
+    "allocator/mesos/allocation_run_ms/p9999",
+  };
+
+  JSON::Object metrics = Metrics();
+  map<string, JSON::Value> values = metrics.values;
+
+  EXPECT_EQ(0u, values.count("allocator/mesos/allocation_run_ms"));
+
+  // No allocation timing statistics should appear.
+  foreach (const string& statistic, statistics) {
+    EXPECT_EQ(0u, values.count(statistic))
+      << "Expected " << statistic << " to be absent";
+  }
+
+  // Allow the allocation timer to measure time.
+  Clock::resume();
+
+  // Trigger at least two calls to allocate occur
+  // to generate the window statistics.
+  SlaveInfo agent = createSlaveInfo("cpus:2;mem:1024;disk:0");
+  allocator->addSlave(agent.id(), agent, None(), agent.resources(), {});
+
+  FrameworkInfo framework = createFrameworkInfo("role1");
+  allocator->addFramework(framework.id(), framework, {});
+
+  // Wait for the allocation to complete.
+  AWAIT_READY(allocations.get());
+
+  // Ensure the timer has been stopped so that
+  // the second measurement to be recorded.
+  Clock::pause();
+  Clock::settle();
+  Clock::resume();
+
+  metrics = Metrics();
+  values = metrics.values;
+
+  // A non-zero measurement should be present.
+  EXPECT_EQ(1u, values.count("allocator/mesos/allocation_run_ms"));
+
+  JSON::Value value = metrics.values["allocator/mesos/allocation_run_ms"];
+  ASSERT_TRUE(value.is<JSON::Number>()) << value.which();
+
+  JSON::Number timing = value.as<JSON::Number>();
+  ASSERT_EQ(JSON::Number::FLOATING, timing.type);
+  EXPECT_GT(timing.as<double>(), 0.0);
+
+  // The statistics should be generated.
+  foreach (const string& statistic, statistics) {
+    EXPECT_EQ(1u, values.count(statistic))
+      << "Expected " << statistic << " to be present";
+  }
 }
 
 
