@@ -10,27 +10,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_WINDOWS_READ_HPP__
-#define __STOUT_OS_WINDOWS_READ_HPP__
+#ifndef __STOUT_OS_POSIX_WRITE_HPP__
+#define __STOUT_OS_POSIX_WRITE_HPP__
 
-#include <io.h>
-
-#include <stout/windows.hpp> // For order-dependent networking headers.
-
-#include <stout/os/socket.hpp>
+#include <errno.h>
+#include <unistd.h>
 
 
 namespace os {
 
-inline ssize_t read(int fd, void* data, size_t size)
-{
-  if (net::is_socket(fd)) {
-    return ::recv(fd, (char*) data, size, 0);
-  }
-
-  return ::_read(fd, data, size);
-}
+// Compatibility function. On POSIX, this function is trivial, but on Windows,
+// we have to check whether the file descriptor is a socket or a file to write
+// to it.
+using ::write;
 
 } // namespace os {
 
-#endif // __STOUT_OS_WINDOWS_READ_HPP__
+
+#endif // __STOUT_OS_POSIX_READ_HPP__

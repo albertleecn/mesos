@@ -10,8 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_WINDOWS_READ_HPP__
-#define __STOUT_OS_WINDOWS_READ_HPP__
+#ifndef __STOUT_OS_WINDOWS_WRITE_HPP__
+#define __STOUT_OS_WINDOWS_WRITE_HPP__
 
 #include <io.h>
 
@@ -22,15 +22,16 @@
 
 namespace os {
 
-inline ssize_t read(int fd, void* data, size_t size)
+inline ssize_t write(int fd, const void* data, size_t size)
 {
   if (net::is_socket(fd)) {
-    return ::recv(fd, (char*) data, size, 0);
+    return ::send(fd, (const char*) data, size, 0);
   }
 
-  return ::_read(fd, data, size);
+  return ::_write(fd, data, size);
 }
 
 } // namespace os {
 
-#endif // __STOUT_OS_WINDOWS_READ_HPP__
+
+#endif // __STOUT_OS_WINDOWS_WRITE_HPP__
