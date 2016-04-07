@@ -498,6 +498,23 @@ mesos::internal::slave::Flags::Flags()
       "path used by the slave's docker image.\n",
       "/var/run/docker.sock");
 
+  add(&Flags::docker_config,
+      "docker_config",
+      "The default docker config file for slave. Can be provided either as a\n"
+      "path pointing to the slave local docker config file, or as a\n"
+      "JSON-formatted string. The format of the docker config file should be\n"
+      "identical to docker's default one (e.g., either\n"
+      "`~/.docker/config.json` or `~/.dockercfg`).\n"
+      "Example JSON (`~/.docker/config.json`):\n"
+      "{\n"
+      "  \"auths\": {\n"
+      "    \"https://index.docker.io/v1/\": {\n"
+      "      \"auth\": \"xXxXxXxXxXx=\",\n"
+      "      \"email\": \"username@example.com\"\n"
+      "    }\n"
+      "  }\n"
+      "}");
+
   add(&Flags::sandbox_directory,
       "sandbox_directory",
       "The absolute path for the directory in the container where the\n"
@@ -753,4 +770,10 @@ mesos::internal::slave::Flags::Flags()
       "and available. The interval between updates is controlled by this\n"
       "flag.",
       Seconds(15));
+
+  add(&Flags::master_detector,
+      "master_detector",
+      "The symbol name of the master detector to use. This symbol\n"
+      "should exist in a module specified through the --modules flag.\n"
+      "Cannot be used in conjunction with --master.");
 }

@@ -113,6 +113,8 @@ public:
 
   bool docker_kill_orphans;
   std::string docker_socket;
+  Option<JSON::Object> docker_config;
+
 #ifdef ENABLE_NVIDIA_GPU_SUPPORT
   Option<std::vector<unsigned int>> nvidia_gpu_devices;
 #endif
@@ -141,6 +143,7 @@ public:
   Option<std::string> qos_controller;
   Duration qos_correction_interval_min;
   Duration oversubscribed_resources_interval;
+  Option<std::string> master_detector;
 };
 
 } // namespace slave {

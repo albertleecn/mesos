@@ -21,6 +21,8 @@
 
 #include <mesos/slave/container_logger.hpp>
 
+#include <mesos/master/detector.hpp>
+
 #include <stout/check.hpp>
 #include <stout/foreach.hpp>
 #include <stout/json.hpp>
@@ -55,6 +57,8 @@ using testing::_;
 using testing::Invoke;
 
 using mesos::fetcher::FetcherInfo;
+
+using mesos::master::detector::MasterDetector;
 
 using mesos::slave::ContainerLogger;
 
@@ -478,6 +482,8 @@ MockSlave::MockSlave(
     .WillRepeatedly(Invoke(this, &MockSlave::unmocked___recover));
   EXPECT_CALL(*this, qosCorrections())
     .WillRepeatedly(Invoke(this, &MockSlave::unmocked_qosCorrections));
+  EXPECT_CALL(*this, usage())
+    .WillRepeatedly(Invoke(this, &MockSlave::unmocked_usage));
 }
 
 
@@ -534,6 +540,12 @@ void MockSlave::unmocked_qosCorrections()
 }
 
 
+process::Future<ResourceUsage> MockSlave::unmocked_usage()
+{
+  return slave::Slave::usage();
+}
+
+
 MockFetcherProcess::MockFetcherProcess()
 {
   // Set up default behaviors, calling the original methods.
@@ -566,8 +578,9 @@ MockContainerLogger::~MockContainerLogger() {}
 
 MockDocker::MockDocker(
     const string& path,
-    const string& socket)
-  : Docker(path, socket)
+    const string& socket,
+    const Option<JSON::Object>& config)
+  : Docker(path, socket, config)
 {
   EXPECT_CALL(*this, ps(_, _))
     .WillRepeatedly(Invoke(this, &MockDocker::_ps));

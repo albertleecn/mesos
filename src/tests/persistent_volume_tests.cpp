@@ -43,6 +43,8 @@
 #include "master/flags.hpp"
 #include "master/master.hpp"
 
+#include "master/detector/standalone.hpp"
+
 #include "slave/flags.hpp"
 #include "slave/paths.hpp"
 #include "slave/slave.hpp"
@@ -58,6 +60,9 @@ using google::protobuf::RepeatedPtrField;
 using mesos::internal::master::Master;
 
 using mesos::internal::slave::Slave;
+
+using mesos::master::detector::MasterDetector;
+using mesos::master::detector::StandaloneMasterDetector;
 
 using std::list;
 using std::string;
@@ -431,7 +436,7 @@ TEST_P(PersistentVolumeTest, ResourcesCheckpointing)
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
-    .WillRepeatedly(Return());        // Ignore subsequent offers.
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
 
   driver.start();
 
@@ -496,7 +501,7 @@ TEST_P(PersistentVolumeTest, PreparePersistentVolume)
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
-    .WillRepeatedly(Return());        // Ignore subsequent offers.
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
 
   driver.start();
 
@@ -563,7 +568,7 @@ TEST_P(PersistentVolumeTest, MasterFailover)
   Future<vector<Offer>> offers1;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers1))
-    .WillRepeatedly(Return());        // Ignore subsequent offers.
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
 
   driver.start();
 
@@ -605,7 +610,7 @@ TEST_P(PersistentVolumeTest, MasterFailover)
   Future<vector<Offer>> offers2;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers2))
-    .WillRepeatedly(Return());        // Ignore subsequent offers.
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
 
   master = StartMaster(masterFlags);
   ASSERT_SOME(master);
@@ -658,7 +663,7 @@ TEST_P(PersistentVolumeTest, IncompatibleCheckpointedResources)
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
-    .WillRepeatedly(Return());        // Ignore subsequent offers.
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
 
   driver.start();
 
@@ -746,7 +751,7 @@ TEST_P(PersistentVolumeTest, AccessPersistentVolume)
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
-    .WillRepeatedly(Return());        // Ignore subsequent offers.
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
 
   driver.start();
 
@@ -776,6 +781,12 @@ TEST_P(PersistentVolumeTest, AccessPersistentVolume)
   EXPECT_CALL(sched, statusUpdate(&driver, _))
     .WillOnce(FutureArg<1>(&status1))
     .WillOnce(FutureArg<1>(&status2));
+
+  Future<Nothing> statusUpdateAcknowledgement1 =
+    FUTURE_DISPATCH(slave.get()->pid, &Slave::_statusUpdateAcknowledgement);
+
+  Future<Nothing> statusUpdateAcknowledgement2 =
+    FUTURE_DISPATCH(slave.get()->pid, &Slave::_statusUpdateAcknowledgement);
 
   driver.acceptOffers(
       {offer.id()},
@@ -814,6 +825,13 @@ TEST_P(PersistentVolumeTest, AccessPersistentVolume)
   string filePath1 = path::join(volumePath, "file");
 
   EXPECT_SOME_EQ("abc\n", os::read(filePath1));
+
+  // Ensure that the slave has received the acknowledgment of the
+  // TASK_FINISHED status update; this implies the acknowledgement
+  // reached the master, which is necessary for the task's resources
+  // to be recovered by the allocator.
+  AWAIT_READY(statusUpdateAcknowledgement1);
+  AWAIT_READY(statusUpdateAcknowledgement2);
 
   // Expect an offer containing the persistent volume.
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -897,7 +915,7 @@ TEST_P(PersistentVolumeTest, SlaveRecovery)
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
-    .WillRepeatedly(Return());        // Ignore subsequent offers.
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
 
   driver.start();
 
