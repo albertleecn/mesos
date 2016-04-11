@@ -149,6 +149,48 @@ framework is misbehaving.
 </tr>
 <tr>
   <td>
+  <code>master/gpus_percent</code>
+  </td>
+  <td>Percentage of allocated GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>master/gpus_used</code>
+  </td>
+  <td>Number of allocated GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>master/gpus_total</code>
+  </td>
+  <td>Number of GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>master/gpus_revocable_percent</code>
+  </td>
+  <td>Percentage of allocated revocable GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>master/gpus_revocable_total</code>
+  </td>
+  <td>Number of revocable GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>master/gpus_revocable_used</code>
+  </td>
+  <td>Number of allocated revocable GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
   <code>master/mem_percent</code>
   </td>
   <td>Percentage of allocated memory</td>
@@ -945,6 +987,13 @@ and resource allocations in the allocator.
 </tr>
 <tr>
   <td>
+  <code>allocator/mesos/roles/&lt;role&gt;/shares/dominant</code>
+  </td>
+  <td>Dominant resource share for the role, exposed as a percentage (0.0-1.0)</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
   <code>allocator/mesos/event_queue_dispatches</code>
   </td>
   <td>Number of dispatch events in the event queue</td>
@@ -1138,6 +1187,48 @@ the slave and their current usage.
   <code>slave/disk_total</code>
   </td>
   <td>Disk space in MB</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>slave/gpus_percent</code>
+  </td>
+  <td>Percentage of allocated GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>slave/gpus_used</code>
+  </td>
+  <td>Number of allocated GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>slave/gpus_total</code>
+  </td>
+  <td>Number of GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>slave/gpus_revocable_percent</code>
+  </td>
+  <td>Percentage of allocated revocable GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>slave/gpus_revocable_total</code>
+  </td>
+  <td>Number of revocable GPUs</td>
+  <td>Gauge</td>
+</tr>
+<tr>
+  <td>
+  <code>slave/gpus_revocable_used</code>
+  </td>
+  <td>Number of allocated revocable GPUs</td>
   <td>Gauge</td>
 </tr>
 <tr>

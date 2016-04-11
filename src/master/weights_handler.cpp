@@ -18,6 +18,8 @@
 
 #include <list>
 
+#include <mesos/roles.hpp>
+
 #include <mesos/authorizer/authorizer.hpp>
 
 #include <process/collect.hpp>
@@ -51,6 +53,28 @@ namespace mesos {
 namespace internal {
 namespace master {
 
+Future<http::Response> Master::WeightsHandler::get(
+    const http::Request& request) const
+{
+  VLOG(1) << "Handling get weights request.";
+
+  // Check that the request type is GET which is guaranteed by the master.
+  CHECK_EQ("GET", request.method);
+
+  RepeatedPtrField<WeightInfo> weightInfos;
+
+  // Create an entry for each weight.
+  foreachpair (const std::string& role, double weight, master->weights) {
+    WeightInfo weightInfo;
+    weightInfo.set_role(role);
+    weightInfo.set_weight(weight);
+    weightInfos.Add()->CopyFrom(weightInfo);
+  }
+
+  return OK(JSON::protobuf(weightInfos), request.url.query.get("jsonp"));
+}
+
+
 Future<http::Response> Master::WeightsHandler::update(
     const http::Request& request,
     const Option<std::string>& principal) const
@@ -63,8 +87,8 @@ Future<http::Response> Master::WeightsHandler::update(
   Try<JSON::Array> parse = JSON::parse<JSON::Array>(request.body);
   if (parse.isError()) {
     return BadRequest(
-        "Failed to parse update request JSON ('" + request.body + "': " +
-        parse.error());
+        "Failed to parse update weights request JSON ('" +
+        request.body + "'): " + parse.error());
   }
 
   // Create Protobuf representation of weights.
@@ -82,24 +106,27 @@ Future<http::Response> Master::WeightsHandler::update(
   for (WeightInfo& weightInfo : weightInfos.get()) {
     string role = strings::trim(weightInfo.role());
 
-    if (role.empty()) {
+    Option<Error> roleError = roles::validate(role);
+    if (roleError.isSome()) {
       return BadRequest(
-          "Role cannot be empty for weight '" +
-          stringify(weightInfo.weight()) + "'");
+          "Failed to validate update weights request JSON: Invalid role '" +
+          role + "': " + roleError.get().message);
+    }
+
+    // Check that the role is on the role whitelist, if it exists.
+    if (!master->isWhitelistedRole(role)) {
+      return BadRequest(
+          "Failed to validate update weights request JSON: Unknown role '" +
+          role + "'");
     }
 
     if (weightInfo.weight() <= 0) {
       return BadRequest(
-          "Invalid weight '" + stringify(weightInfo.weight()) +
-          "' for role '" + role + "'. Weights must be positive.");
+          "Failed to validate update weights request JSON for role '" +
+          role + "': Invalid weight '" + stringify(weightInfo.weight()) +
+          "': Weights must be positive");
     }
 
-    if (!master->isWhitelistedRole(role)) {
-      return BadRequest(
-          "Invalid role: '" + role + "', which must exist in the static " +
-          "list of roles, specified when the master is started" +
-          " (via the --roles flag).");
-    }
     weightInfo.set_role(role);
     validatedWeightInfos.push_back(weightInfo);
     roles.push_back(role);

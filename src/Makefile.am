@@ -643,6 +643,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/allocator/allocator.cpp					\
   master/allocator/mesos/hierarchical.cpp				\
   master/allocator/mesos/metrics.cpp					\
+  master/allocator/sorter/drf/metrics.cpp				\
   master/allocator/sorter/drf/sorter.cpp				\
   master/contender/contender.cpp					\
   master/contender/standalone.cpp					\
@@ -762,6 +763,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/allocator/mesos/hierarchical.hpp				\
   master/allocator/mesos/metrics.hpp					\
   master/allocator/sorter/sorter.hpp					\
+  master/allocator/sorter/drf/metrics.hpp				\
   master/allocator/sorter/drf/sorter.hpp				\
   master/contender/standalone.hpp					\
   master/contender/zookeeper.hpp					\
@@ -893,6 +895,14 @@ MESOS_LINUX_FILES +=							\
   slave/containerizer/mesos/isolators/network/cni/cni.hpp		\
   slave/containerizer/mesos/provisioner/backends/bind.hpp		\
   slave/containerizer/mesos/provisioner/backends/overlay.hpp
+
+if ENABLE_XFS_DISK_ISOLATOR
+MESOS_LINUX_FILES +=                                                    \
+  slave/containerizer/mesos/isolators/xfs/utils.cpp                     \
+  slave/containerizer/mesos/isolators/xfs/utils.hpp                     \
+  slave/containerizer/mesos/isolators/xfs/disk.cpp                      \
+  slave/containerizer/mesos/isolators/xfs/disk.hpp
+endif
 
 MESOS_NETWORK_ISOLATOR_FILES =						\
   linux/routing/handle.cpp						\
@@ -1628,6 +1638,7 @@ install-exec-local:
 	  PYTHONUSERBASE=$(DESTDIR)$(prefix)				\
 	  $(PYTHON) -c "import pip; pip.main()" install			\
 	  --user $(pipinstallargs)					\
+	  --ignore-installed						\
 	  --find-links=file://$(abs_top_builddir)/src/python/dist	\
 	  $(abs_top_builddir)/src/$$whl;				\
 	done
@@ -1650,6 +1661,11 @@ clean-python:
 PHONY_TARGETS += clean-python
 
 # Test (make check) binaries.
+check_PROGRAMS += dynamic-reservation-framework
+dynamic_reservation_framework_SOURCES = examples/dynamic_reservation_framework.cpp
+dynamic_reservation_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
+dynamic_reservation_framework_LDADD = libmesos.la $(LDADD)
+
 check_PROGRAMS += test-http-framework
 test_http_framework_SOURCES = examples/test_http_framework.cpp
 test_http_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
@@ -1954,6 +1970,11 @@ mesos_tests_SOURCES =						\
   tests/containerizer/provisioner_backend_tests.cpp		\
   tests/containerizer/provisioner_docker_tests.cpp
 
+if ENABLE_XFS_DISK_ISOLATOR
+mesos_tests_SOURCES +=						\
+  tests/containerizer/xfs_quota_tests.cpp
+endif
+
 mesos_tests_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_tests_CPPFLAGS += -DSOURCE_DIR=\"$(abs_top_srcdir)\"
 mesos_tests_CPPFLAGS += -DBUILD_DIR=\"$(abs_top_builddir)\"
@@ -2046,6 +2067,7 @@ EXTRA_DIST +=							\
 
 dist_check_SCRIPTS +=						\
   tests/balloon_framework_test.sh				\
+  tests/dynamic_reservation_framework_test.sh			\
   tests/test_http_framework_test.sh				\
   tests/java_exception_test.sh					\
   tests/java_framework_test.sh					\

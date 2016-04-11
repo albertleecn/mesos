@@ -61,6 +61,8 @@ using mesos::v1::Environment;
 using mesos::v1::FrameworkID;
 using mesos::v1::FrameworkInfo;
 using mesos::v1::Image;
+using mesos::v1::Label;
+using mesos::v1::Labels;
 using mesos::v1::Offer;
 using mesos::v1::Resources;
 using mesos::v1::TaskInfo;
@@ -137,15 +139,25 @@ public:
         "Enable checkpointing for the framework",
         false);
 
+    add(&appc_image,
+        "appc_image",
+        "Appc image name that follows the Appc spec"
+        "(e.g, ubuntu, example.com/reduce-worker)");
+
     add(&docker_image,
         "docker_image",
-        "Docker image that follows the Docker CLI naming <image>:<tag>."
+        "Docker image that follows the Docker CLI naming <image>:<tag>"
         "(ie: ubuntu, busybox:latest).");
 
     add(&containerizer,
         "containerizer",
         "Containerizer to be used (ie: docker, mesos)",
         "mesos");
+
+    add(&role,
+        "role",
+        "Role to use when registering",
+        "*");
   }
 
   Option<string> master;
@@ -159,8 +171,10 @@ public:
   Option<string> package;
   bool overwrite;
   bool checkpoint;
+  Option<string> appc_image;
   Option<string> docker_image;
   string containerizer;
+  string role;
 };
 
 
@@ -176,6 +190,7 @@ public:
       const Option<hashmap<string, string>>& _environment,
       const string& _resources,
       const Option<string>& _uri,
+      const Option<string>& _appcImage,
       const Option<string>& _dockerImage,
       const string& _containerizer)
     : state(DISCONNECTED),
@@ -187,6 +202,7 @@ public:
       environment(_environment),
       resources(_resources),
       uri(_uri),
+      appcImage(_appcImage),
       dockerImage(_dockerImage),
       containerizer(_containerizer),
       launched(false) {}
@@ -254,13 +270,21 @@ protected:
     }
 
     foreach (const Offer& offer, offers) {
-      if (!launched &&
-          Resources(offer.resources()).contains(TASK_RESOURCES.get())) {
+      Resources offered = offer.resources();
+
+      if (!launched && offered.flatten().contains(TASK_RESOURCES.get())) {
         TaskInfo task;
         task.set_name(name);
         task.mutable_task_id()->set_value(name);
         task.mutable_agent_id()->MergeFrom(offer.agent_id());
-        task.mutable_resources()->CopyFrom(TASK_RESOURCES.get());
+
+        // Takes resources first from the specified role, then from '*'.
+        Option<Resources> resources =
+          offered.find(TASK_RESOURCES.get().flatten(frameworkInfo.role()));
+
+        CHECK_SOME(resources);
+
+        task.mutable_resources()->CopyFrom(resources.get());
 
         CommandInfo* commandInfo = task.mutable_command();
 
@@ -290,35 +314,15 @@ protected:
           task.mutable_command()->add_uris()->set_value(uri.get());
         }
 
-        if (dockerImage.isSome()) {
-          ContainerInfo containerInfo;
+        Result<ContainerInfo> containerInfo = getContainerInfo();
 
-          if (containerizer == "mesos") {
-            containerInfo.set_type(ContainerInfo::MESOS);
+        if (containerInfo.isError()){
+          EXIT(EXIT_FAILURE) << containerInfo.error();
+          return;
+        }
 
-            ContainerInfo::MesosInfo mesosInfo;
-
-            Image mesosImage;
-            mesosImage.set_type(Image::DOCKER);
-            mesosImage.mutable_docker()->set_name(dockerImage.get());
-            mesosInfo.mutable_image()->CopyFrom(mesosImage);
-
-            containerInfo.mutable_mesos()->CopyFrom(mesosInfo);
-          } else if (containerizer == "docker") {
-            containerInfo.set_type(ContainerInfo::DOCKER);
-
-            ContainerInfo::DockerInfo dockerInfo;
-            dockerInfo.set_image(dockerImage.get());
-
-            containerInfo.mutable_docker()->CopyFrom(dockerInfo);
-          } else {
-            EXIT(EXIT_FAILURE)
-              << "Unsupported containerizer: " << containerizer;
-
-            return;
-          }
-
-          task.mutable_container()->CopyFrom(containerInfo);
+        if (containerInfo.isSome()) {
+          task.mutable_container()->CopyFrom(containerInfo.get());
         }
 
         Call call;
@@ -440,6 +444,69 @@ private:
     SUBSCRIBED
   } state;
 
+  // TODO(jojy): Consider breaking down the method for each 'containerizer'.
+  Result<ContainerInfo> getContainerInfo() const
+  {
+    if (containerizer.empty()) {
+      return None();
+    }
+
+    ContainerInfo containerInfo;
+
+    // Mesos containerizer supports 'appc' and 'docker' images.
+    if (containerizer == "mesos") {
+      if (dockerImage.isNone() && appcImage.isNone()) {
+        return None();
+      }
+
+      containerInfo.set_type(ContainerInfo::MESOS);
+
+      Image* image = containerInfo.mutable_mesos()->mutable_image();
+
+      if (dockerImage.isSome()) {
+        image->set_type(Image::DOCKER);
+        image->mutable_docker()->set_name(dockerImage.get());
+      } else if (appcImage.isSome()) {
+        Image::Appc appc;
+
+        appc.set_name(appcImage.get());
+
+        // TODO(jojy): Labels are hard coded right now. Consider
+        // adding label flags for customization.
+        Label arch;
+        arch.set_key("arch");
+        arch.set_value("amd64");
+
+        Label os;
+        os.set_key("os");
+        os.set_value("linux");
+
+        Labels labels;
+        labels.add_labels()->CopyFrom(os);
+        labels.add_labels()->CopyFrom(arch);
+
+        appc.mutable_labels()->CopyFrom(labels);
+
+        image->set_type(Image::APPC);
+        image->mutable_appc()->CopyFrom(appc);
+      }
+
+      return containerInfo;
+    } else if (containerizer == "docker") {
+      // 'docker' containerizer only supports 'docker' images.
+      if (dockerImage.isNone()) {
+        return Error("'Docker' containerizer requires docker image name");
+      }
+
+      containerInfo.set_type(ContainerInfo::DOCKER);
+      containerInfo.mutable_docker()->set_image(dockerImage.get());
+
+      return containerInfo;
+    }
+
+    return Error("Unsupported containerizer: " + containerizer);
+  }
+
   FrameworkInfo frameworkInfo;
   const string master;
   const string name;
@@ -448,6 +515,7 @@ private:
   const Option<hashmap<string, string>> environment;
   const string resources;
   const Option<string> uri;
+  const Option<string> appcImage;
   const Option<string> dockerImage;
   const string containerizer;
   bool launched;
@@ -570,15 +638,25 @@ int main(int argc, char** argv)
     uri = "hdfs://" + flags.hdfs + path;
   }
 
-  Option<string> dockerImage;
+  Option<string> appcImage;
+  if (flags.appc_image.isSome()) {
+    appcImage = flags.appc_image.get();
+  }
 
+  Option<string> dockerImage;
   if (flags.docker_image.isSome()) {
     dockerImage = flags.docker_image.get();
+  }
+
+  if (appcImage.isSome() && dockerImage.isSome()) {
+    cerr << "Flags '--docker-image' and '--appc-image' are both set" << endl;
+    return EXIT_FAILURE;
   }
 
   FrameworkInfo frameworkInfo;
   frameworkInfo.set_user(user.get());
   frameworkInfo.set_name("");
+  frameworkInfo.set_role(flags.role);
   frameworkInfo.set_checkpoint(flags.checkpoint);
 
   Owned<CommandScheduler> scheduler(
@@ -591,6 +669,7 @@ int main(int argc, char** argv)
         environment,
         flags.resources,
         uri,
+        appcImage,
         dockerImage,
         flags.containerizer));
 

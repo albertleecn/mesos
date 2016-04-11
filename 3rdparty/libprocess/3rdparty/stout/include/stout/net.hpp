@@ -156,6 +156,8 @@ inline Try<int> download(const std::string& url, const std::string& path)
 
   FILE* file = fdopen(fd.get(), "w");
   if (file == NULL) {
+    curl_easy_cleanup(curl);
+    os::close(fd.get());
     return ErrnoError("Failed to open file handle of '" + path + "'");
   }
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
@@ -268,6 +270,17 @@ inline Try<std::string> getHostname(const IP& ip)
   }
 
   return std::string(hostname);
+}
+
+
+// Returns a `Try` of the result of attempting to set the `hostname`.
+inline Try<Nothing> setHostname(const std::string& hostname)
+{
+  if (sethostname(hostname.c_str(), hostname.size()) != 0) {
+    return ErrnoError();
+  }
+
+  return Nothing();
 }
 
 

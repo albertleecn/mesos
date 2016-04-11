@@ -114,6 +114,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 1.0"
@@ -130,6 +131,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 1.0"
@@ -140,6 +142,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 1.0"
@@ -150,6 +153,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 1.0"
@@ -166,6 +170,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 1.0"
@@ -176,6 +181,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 2.0"
@@ -186,6 +192,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 4.0"
@@ -202,6 +209,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 1.0"
@@ -212,6 +220,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 1.0"
@@ -222,6 +231,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 4.0"
@@ -232,6 +242,7 @@ protected:
           "      \"resources\": {"
           "        \"cpus\": 0,"
           "        \"disk\": 0,"
+          "        \"gpus\": 0,"
           "        \"mem\":  0"
           "      },"
           "      \"weight\": 2.5"
@@ -526,6 +537,33 @@ TEST_F(DynamicWeightsTest, UnauthenticatedUpdateWeightRequest)
     << response2.get().body;
 
   checkWithRolesEndpoint(master.get()->pid);
+}
+
+
+// Checks that a weight query request is rejected for unauthenticated
+// principals.
+TEST_F(DynamicWeightsTest, UnauthenticatedQueryWeightRequest)
+{
+  // The master is configured so that only requests from `DEFAULT_CREDENTIAL`
+  // are authenticated.
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  Credential credential;
+  credential.set_principal("unknown-principal");
+  credential.set_secret("test-secret");
+
+  // Send a weight query request.
+  Future<Response> response = process::http::request(
+      process::http::createRequest(
+          master.get()->pid,
+          "GET",
+          false,
+          "weights",
+          createBasicAuthHeaders(credential)));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Unauthorized({}).status, response)
+    << response.get().body;
 }
 
 

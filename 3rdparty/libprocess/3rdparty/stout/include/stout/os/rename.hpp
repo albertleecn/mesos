@@ -13,25 +13,10 @@
 #ifndef __STOUT_OS_RENAME_HPP__
 #define __STOUT_OS_RENAME_HPP__
 
-#include <stdio.h>
-
-#include <string>
-
-#include <stout/error.hpp>
-#include <stout/nothing.hpp>
-#include <stout/try.hpp>
-
-namespace os {
-
-inline Try<Nothing> rename(const std::string& from, const std::string& to)
-{
-  if (::rename(from.c_str(), to.c_str()) != 0) {
-    return ErrnoError();
-  }
-
-  return Nothing();
-}
-
-} // namespace os {
+#ifdef __WINDOWS__
+#include <stout/os/windows/rename.hpp>
+#else
+#include <stout/os/posix/rename.hpp>
+#endif // __WINDOWS__
 
 #endif // __STOUT_OS_RENAME_HPP__
