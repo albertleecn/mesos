@@ -662,7 +662,8 @@ TEST_F(MasterTest, StatusUpdateAck)
 
 TEST_F(MasterTest, RecoverResources)
 {
-  Try<Owned<cluster::Master>> master = StartMaster();
+  master::Flags masterFlags = CreateMasterFlags();
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   MockExecutor exec(DEFAULT_EXECUTOR_ID);
@@ -763,6 +764,14 @@ TEST_F(MasterTest, RecoverResources)
 
   // Now kill the executor, scheduler should get an offer it's resources.
   containerizer.destroy(offer.framework_id(), executorInfo.executor_id());
+
+  // Ensure the container is destroyed, `ExitedExecutorMessage` message
+  // is received by the master and hence its resources will be recovered
+  // before a batch allocation is triggered.
+  Clock::pause();
+  Clock::settle();
+  Clock::advance(masterFlags.allocation_interval);
+  Clock::resume();
 
   // TODO(benh): We can't do driver.reviveOffers() because we need to
   // wait for the killed executors resources to get aggregated! We
@@ -997,7 +1006,8 @@ TEST_F(MasterTest, MasterInfo)
 
 TEST_F(MasterTest, MasterInfoOnReElection)
 {
-  Try<Owned<cluster::Master>> master = StartMaster();
+  master::Flags masterFlags = CreateMasterFlags();
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   StandaloneMasterDetector detector(master.get()->pid);
@@ -1049,6 +1059,11 @@ TEST_F(MasterTest, MasterInfoOnReElection)
       net::IP(ntohl(masterInfo.get().ip())));
 
   EXPECT_EQ(MESOS_VERSION, masterInfo.get().version());
+
+  // Advance the clock and trigger a batch allocation.
+  Clock::pause();
+  Clock::advance(masterFlags.allocation_interval);
+  Clock::resume();
 
   // The re-registered framework should get offers.
   AWAIT_READY(resourceOffers2);
@@ -1197,7 +1212,8 @@ TEST_F(MasterTest, MasterLost)
 // all slave resources and a single task should be able to run on these.
 TEST_F(MasterTest, LaunchCombinedOfferTest)
 {
-  Try<Owned<cluster::Master>> master = StartMaster();
+  master::Flags masterFlags = CreateMasterFlags();
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
   ASSERT_SOME(master);
 
   MockExecutor exec(DEFAULT_EXECUTOR_ID);
@@ -1265,6 +1281,11 @@ TEST_F(MasterTest, LaunchCombinedOfferTest)
   AWAIT_READY(status1);
   EXPECT_EQ(TASK_RUNNING, status1.get().state());
 
+  // Advance the clock and trigger a batch allocation.
+  Clock::pause();
+  Clock::advance(masterFlags.allocation_interval);
+  Clock::resume();
+
   // Await 2nd offer.
   AWAIT_READY(offers2);
   EXPECT_NE(0u, offers2.get().size());
@@ -1291,6 +1312,11 @@ TEST_F(MasterTest, LaunchCombinedOfferTest)
 
   AWAIT_READY(status2);
   EXPECT_EQ(TASK_KILLED, status2.get().state());
+
+  // Advance the clock and trigger a batch allocation.
+  Clock::pause();
+  Clock::advance(masterFlags.allocation_interval);
+  Clock::resume();
 
   // Await 3rd offer - 2nd and 3rd offer to same slave are now ready.
   AWAIT_READY(offers3);
@@ -2571,6 +2597,11 @@ TEST_F(MasterTest, OfferTimeout)
   AWAIT_READY(offerRescinded);
 
   AWAIT_READY(recoverResources);
+
+  // Advance the clock and trigger a batch allocation.
+  Clock::pause();
+  Clock::advance(masterFlags.allocation_interval);
+  Clock::resume();
 
   // Expect that the resources are re-offered to the framework after
   // the rescind.
