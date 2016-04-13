@@ -55,6 +55,8 @@ using namespace process;
 
 using mesos::internal::master::Master;
 
+using mesos::internal::protobuf::createLabel;
+
 using mesos::internal::slave::LoadQoSController;
 using mesos::internal::slave::Slave;
 
@@ -225,6 +227,10 @@ TEST_F(OversubscriptionTest, FetchResourceUsage)
   EXPECT_NE(0u, offers.get().size());
 
   TaskInfo task = createTask(offers.get()[0], "sleep 10", DEFAULT_EXECUTOR_ID);
+  task.mutable_labels()->add_labels()->CopyFrom(
+      createLabel("key1", "value1"));
+  task.mutable_executor()->mutable_labels()->add_labels()->CopyFrom(
+      createLabel("key2", "value2"));
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -251,6 +257,17 @@ TEST_F(OversubscriptionTest, FetchResourceUsage)
   EXPECT_EQ(usage.get().executors(0).executor_info().executor_id(),
             DEFAULT_EXECUTOR_ID);
   ASSERT_EQ(usage.get().executors(0).statistics(), statistics);
+  ASSERT_EQ(task.executor().labels(),
+            usage.get().executors(0).executor_info().labels());
+  ASSERT_EQ(1, usage.get().executors(0).tasks().size());
+  ASSERT_EQ(task.name(),
+            usage.get().executors(0).tasks(0).name());
+  ASSERT_EQ(task.task_id(),
+            usage.get().executors(0).tasks(0).id());
+  ASSERT_EQ(task.resources(),
+            usage.get().executors(0).tasks(0).resources());
+  ASSERT_EQ(task.labels(),
+            usage.get().executors(0).tasks(0).labels());
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -669,6 +686,8 @@ TEST_F(OversubscriptionTest, QoSFetchResourceUsage)
   EXPECT_NE(0u, offers.get().size());
 
   TaskInfo task = createTask(offers.get()[0], "sleep 10", DEFAULT_EXECUTOR_ID);
+  task.mutable_executor()->mutable_labels()->add_labels()->CopyFrom(
+      createLabel("key", "value"));
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -695,6 +714,8 @@ TEST_F(OversubscriptionTest, QoSFetchResourceUsage)
   EXPECT_EQ(usage.get().executors(0).executor_info().executor_id(),
             DEFAULT_EXECUTOR_ID);
   ASSERT_EQ(usage.get().executors(0).statistics(), statistics);
+  ASSERT_EQ(task.executor().labels(),
+            usage.get().executors(0).executor_info().labels());
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));

@@ -746,6 +746,8 @@ void Slave::initialize()
         [http](const process::http::Request& request) {
           return http.statistics(request);
         });
+  // TODO(ijimenez): Remove this endpoint at the end of the
+  // deprecation cycle on 0.26.
   route("/monitor/statistics.json",
         Http::STATISTICS_HELP(),
         [http](const process::http::Request& request) {
@@ -4970,6 +4972,12 @@ void Slave::_forwardOversubscribed(const Future<Resources>& oversubscribable)
     VLOG(1) << "Received oversubscribable resources "
             << oversubscribable.get() << " from the resource estimator";
 
+    // Oversubscribable resources must be tagged as revocable.
+    //
+    // TODO(bmahler): Consider tagging input as revocable
+    // rather than rejecting and crashing here.
+    CHECK_EQ(oversubscribable.get(), oversubscribable->revocable());
+
     // Calculate the latest allocation of oversubscribed resources.
     // Note that this allocation value might be different from the
     // master's view because new task/executor might be in flight from
@@ -5165,6 +5173,18 @@ Future<ResourceUsage> Slave::usage()
       entry->mutable_executor_info()->CopyFrom(executor->info);
       entry->mutable_allocated()->CopyFrom(executor->resources);
       entry->mutable_container_id()->CopyFrom(executor->containerId);
+
+      // We include non-terminal tasks in ResourceUsage.
+      foreach (const Task* task, executor->launchedTasks.values()) {
+        ResourceUsage::Executor::Task* t = entry->add_tasks();
+        t->set_name(task->name());
+        t->mutable_id()->CopyFrom(task->task_id());
+        t->mutable_resources()->CopyFrom(task->resources());
+
+        if (task->has_labels()) {
+          t->mutable_labels()->CopyFrom(task->labels());
+        }
+      }
 
       futures.push_back(containerizer->usage(executor->containerId));
     }
