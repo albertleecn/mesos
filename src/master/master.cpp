@@ -434,10 +434,19 @@ void Master::initialize()
   } else {
     LOG(INFO) << "Master allowing unauthenticated frameworks to register";
   }
+
   if (flags.authenticate_slaves) {
     LOG(INFO) << "Master only allowing authenticated agents to register";
   } else {
     LOG(INFO) << "Master allowing unauthenticated agents to register";
+  }
+
+  if (flags.authenticate_http_frameworks) {
+    LOG(INFO) << "Master only allowing authenticated HTTP frameworks to "
+              << "register";
+  } else {
+    LOG(INFO) << "Master allowing HTTP frameworks to register without "
+              << "authentication";
   }
 
   // Load credentials.
@@ -583,6 +592,95 @@ void Master::initialize()
         DEFAULT_HTTP_AUTHENTICATION_REALM,
         Owned<authentication::Authenticator>(httpAuthenticator.get()));
     httpAuthenticator = None();
+  }
+
+  if (flags.authenticate_http_frameworks) {
+    // The `--http_framework_authenticators` flag should always be set when HTTP
+    // framework authentication is enabled.
+    if (flags.http_framework_authenticators.isNone()) {
+      EXIT(EXIT_FAILURE)
+        << "Missing `--http_framework_authenticators` flag. This must be used "
+        << "in conjunction with `--authenticate_http_frameworks`";
+    }
+
+    vector<string> httpFrameworkAuthenticatorNames =
+      strings::split(flags.http_framework_authenticators.get(), ",");
+
+    // Passing an empty string into the `http_framework_authenticators`
+    // flag is considered an error.
+    if (httpFrameworkAuthenticatorNames.empty()) {
+      EXIT(EXIT_FAILURE) << "No HTTP framework authenticator specified";
+    }
+
+    if (httpFrameworkAuthenticatorNames.size() > 1) {
+      EXIT(EXIT_FAILURE) << "Multiple HTTP framework authenticators not "
+                         << "supported";
+    }
+
+    if (httpFrameworkAuthenticatorNames[0] != DEFAULT_HTTP_AUTHENTICATOR &&
+        !modules::ModuleManager::contains<authentication::Authenticator>(
+            httpFrameworkAuthenticatorNames[0])) {
+      EXIT(EXIT_FAILURE)
+        << "HTTP framework authenticator '"
+        << httpFrameworkAuthenticatorNames[0]
+        << "' not found. Check the spelling (compare to '"
+        << DEFAULT_HTTP_AUTHENTICATOR << "') or verify that the"
+        << " authenticator was loaded successfully (see --modules)";
+    }
+
+    Option<authentication::Authenticator*> httpFrameworkAuthenticator;
+
+    if (httpFrameworkAuthenticatorNames[0] == DEFAULT_HTTP_AUTHENTICATOR) {
+      if (credentials.isNone()) {
+        EXIT(EXIT_FAILURE)
+          << "No credentials provided for the default '"
+          << DEFAULT_HTTP_AUTHENTICATOR << "' HTTP framework authenticator";
+      }
+
+      LOG(INFO) << "Using default '" << DEFAULT_HTTP_AUTHENTICATOR
+                << "' HTTP framework authenticator";
+
+      Try<authentication::Authenticator*> authenticator =
+        BasicAuthenticatorFactory::create(
+            DEFAULT_HTTP_FRAMEWORK_AUTHENTICATION_REALM,
+            credentials.get());
+
+      if (authenticator.isError()) {
+        EXIT(EXIT_FAILURE)
+          << "Could not create HTTP framework authenticator module '"
+          << httpFrameworkAuthenticatorNames[0] << "': "
+          << authenticator.error();
+      }
+
+      httpFrameworkAuthenticator = authenticator.get();
+    } else {
+      Try<authentication::Authenticator*> module =
+        modules::ModuleManager::create<authentication::Authenticator>(
+            httpFrameworkAuthenticatorNames[0]);
+
+      if (module.isError()) {
+        EXIT(EXIT_FAILURE)
+          << "Could not create HTTP framework authenticator module '"
+          << httpFrameworkAuthenticatorNames[0] << "': " << module.error();
+      }
+
+      LOG(INFO) << "Using '" << httpFrameworkAuthenticatorNames[0]
+                << "' HTTP framework authenticator";
+
+      httpFrameworkAuthenticator = module.get();
+    }
+
+    CHECK_SOME(httpFrameworkAuthenticator);
+
+    if (httpFrameworkAuthenticator.get() != NULL) {
+      // Ownership of the `httpFrameworkAuthenticator` is passed to libprocess.
+      process::http::authentication::setAuthenticator(
+          DEFAULT_HTTP_FRAMEWORK_AUTHENTICATION_REALM,
+          Owned<authentication::Authenticator>(
+              httpFrameworkAuthenticator.get()));
+    }
+
+    httpFrameworkAuthenticator = None();
   }
 
   if (authorizer.isSome()) {
@@ -847,10 +945,12 @@ void Master::initialize()
 
   // Setup HTTP routes.
   route("/api/v1/scheduler",
+        DEFAULT_HTTP_FRAMEWORK_AUTHENTICATION_REALM,
         Http::SCHEDULER_HELP(),
-        [this](const process::http::Request& request) {
+        [this](const process::http::Request& request,
+               const Option<string>& principal) {
           Http::log(request);
-          return http.scheduler(request);
+          return http.scheduler(request, principal);
         });
   route("/create-volumes",
         DEFAULT_HTTP_AUTHENTICATION_REALM,
@@ -1669,7 +1769,7 @@ void Master::recoveredSlavesTimeout(const Registry& registry)
 
   if (removalPercentage > limit) {
     EXIT(EXIT_FAILURE)
-      << "Post-recovery slave removal limit exceeded! After "
+      << "Post-recovery agent removal limit exceeded! After "
       << flags.slave_reregister_timeout
       << " there were " << slaves.recovered.size()
       << " (" << removalPercentage * 100 << "%) agents recovered from the"
@@ -1702,7 +1802,7 @@ void Master::recoveredSlavesTimeout(const Registry& registry)
     // TODO(bmahler): With C++11, just call removeSlave from within
     // a lambda function to avoid the need to disambiguate.
     Nothing (Master::*removeSlave)(const Registry::Slave&) = &Self::removeSlave;
-    const string failure = "Slave removal rate limit acquisition failed";
+    const string failure = "Agent removal rate limit acquisition failed";
 
     acquire
       .then(defer(self(), removeSlave, slave))
@@ -1754,7 +1854,7 @@ Nothing Master::removeSlave(const Registry::Slave& slave)
     // the slave from the registry but we do not inform the
     // framework.
     const string& message =
-      "Failed to remove slave " + stringify(slave.info().id());
+      "Failed to remove agent " + stringify(slave.info().id());
 
     registrar->apply(Owned<Operation>(new RemoveSlave(slave.info())))
       .onFailed(lambda::bind(fail, message, lambda::_1));
@@ -2097,7 +2197,7 @@ void Master::subscribe(
   LOG(INFO) << "Received subscription request for"
             << " HTTP framework '" << frameworkInfo.name() << "'";
 
-  Option<Error> validationError = None();
+  Option<Error> validationError = roles::validate(frameworkInfo.role());
 
   if (validationError.isNone() && !isWhitelistedRole(frameworkInfo.role())) {
     validationError = Error("Role '" + frameworkInfo.role() + "' is not" +
@@ -2142,25 +2242,26 @@ void Master::subscribe(
   // Need to disambiguate for the compiler.
   void (Master::*_subscribe)(
       HttpConnection,
-      const scheduler::Call::Subscribe&,
+      const FrameworkInfo&,
+      bool,
       const Future<bool>&) = &Self::_subscribe;
 
   authorizeFramework(frameworkInfo)
     .onAny(defer(self(),
                  _subscribe,
                  http,
-                 subscribe,
+                 frameworkInfo,
+                 subscribe.force(),
                  lambda::_1));
 }
 
 
 void Master::_subscribe(
     HttpConnection http,
-    const scheduler::Call::Subscribe& subscribe,
+    const FrameworkInfo& frameworkInfo,
+    bool force,
     const Future<bool>& authorized)
 {
-  const FrameworkInfo& frameworkInfo = subscribe.framework_info();
-
   CHECK(!authorized.isDiscarded());
 
   Option<Error> authorizationError = None();
@@ -2286,7 +2387,7 @@ void Master::subscribe(
     const UPID& from,
     const scheduler::Call::Subscribe& subscribe)
 {
-  const FrameworkInfo& frameworkInfo = subscribe.framework_info();
+  FrameworkInfo frameworkInfo = subscribe.framework_info();
 
   // Update messages_{re}register_framework accordingly.
   if (!frameworkInfo.has_id() || frameworkInfo.id() == "") {
@@ -2314,7 +2415,7 @@ void Master::subscribe(
     return;
   }
 
-  Option<Error> validationError = None();
+  Option<Error> validationError = roles::validate(frameworkInfo.role());
 
   if (validationError.isNone() && !isWhitelistedRole(frameworkInfo.role())) {
     validationError = Error("Role '" + frameworkInfo.role() + "' is not" +
@@ -2363,36 +2464,41 @@ void Master::subscribe(
             << " framework '" << frameworkInfo.name() << "' at " << from;
 
   // We allow an authenticated framework to not specify a principal
-  // in FrameworkInfo but we'd prefer if it did so we log a WARNING
-  // here when it happens.
+  // in `FrameworkInfo` but we'd prefer to log a WARNING here. We also
+  // set `FrameworkInfo.principal` to the value of authenticated principal
+  // and use it for authorization later when it happens.
   if (!frameworkInfo.has_principal() && authenticated.contains(from)) {
-    LOG(WARNING) << "Framework at " << from
-                 << " (authenticated as '" << authenticated[from] << "')"
-                 << " does not set 'principal' in FrameworkInfo";
+    LOG(WARNING)
+      << "Setting 'principal' in FrameworkInfo to '" << authenticated[from]
+      << "' because the framework authenticated with that principal but did "
+      << "not set it in FrameworkInfo";
+
+    frameworkInfo.set_principal(authenticated[from]);
   }
 
   // Need to disambiguate for the compiler.
   void (Master::*_subscribe)(
       const UPID&,
-      const scheduler::Call::Subscribe&,
+      const FrameworkInfo&,
+      bool,
       const Future<bool>&) = &Self::_subscribe;
 
   authorizeFramework(frameworkInfo)
     .onAny(defer(self(),
                  _subscribe,
                  from,
-                 subscribe,
+                 frameworkInfo,
+                 subscribe.force(),
                  lambda::_1));
 }
 
 
 void Master::_subscribe(
     const UPID& from,
-    const scheduler::Call::Subscribe& subscribe,
+    const FrameworkInfo& frameworkInfo,
+    bool force,
     const Future<bool>& authorized)
 {
-  const FrameworkInfo& frameworkInfo = subscribe.framework_info();
-
   CHECK(!authorized.isDiscarded());
 
   Option<Error> authorizationError = None();
@@ -2480,7 +2586,7 @@ void Master::_subscribe(
       CHECK_NOTNULL(frameworks.registered[frameworkInfo.id()]);
 
     // Test for the error case first.
-    if ((framework->pid != from) && !subscribe.force()) {
+    if ((framework->pid != from) && !force) {
       LOG(ERROR) << "Disallowing subscription attempt of"
                  << " framework " << *framework
                  << " because it is not expected from " << from;
@@ -2501,7 +2607,7 @@ void Master::_subscribe(
 
     framework->reregisteredTime = Clock::now();
 
-    if (subscribe.force()) {
+    if (force) {
       // TODO(vinod): Now that the scheduler pid is unique we don't
       // need to call 'failoverFramework()' if the pid hasn't changed
       // (i.e., duplicate message). Instead we can just send the
@@ -3444,7 +3550,7 @@ void Master::_accept(
             TASK_LOST,
             TaskStatus::SOURCE_MASTER,
             None(),
-            slave == NULL ? "Slave removed" : "Slave disconnected",
+            slave == NULL ? "Agent removed" : "Agent disconnected",
             reason);
 
         metrics->tasks_lost++;
@@ -4218,7 +4324,7 @@ void Master::executorMessage(
                  << " ; asking agent to shutdown";
 
     ShutdownMessage message;
-    message.set_message("Executor message from unknown slave");
+    message.set_message("Executor message from unknown agent");
     reply(message);
     metrics->invalid_executor_to_framework_messages++;
     return;
@@ -4331,7 +4437,7 @@ void Master::registerSlave(
     LOG(WARNING) << "Refusing registration of agent at " << from
                  << " because it is not authenticated";
     ShutdownMessage message;
-    message.set_message("Slave is not authenticated");
+    message.set_message("Agent is not authenticated");
     send(from, message);
     return;
   }
@@ -4367,7 +4473,7 @@ void Master::registerSlave(
       LOG(INFO) << "Removing old disconnected agent " << *slave
                 << " because a registration attempt occurred";
       removeSlave(slave,
-                  "a new slave registered at the same address",
+                  "a new agent registered at the same address",
                   metrics->slave_removals_reason_registered);
     } else {
       CHECK(slave->active)
@@ -4441,7 +4547,7 @@ void Master::_registerSlave(
 
     ShutdownMessage message;
     message.set_message(
-        "Slave attempted to register but got duplicate slave id " +
+        "Agent attempted to register but got duplicate agent id " +
         stringify(slaveInfo.id()));
     send(pid, message);
   } else {
@@ -4512,7 +4618,7 @@ void Master::reregisterSlave(
     LOG(WARNING) << "Refusing re-registration of agent at " << from
                  << " because it is not authenticated";
     ShutdownMessage message;
-    message.set_message("Slave is not authenticated");
+    message.set_message("Agent is not authenticated");
     send(from, message);
     return;
   }
@@ -4546,7 +4652,7 @@ void Master::reregisterSlave(
                  << "re-register after removal; shutting it down";
 
     ShutdownMessage message;
-    message.set_message("Slave attempted to re-register after removal");
+    message.set_message("Agent attempted to re-register after removal");
     send(from, message);
     return;
   }
@@ -4579,7 +4685,7 @@ void Master::reregisterSlave(
 
       ShutdownMessage message;
       message.set_message(
-          "Slave attempted to re-register with different IP / hostname");
+          "Agent attempted to re-register with different IP / hostname");
 
       send(from, message);
       return;
@@ -4683,7 +4789,7 @@ void Master::_reregisterSlave(
 
     ShutdownMessage message;
     message.set_message(
-        "Slave attempted to re-register with unknown slave id " +
+        "Agent attempted to re-register with unknown agent id " +
         stringify(slaveInfo.id()));
     send(pid, message);
   } else {
@@ -4779,7 +4885,7 @@ void Master::unregisterSlave(const UPID& from, const SlaveID& slaveId)
       return;
     }
     removeSlave(slave,
-                "the slave unregistered",
+                "the agent unregistered",
                 metrics->slave_removals_reason_unregistered);
   }
 }
@@ -4801,7 +4907,7 @@ void Master::updateSlave(
       << " ; asking agent to shutdown";
 
     ShutdownMessage message;
-    message.set_message("Update slave message from unknown slave");
+    message.set_message("Update agent message from unknown agent");
     reply(message);
     return;
   }
@@ -4933,7 +5039,7 @@ void Master::statusUpdate(StatusUpdate update, const UPID& pid)
                  << " to shutdown";
 
     ShutdownMessage message;
-    message.set_message("Status update from unknown slave");
+    message.set_message("Status update from unknown agent");
     send(pid, message);
 
     metrics->invalid_status_updates++;
@@ -5037,7 +5143,7 @@ void Master::exitedExecutor(
                  << " ; asking agent to shutdown";
 
     ShutdownMessage message;
-    message.set_message("Executor exited message from unknown slave");
+    message.set_message("Executor exited message from unknown agent");
     reply(message);
     return;
   }
@@ -5328,7 +5434,7 @@ void Master::_reconcileTasks(
           TASK_LOST,
           TaskStatus::SOURCE_MASTER,
           None(),
-          "Reconciliation: Task is unknown to the slave",
+          "Reconciliation: Task is unknown to the agent",
           TaskStatus::REASON_RECONCILIATION);
     } else if (slaves.transitioning(slaveId)) {
       // (4) Task is unknown, slave is transitionary: no-op.
@@ -5934,30 +6040,25 @@ void Master::addFramework(Framework* framework)
       framework->info,
       framework->usedResources);
 
-  // Export framework metrics.
+  // Export framework metrics if a principal is specified in `FrameworkInfo`.
 
-  // If the framework is authenticated, its principal should be in
-  // 'authenticated'. Otherwise look if it's supplied in
-  // FrameworkInfo.
+  Option<string> principal = framework->info.has_principal()
+      ? Option<string>(framework->info.principal())
+      : None();
+
   if (framework->pid.isSome()) {
-    Option<string> principal = authenticated.get(framework->pid.get());
-    if (principal.isNone() && framework->info.has_principal()) {
-      principal = framework->info.principal();
-    }
-
     CHECK(!frameworks.principals.contains(framework->pid.get()));
     frameworks.principals.put(framework->pid.get(), principal);
+  }
 
-    // Export framework metrics if a principal is specified.
-    if (principal.isSome()) {
-      // Create new framework metrics if this framework is the first
-      // one of this principal. Otherwise existing metrics are reused.
-      if (!metrics->frameworks.contains(principal.get())) {
-        metrics->frameworks.put(
-            principal.get(),
-            Owned<Metrics::Frameworks>(
-              new Metrics::Frameworks(principal.get())));
-      }
+  if (principal.isSome()) {
+    // Create new framework metrics if this framework is the first
+    // one of this principal. Otherwise existing metrics are reused.
+    if (!metrics->frameworks.contains(principal.get())) {
+      metrics->frameworks.put(
+          principal.get(),
+          Owned<Metrics::Frameworks>(
+            new Metrics::Frameworks(principal.get())));
     }
   }
 }

@@ -853,7 +853,8 @@ private:
 
   void _subscribe(
       HttpConnection http,
-      const scheduler::Call::Subscribe& subscribe,
+      const FrameworkInfo& frameworkInfo,
+      bool force,
       const process::Future<bool>& authorized);
 
   void subscribe(
@@ -862,7 +863,8 @@ private:
 
   void _subscribe(
       const process::UPID& from,
-      const scheduler::Call::Subscribe& subscribe,
+      const FrameworkInfo& frameworkInfo,
+      bool force,
       const process::Future<bool>& authorized);
 
   void teardown(Framework* framework);
@@ -1069,7 +1071,8 @@ private:
 
     // /api/v1/scheduler
     process::Future<process::http::Response> scheduler(
-        const process::http::Request& request) const;
+        const process::http::Request& request,
+        const Option<std::string>& principal) const;
 
     // /master/create-volumes
     process::Future<process::http::Response> createVolumes(
@@ -1566,7 +1569,7 @@ protected:
     // Check and see if this slave already exists.
     if (slaveIDs->contains(info.id())) {
       if (strict) {
-        return Error("Slave already admitted");
+        return Error("Agent already admitted");
       } else {
         return false; // No mutation.
       }
@@ -1603,7 +1606,7 @@ protected:
     }
 
     if (strict) {
-      return Error("Slave not yet admitted");
+      return Error("Agent not yet admitted");
     } else {
       Registry::Slave* slave = registry->mutable_slaves()->add_slaves();
       slave->mutable_info()->CopyFrom(info);
@@ -1642,7 +1645,7 @@ protected:
     }
 
     if (strict) {
-      return Error("Slave not yet admitted");
+      return Error("Agent not yet admitted");
     } else {
       return false; // No mutation.
     }

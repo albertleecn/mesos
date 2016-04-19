@@ -1094,7 +1094,7 @@ TEST_F(WhitelistTest, WhitelistSlave)
   Try<string> hostname = net::hostname();
   ASSERT_SOME(hostname);
 
-  string hosts = hostname.get() + "\n" + "dummy-slave";
+  string hosts = hostname.get() + "\n" + "dummy-agent";
   ASSERT_SOME(os::write(path, hosts)) << "Error writing whitelist";
 
   master::Flags flags = CreateMasterFlags();
@@ -4059,6 +4059,32 @@ TEST_F(MasterTest, FrameworkInfoLabels)
 
   driver.stop();
   driver.join();
+}
+
+
+// This test ensures that if a framework scheduler provides invalid
+// role in its FrameworkInfo message, the master will reject it.
+TEST_F(MasterTest, RejectFrameworkWithInvalidRole)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  FrameworkInfo framework = DEFAULT_FRAMEWORK_INFO;
+
+  // Add invalid role to the FrameworkInfo.
+  framework.set_role("/test/test1");
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, framework, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  Future<string> error;
+  EXPECT_CALL(sched, error(&driver, _))
+    .WillOnce(FutureArg<1>(&error));
+
+  driver.start();
+
+  AWAIT_READY(error);
 }
 
 

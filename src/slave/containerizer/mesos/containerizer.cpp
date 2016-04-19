@@ -38,6 +38,8 @@
 
 #include "common/protobuf_utils.hpp"
 
+#include "hook/manager.hpp"
+
 #include "module/manager.hpp"
 
 #include "slave/paths.hpp"
@@ -86,6 +88,7 @@
 
 #ifdef __linux__
 #include "slave/containerizer/mesos/isolators/namespaces/pid.hpp"
+#include "slave/containerizer/mesos/isolators/network/cni/cni.hpp"
 #endif
 
 #ifdef WITH_NETWORK_ISOLATOR
@@ -155,6 +158,18 @@ Try<MesosContainerizer*> MesosContainerizer::create(
   if (!strings::contains(flags_.isolation, "filesystem/")) {
     flags_.isolation += ",filesystem/posix";
   }
+
+#ifdef __linux__
+  // One and only one `network` isolator is required. The network
+  // isolator is responsible for preparing the network namespace for
+  // containers. If the user does not specify one, 'network/cni'
+  // isolator will be used.
+
+  // TODO(jieyu): Check that only one network isolator is used.
+  if (!strings::contains(flags_.isolation, "network/")) {
+    flags_.isolation += ",network/cni";
+  }
+#endif
 
   LOG(INFO) << "Using isolation: " << flags_.isolation;
 
@@ -232,6 +247,7 @@ Try<MesosContainerizer*> MesosContainerizer::create(
 #endif
     {"docker/runtime", &DockerRuntimeIsolatorProcess::create},
     {"namespaces/pid", &NamespacesPidIsolatorProcess::create},
+    {"network/cni", &NetworkCniIsolatorProcess::create},
 #endif
 #ifdef WITH_NETWORK_ISOLATOR
     {"network/port_mapping", &PortMappingIsolatorProcess::create},
@@ -948,7 +964,13 @@ Future<Nothing> MesosContainerizerProcess::fetch(
       directory,
       user,
       slaveId,
-      flags);
+      flags)
+    .then([=]() -> Future<Nothing> {
+      if (HookManager::hooksAvailable()) {
+        HookManager::slavePostFetchHook(containerId, directory);
+      }
+      return Nothing();
+    });
 }
 
 

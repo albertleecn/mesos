@@ -742,16 +742,20 @@ void Slave::initialize()
           return http.health(request);
         });
   route("/monitor/statistics",
+        DEFAULT_HTTP_AUTHENTICATION_REALM,
         Http::STATISTICS_HELP(),
-        [http](const process::http::Request& request) {
-          return http.statistics(request);
+        [http](const process::http::Request& request,
+               const Option<string>& principal) {
+          return http.statistics(request, principal);
         });
   // TODO(ijimenez): Remove this endpoint at the end of the
   // deprecation cycle on 0.26.
   route("/monitor/statistics.json",
+        DEFAULT_HTTP_AUTHENTICATION_REALM,
         Http::STATISTICS_HELP(),
-        [http](const process::http::Request& request) {
-          return http.statistics(request);
+        [http](const process::http::Request& request,
+               const Option<string>& principal) {
+          return http.statistics(request, principal);
         });
 
   // Expose the log file for the webui. Fall back to 'log_dir' if
@@ -1304,7 +1308,7 @@ void Slave::reregistered(
             TASK_LOST,
             TaskStatus::SOURCE_SLAVE,
             UUID::random(),
-            "Reconciliation: task unknown to the slave",
+            "Reconciliation: task unknown to the agent",
             TaskStatus::REASON_RECONCILIATION);
 
         // NOTE: We can't use statusUpdate() here because it drops
@@ -1733,7 +1737,7 @@ void Slave::_runTask(
           TaskStatus::SOURCE_SLAVE,
           UUID::random(),
           "The checkpointed resources being used by the task are unknown to "
-          "the slave",
+          "the agent",
           TaskStatus::REASON_RESOURCES_UNKNOWN);
 
       statusUpdate(update, UPID());
@@ -1766,7 +1770,7 @@ void Slave::_runTask(
             TaskStatus::SOURCE_SLAVE,
             UUID::random(),
             "The checkpointed resources being used by the executor are unknown "
-            "to the slave",
+            "to the agent",
             TaskStatus::REASON_RESOURCES_UNKNOWN,
             task.executor().executor_id());
 
@@ -2812,7 +2816,7 @@ void Slave::subscribe(
               TASK_LOST,
               TaskStatus::SOURCE_SLAVE,
               UUID::random(),
-              "Task launched during slave restart",
+              "Task launched during agent restart",
               TaskStatus::REASON_SLAVE_RESTARTED,
               executor->id);
 
@@ -3081,7 +3085,7 @@ void Slave::reregisterExecutor(
               TASK_LOST,
               TaskStatus::SOURCE_SLAVE,
               UUID::random(),
-              "Task launched during slave restart",
+              "Task launched during agent restart",
               TaskStatus::REASON_SLAVE_RESTARTED,
               executorId);
 
@@ -3898,8 +3902,14 @@ ExecutorInfo Slave::getExecutorInfo(
       executor.mutable_command()->set_user(task.command().user());
     }
 
-    Result<string> path =
-      os::realpath(path::join(flags.launcher_dir, "mesos-executor"));
+    Result<string> path = None();
+    if (flags.http_command_executor) {
+      path =
+        os::realpath(path::join(flags.launcher_dir, "mesos-http-executor"));
+    } else {
+      path =
+        os::realpath(path::join(flags.launcher_dir, "mesos-executor"));
+    }
 
     // Explicitly set 'shell' to true since we want to use the shell
     // for running the mesos-executor (and even though this is the
@@ -3909,7 +3919,11 @@ ExecutorInfo Slave::getExecutorInfo(
     if (path.isSome()) {
       if (hasRootfs) {
         executor.mutable_command()->set_shell(false);
-        executor.mutable_command()->add_arguments("mesos-executor");
+        if (flags.http_command_executor) {
+          executor.mutable_command()->add_arguments("mesos-http-executor");
+        } else {
+          executor.mutable_command()->add_arguments("mesos-executor");
+        }
         executor.mutable_command()->add_arguments(
             "--sandbox_directory=" + flags.sandbox_directory);
 
@@ -4641,7 +4655,7 @@ Future<Nothing> Slave::recover(const Result<state::State>& state)
       return Failure(
           "Checkpointed resources " +
           stringify(resourcesState.get().resources) +
-          " are incompatible with slave resources " +
+          " are incompatible with agent resources " +
           stringify(info.resources()) + ": " +
           totalResources.error());
     }
@@ -4660,11 +4674,11 @@ Future<Nothing> Slave::recover(const Result<state::State>& state)
         !(info == slaveState.get().info.get())) {
       return Failure(strings::join(
           "\n",
-          "Incompatible slave info detected.",
+          "Incompatible agent info detected.",
           "------------------------------------------------------------",
-          "Old slave info:\n" + stringify(slaveState.get().info.get()),
+          "Old agent info:\n" + stringify(slaveState.get().info.get()),
           "------------------------------------------------------------",
-          "New slave info:\n" + stringify(info),
+          "New agent info:\n" + stringify(info),
           "------------------------------------------------------------"));
     }
 
@@ -5864,12 +5878,22 @@ Executor::Executor(
 {
   CHECK_NOTNULL(slave);
 
+  // See if this is driver based command executor.
   Result<string> executorPath =
     os::realpath(path::join(slave->flags.launcher_dir, "mesos-executor"));
 
   if (executorPath.isSome()) {
     commandExecutor =
-      strings::contains(info.command().value(), executorPath.get());
+        strings::contains(info.command().value(), executorPath.get());
+  }
+
+  // See if this is HTTP based command executor.
+  if (!commandExecutor) {
+    executorPath = os::realpath(
+        path::join(slave->flags.launcher_dir, "mesos-http-executor"));
+
+    commandExecutor =
+        strings::contains(info.command().value(), executorPath.get());
   }
 }
 
