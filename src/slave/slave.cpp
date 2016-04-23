@@ -104,6 +104,7 @@ using std::list;
 using std::map;
 using std::set;
 using std::string;
+using std::tuple;
 using std::vector;
 
 using process::async;
@@ -756,6 +757,11 @@ void Slave::initialize()
         [http](const process::http::Request& request,
                const Option<string>& principal) {
           return http.statistics(request, principal);
+        });
+  route("/containers",
+        Http::CONTAINERS_HELP(),
+        [http](const process::http::Request& request) {
+          return http.containers(request);
         });
 
   // Expose the log file for the webui. Fall back to 'log_dir' if
@@ -1823,10 +1829,18 @@ void Slave::_runTask(
   switch (executor->state) {
     case Executor::TERMINATING:
     case Executor::TERMINATED: {
+      string executorState;
+
+      if (executor->state == Executor::TERMINATING) {
+        executorState = "terminating";
+      } else {
+        executorState = "terminated";
+      }
+
       LOG(WARNING) << "Asked to run task '" << task.task_id()
                    << "' for framework " << frameworkId
                    << " with executor '" << executorId
-                   << "' which is terminating/terminated";
+                   << "' which is " << executorState;
 
       const StatusUpdate update = protobuf::createStatusUpdate(
           frameworkId,
@@ -1835,7 +1849,7 @@ void Slave::_runTask(
           TASK_LOST,
           TaskStatus::SOURCE_SLAVE,
           UUID::random(),
-          "Executor terminating/terminated",
+          "Executor " + executorState,
           TaskStatus::REASON_EXECUTOR_TERMINATED);
 
       statusUpdate(update, UPID());
@@ -2167,10 +2181,14 @@ void Slave::killTask(
       break;
     }
     case Executor::TERMINATING:
+      LOG(WARNING) << "Ignoring kill task " << taskId
+                   << " because the executor " << *executor
+                   << " is terminating";
+      break;
     case Executor::TERMINATED:
       LOG(WARNING) << "Ignoring kill task " << taskId
                    << " because the executor " << *executor
-                   << " is terminating/terminated";
+                   << " is terminated";
       break;
     case Executor::RUNNING: {
       if (executor->queuedTasks.contains(taskId)) {
@@ -4405,11 +4423,17 @@ void Slave::shutdownExecutor(
         executor->state == Executor::TERMINATED)
     << executor->state;
 
-  if (executor->state == Executor::TERMINATING ||
-      executor->state == Executor::TERMINATED) {
+  if (executor->state == Executor::TERMINATING) {
     LOG(WARNING) << "Ignoring shutdown executor '" << executorId
                  << "' of framework " << frameworkId
-                 << " because the executor is terminating/terminated";
+                 << " because the executor is terminating";
+    return;
+  }
+
+  if (executor->state == Executor::TERMINATED) {
+    LOG(WARNING) << "Ignoring shutdown executor '" << executorId
+                 << "' of framework " << frameworkId
+                 << " because the executor is terminated";
     return;
   }
 

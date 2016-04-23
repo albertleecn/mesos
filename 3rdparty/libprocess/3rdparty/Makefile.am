@@ -62,6 +62,11 @@ EXTRA_DIST +=			\
 EXTRA_DIST +=			\
   $(HTTP_PARSER).patch
 
+# We include an upstream patch for protobuf in order to avoid
+# signed/unsigned comparisons.
+EXTRA_DIST +=			\
+  $(PROTOBUF).patch
+
 CLEAN_EXTRACTED =	\
   $(BOOST)		\
   $(GLOG)		\
@@ -188,10 +193,12 @@ stout_tests_SOURCES =				\
   $(STOUT)/tests/os_tests.cpp			\
   $(STOUT)/tests/os/env_tests.cpp		\
   $(STOUT)/tests/os/filesystem_tests.cpp	\
+  $(STOUT)/tests/os/process_tests.cpp		\
   $(STOUT)/tests/os/rmdir_tests.cpp		\
   $(STOUT)/tests/os/sendfile_tests.cpp		\
   $(STOUT)/tests/os/signals_tests.cpp		\
   $(STOUT)/tests/os/strerror_tests.cpp		\
+  $(STOUT)/tests/os/systems_tests.cpp		\
   $(STOUT)/tests/path_tests.cpp			\
   $(STOUT)/tests/protobuf_tests.cpp		\
   $(STOUT)/tests/protobuf_tests.pb.cc		\

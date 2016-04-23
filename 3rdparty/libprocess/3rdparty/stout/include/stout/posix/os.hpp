@@ -95,6 +95,54 @@ using ::hstrerror;
 
 // Forward declarations.
 inline Try<Nothing> utime(const std::string&);
+inline Try<std::list<Process>> processes();
+
+
+// Suspends execution of the calling process until a child specified by `pid`
+// has changed state. Unlike the POSIX standard function `::waitpid`, this
+// function does not use -1 and 0 to signify errors and nonblocking return.
+// Instead, we return `Result<pid_t>`:
+//   * In case of error, we return `Error` rather than -1. For example, we
+//     would return an `Error` in case of `EINVAL`.
+//   * In case of nonblocking return, we return `None` rather than 0. For
+//     example, if we pass `WNOHANG` in the `options`, we would expect 0 to be
+//     returned in the case that children specified by `pid` exist, but have
+//     not changed state yet. In this case we return `None` instead.
+//
+// NOTE: There are important differences between the POSIX and Windows
+// implementations of this function:
+//   * On POSIX, `pid_t` is a signed number, but on Windows, PIDs are `DWORD`,
+//     which is `unsigned long`. Thus, if we use `DWORD` to represent the `pid`
+//     argument, we would not be able to pass -1 as the `pid`.
+//   * Since it is important to be able to detect -1 has been passed to
+//     `os::waitpid`, as a matter of practicality, we choose to:
+//     (1) Use `long` to represent the `pid` argument.
+//     (2) Disable using any value <= 0 for `pid` on Windows.
+//   * This decision is pragmatic. The reasoning is:
+//     (1) The Windows code paths call `os::waitpid` in only a handful of
+//         places, and in none of these conditions do we need `-1` as a value.
+//     (2) Since PIDs virtually never take on values outside the range of
+//         vanilla signed `long` it is likely that an accidental conversion
+//         will never happen.
+//     (3) Even though it is not formalized in the C specification, the
+//         implementation of `long` on the vast majority of production servers
+//         is 2's complement, so we expect that when we accidentally do
+//         implicitly convert from `unsigned long` to `long`, we will "wrap
+//         around" to negative values. And since we've disabled the negative
+//         `pid` in the Windows implementation, we should error out.
+inline Result<pid_t> waitpid(pid_t pid, int* status, int options)
+{
+  const pid_t child_pid = ::waitpid(pid, status, options);
+
+  if (child_pid == 0) {
+    return None();
+  } else if (child_pid < 0) {
+    return ErrnoError("os::waitpid: Call to `waitpid` failed");
+  } else {
+    return child_pid;
+  }
+}
+
 
 // Sets the value associated with the specified key in the set of
 // environment variables.
@@ -257,27 +305,6 @@ inline Try<UTSInfo> uname()
 }
 
 
-inline Try<std::list<Process>> processes()
-{
-  const Try<std::set<pid_t>> pids = os::pids();
-
-  if (pids.isError()) {
-    return Error(pids.error());
-  }
-
-  std::list<Process> result;
-  foreach (pid_t pid, pids.get()) {
-    const Result<Process> process = os::process(pid);
-
-    // Ignore any processes that disappear.
-    if (process.isSome()) {
-      result.push_back(process.get());
-    }
-  }
-  return result;
-}
-
-
 // Overload of os::pids for filtering by groups and sessions.
 // A group / session id of 0 will fitler on the group / session ID
 // of the calling process.
@@ -368,18 +395,6 @@ inline Try<Nothing> tar(const std::string& path, const std::string& archive)
 }
 
 
-// Return the operating system name (e.g. Linux).
-inline Try<std::string> sysname()
-{
-  Try<UTSInfo> info = uname();
-  if (info.isError()) {
-    return Error(info.error());
-  }
-
-  return info.get().sysname;
-}
-
-
 // Return the OS release numbers.
 inline Try<Version> release()
 {
@@ -407,60 +422,6 @@ inline Try<Version> release()
   }
 #endif
   return Version(major, minor, patch);
-}
-
-
-inline Option<Process> process(
-    pid_t pid,
-    const std::list<Process>& processes)
-{
-  foreach (const Process& process, processes) {
-    if (process.pid == pid) {
-      return process;
-    }
-  }
-  return None();
-}
-
-
-inline std::set<pid_t> children(
-    pid_t pid,
-    const std::list<Process>& processes,
-    bool recursive = true)
-{
-  // Perform a breadth first search for descendants.
-  std::set<pid_t> descendants;
-  std::queue<pid_t> parents;
-  parents.push(pid);
-
-  do {
-    pid_t parent = parents.front();
-    parents.pop();
-
-    // Search for children of parent.
-    foreach (const Process& process, processes) {
-      if (process.parent == parent) {
-        // Have we seen this child yet?
-        if (descendants.insert(process.pid).second) {
-          parents.push(process.pid);
-        }
-      }
-    }
-  } while (recursive && !parents.empty());
-
-  return descendants;
-}
-
-
-inline Try<std::set<pid_t>> children(pid_t pid, bool recursive = true)
-{
-  const Try<std::list<Process>> processes = os::processes();
-
-  if (processes.isError()) {
-    return Error(processes.error());
-  }
-
-  return children(pid, processes.get(), recursive);
 }
 
 
