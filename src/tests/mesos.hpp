@@ -207,6 +207,12 @@ protected:
       mesos::slave::QoSController* qosController,
       const Option<slave::Flags>& flags = None());
 
+  // Starts a slave with the specified detector, authorizer, and flags.
+  virtual Try<process::Owned<cluster::Slave>> StartSlave(
+      mesos::master::detector::MasterDetector* detector,
+      mesos::Authorizer* authorizer,
+      const Option<slave::Flags>& flags = None());
+
   Option<zookeeper::URL> zookeeperUrl;
 
   const std::string defaultAgentResourcesString{
@@ -659,6 +665,20 @@ inline google::protobuf::RepeatedPtrField<WeightInfo> createWeightInfos(
   }
 
   return infos;
+}
+
+
+// Convert WeightInfos protobuf to weights hashmap.
+inline hashmap<std::string, double> convertToHashmap(
+    const google::protobuf::RepeatedPtrField<WeightInfo> weightInfos)
+{
+  hashmap<std::string, double> weights;
+
+  for (const WeightInfo& weightInfo : weightInfos) {
+    weights[weightInfo.role()] = weightInfo.weight();
+  }
+
+  return weights;
 }
 
 
@@ -1254,7 +1274,8 @@ public:
       const slave::Flags& flags,
       mesos::master::detector::MasterDetector* detector,
       slave::Containerizer* containerizer,
-      const Option<mesos::slave::QoSController*>& qosController = None());
+      const Option<mesos::slave::QoSController*>& qosController = None(),
+      const Option<mesos::Authorizer*>& authorizer = None());
 
   virtual ~MockSlave();
 
