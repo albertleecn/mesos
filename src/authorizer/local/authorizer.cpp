@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <mesos/mesos.hpp>
+
 #include <mesos/authorizer/acls.hpp>
 
 #include <process/dispatch.hpp>
@@ -92,7 +93,8 @@ public:
 
     switch (request.action()) {
       case authorization::REGISTER_FRAMEWORK_WITH_ROLE:
-        for (const ACL::RegisterFramework& acl : acls.register_frameworks()) {
+        foreach (
+            const ACL::RegisterFramework& acl, acls.register_frameworks()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.roles();
@@ -103,7 +105,8 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::TEARDOWN_FRAMEWORK_WITH_PRINCIPAL:
-        for (const ACL::TeardownFramework& acl : acls.teardown_frameworks()) {
+        foreach (
+            const ACL::TeardownFramework& acl, acls.teardown_frameworks()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.framework_principals();
@@ -114,7 +117,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::RUN_TASK_WITH_USER:
-        for (const ACL::RunTask& acl : acls.run_tasks()) {
+        foreach (const ACL::RunTask& acl, acls.run_tasks()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.users();
@@ -125,7 +128,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::RESERVE_RESOURCES_WITH_ROLE:
-        for (const ACL::ReserveResources& acl : acls.reserve_resources()) {
+        foreach (const ACL::ReserveResources& acl, acls.reserve_resources()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.roles();
@@ -136,7 +139,8 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::UNRESERVE_RESOURCES_WITH_PRINCIPAL:
-        for (const ACL::UnreserveResources& acl : acls.unreserve_resources()) {
+        foreach (
+            const ACL::UnreserveResources& acl, acls.unreserve_resources()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.reserver_principals();
@@ -147,7 +151,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::CREATE_VOLUME_WITH_ROLE:
-        for (const ACL::CreateVolume& acl : acls.create_volumes()) {
+        foreach (const ACL::CreateVolume& acl, acls.create_volumes()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.roles();
@@ -158,7 +162,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::DESTROY_VOLUME_WITH_PRINCIPAL:
-        for (const ACL::DestroyVolume& acl : acls.destroy_volumes()) {
+        foreach (const ACL::DestroyVolume& acl, acls.destroy_volumes()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.creator_principals();
@@ -169,7 +173,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::SET_QUOTA_WITH_ROLE:
-        for (const ACL::SetQuota& acl : acls.set_quotas()) {
+        foreach (const ACL::SetQuota& acl, acls.set_quotas()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.roles();
@@ -180,7 +184,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::DESTROY_QUOTA_WITH_PRINCIPAL:
-        for (const ACL::RemoveQuota& acl : acls.remove_quotas()) {
+        foreach (const ACL::RemoveQuota& acl, acls.remove_quotas()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.quota_principals();
@@ -191,7 +195,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::UPDATE_WEIGHTS_WITH_ROLE:
-        for (const ACL::UpdateWeights& acl : acls.update_weights()) {
+        foreach (const ACL::UpdateWeights& acl, acls.update_weights()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.roles();
@@ -202,7 +206,7 @@ public:
         return authorized(request, acls_);
         break;
       case authorization::GET_ENDPOINT_WITH_PATH:
-        for (const ACL::GetEndpoint& acl : acls.get_endpoints()) {
+        foreach (const ACL::GetEndpoint& acl, acls.get_endpoints()) {
           GenericACL acl_;
           acl_.subjects = acl.principals();
           acl_.objects = acl.paths();
@@ -242,7 +246,7 @@ private:
       object.set_type(mesos::ACL::Entity::ANY);
     }
 
-    for (const GenericACL& acl : acls) {
+    foreach (const GenericACL& acl, acls) {
       if (matches(subject, acl.subjects) &&
           matches(object, acl.objects)) {
         return allows(subject, acl.subjects) &&

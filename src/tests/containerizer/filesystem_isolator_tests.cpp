@@ -33,23 +33,16 @@
 #include <stout/path.hpp>
 #include <stout/uuid.hpp>
 
-#ifdef __linux__
 #include "linux/fs.hpp"
-#endif
 
 #include "slave/paths.hpp"
 
-#ifdef __linux__
+#include "slave/containerizer/mesos/containerizer.hpp"
 #include "slave/containerizer/mesos/linux_launcher.hpp"
 
 #include "slave/containerizer/mesos/isolators/filesystem/linux.hpp"
-#endif
-
-#include "slave/containerizer/mesos/containerizer.hpp"
-
 #include "slave/containerizer/mesos/provisioner/backend.hpp"
 #include "slave/containerizer/mesos/provisioner/paths.hpp"
-
 #include "slave/containerizer/mesos/provisioner/backends/copy.hpp"
 
 #include "tests/flags.hpp"
@@ -58,7 +51,10 @@
 #include "tests/containerizer/rootfs.hpp"
 #include "tests/containerizer/store.hpp"
 
-using namespace process;
+using process::Future;
+using process::Owned;
+using process::PID;
+using process::Shared;
 
 using std::string;
 using std::vector;
@@ -68,10 +64,8 @@ using mesos::internal::master::Master;
 using mesos::internal::slave::Backend;
 using mesos::internal::slave::Fetcher;
 using mesos::internal::slave::Launcher;
-#ifdef __linux__
 using mesos::internal::slave::LinuxFilesystemIsolatorProcess;
 using mesos::internal::slave::LinuxLauncher;
-#endif
 using mesos::internal::slave::MesosContainerizer;
 using mesos::internal::slave::MesosContainerizerProcess;
 using mesos::internal::slave::Provisioner;
@@ -88,7 +82,6 @@ namespace mesos {
 namespace internal {
 namespace tests {
 
-#ifdef __linux__
 class LinuxFilesystemIsolatorTest : public MesosTest
 {
 protected:
@@ -96,15 +89,10 @@ protected:
   {
     // Try to remove any mounts under sandbox.
     if (::geteuid() == 0) {
-      Try<string> umount = os::shell(
-          "grep '%s' /proc/mounts | "
-          "cut -d' ' -f2 | "
-          "xargs --no-run-if-empty umount -l",
-          sandbox.get().c_str());
-
-      if (umount.isError()) {
+      Try<Nothing> unmount = fs::unmountAll(sandbox.get(), MNT_DETACH);
+      if (unmount.isError()) {
         LOG(ERROR) << "Failed to umount for sandbox '" << sandbox.get()
-                   << "': " << umount.error();
+                   << "': " << unmount.error();
       }
     }
 
@@ -303,9 +291,6 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_ChangeRootFilesystemCommandExecutor)
   slave::Flags flags = CreateSlaveFlags();
   flags.image_provisioner_backend = "copy";
 
-  ContainerID containerId;
-  containerId.set_value(UUID::random().toString());
-
   Try<Owned<MesosContainerizer>> containerizer = createContainerizer(
       flags,
       {{"test_image", path::join(os::getcwd(), "test_image")}});
@@ -319,8 +304,12 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_ChangeRootFilesystemCommandExecutor)
   ASSERT_SOME(slave);
 
   MockScheduler sched;
+
   MesosSchedulerDriver driver(
-    &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched,
+      DEFAULT_FRAMEWORK_INFO,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
 
   Future<FrameworkID> frameworkId;
   EXPECT_CALL(sched, registered(&driver, _, _))
@@ -336,11 +325,9 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_ChangeRootFilesystemCommandExecutor)
   AWAIT_READY(frameworkId);
 
   AWAIT_READY(offers);
-  ASSERT_NE(0u, offers.get().size());
+  ASSERT_NE(0u, offers->size());
 
   const Offer& offer = offers.get()[0];
-
-  SlaveID slaveId = offer.slave_id();
 
   TaskInfo task = createTask(
       offer.slave_id(),
@@ -354,7 +341,7 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_ChangeRootFilesystemCommandExecutor)
   containerInfo.set_type(ContainerInfo::MESOS);
   task.mutable_container()->CopyFrom(containerInfo);
 
-  driver.launchTasks(offers.get()[0].id(), {task});
+  driver.launchTasks(offer.id(), {task});
 
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
@@ -365,9 +352,9 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_ChangeRootFilesystemCommandExecutor)
 
   // Need to wait for Rootfs copying.
   AWAIT_READY_FOR(statusRunning, Seconds(60));
-  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
   AWAIT_READY(statusFinished);
-  EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
+  EXPECT_EQ(TASK_FINISHED, statusFinished->state());
 
   driver.stop();
   driver.join();
@@ -386,9 +373,6 @@ TEST_F(LinuxFilesystemIsolatorTest,
   slave::Flags flags = CreateSlaveFlags();
   flags.image_provisioner_backend = "copy";
 
-  ContainerID containerId;
-  containerId.set_value(UUID::random().toString());
-
   Try<Owned<MesosContainerizer>> containerizer = createContainerizer(
       flags,
       {{"test_image", path::join(os::getcwd(), "test_image")}});
@@ -402,8 +386,12 @@ TEST_F(LinuxFilesystemIsolatorTest,
   ASSERT_SOME(slave);
 
   MockScheduler sched;
+
   MesosSchedulerDriver driver(
-    &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched,
+      DEFAULT_FRAMEWORK_INFO,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
 
   Future<FrameworkID> frameworkId;
   EXPECT_CALL(sched, registered(&driver, _, _))
@@ -419,11 +407,9 @@ TEST_F(LinuxFilesystemIsolatorTest,
   AWAIT_READY(frameworkId);
 
   AWAIT_READY(offers);
-  ASSERT_NE(0u, offers.get().size());
+  ASSERT_NE(0u, offers->size());
 
   const Offer& offer = offers.get()[0];
-
-  SlaveID slaveId = offer.slave_id();
 
   // Preparing two volumes:
   // - host_path: dir1, container_path: /tmp
@@ -457,7 +443,7 @@ TEST_F(LinuxFilesystemIsolatorTest,
       createVolumeFromHostPath("relative_dir", dir2, Volume::RW));
   task.mutable_container()->CopyFrom(containerInfo);
 
-  driver.launchTasks(offers.get()[0].id(), {task});
+  driver.launchTasks(offer.id(), {task});
 
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
@@ -467,9 +453,9 @@ TEST_F(LinuxFilesystemIsolatorTest,
     .WillOnce(FutureArg<1>(&statusFinished));
 
   AWAIT_READY(statusRunning);
-  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
   AWAIT_READY(statusFinished);
-  EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
+  EXPECT_EQ(TASK_FINISHED, statusFinished->state());
 
   driver.stop();
   driver.join();
@@ -492,9 +478,6 @@ TEST_F(LinuxFilesystemIsolatorTest,
   // within the slave work_dir and thus not retrievable.
   flags.work_dir = os::getcwd();
 
-  ContainerID containerId;
-  containerId.set_value(UUID::random().toString());
-
   Try<Owned<MesosContainerizer>> containerizer = createContainerizer(
       flags,
       {{"test_image", path::join(os::getcwd(), "test_image")}});
@@ -512,7 +495,10 @@ TEST_F(LinuxFilesystemIsolatorTest,
   frameworkInfo.set_role("role1");
 
   MesosSchedulerDriver driver(
-    &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched,
+      frameworkInfo,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
 
   Future<FrameworkID> frameworkId;
   EXPECT_CALL(sched, registered(&driver, _, _))
@@ -528,7 +514,7 @@ TEST_F(LinuxFilesystemIsolatorTest,
   AWAIT_READY(frameworkId);
 
   AWAIT_READY(offers);
-  ASSERT_NE(0u, offers.get().size());
+  ASSERT_NE(0u, offers->size());
 
   Offer offer = offers.get()[0];
 
@@ -576,9 +562,9 @@ TEST_F(LinuxFilesystemIsolatorTest,
     .WillOnce(FutureArg<1>(&statusFinished));
 
   AWAIT_READY(statusRunning);
-  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
   AWAIT_READY(statusFinished);
-  EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
+  EXPECT_EQ(TASK_FINISHED, statusFinished->state());
 
   // NOTE: The command executor's id is the same as the task id.
   ExecutorID executorId;
@@ -621,9 +607,6 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_RecoverOrphanedPersistentVolume)
   flags.resources = "cpus:2;mem:1024;disk(role1):1024";
   flags.isolation = "posix/disk,filesystem/linux";
 
-  ContainerID containerId;
-  containerId.set_value(UUID::random().toString());
-
   Try<Owned<MesosContainerizer>> containerizer = createContainerizer(
       flags,
       {{"test_image", path::join(os::getcwd(), "test_image")}});
@@ -642,7 +625,10 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_RecoverOrphanedPersistentVolume)
   frameworkInfo.set_checkpoint(true);
 
   MesosSchedulerDriver driver(
-    &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched,
+      frameworkInfo,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
 
   Future<FrameworkID> frameworkId;
   EXPECT_CALL(sched, registered(&driver, _, _))
@@ -658,7 +644,7 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_RecoverOrphanedPersistentVolume)
   AWAIT_READY(frameworkId);
 
   AWAIT_READY(offers);
-  EXPECT_FALSE(offers.get().empty());
+  EXPECT_FALSE(offers->empty());
 
   Offer offer = offers.get()[0];
 
@@ -1391,56 +1377,73 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_SandboxEnvironmentVariable)
 }
 
 
-// This test verifies the slave's work directory mount preparation if
-// the mount does not exist initially.
-TEST_F(LinuxFilesystemIsolatorTest, ROOT_WorkDirMount)
+// This test verifies the case where we don't need a bind mount for
+// slave's working directory because the mount containing it is
+// already a shared mount in its own peer group.
+TEST_F(LinuxFilesystemIsolatorTest, ROOT_WorkDirMountNotNeeded)
 {
+  // Make 'sandbox' a shared mount in its own peer group.
+  ASSERT_SOME(os::shell(
+      "mount --bind %s %s && "
+      "mount --make-private %s &&"
+      "mount --make-shared %s",
+      sandbox->c_str(),
+      sandbox->c_str(),
+      sandbox->c_str(),
+      sandbox->c_str()));
+
+  // Slave's working directory is under 'sandbox'.
   slave::Flags flags = CreateSlaveFlags();
+  flags.work_dir = path::join(sandbox.get(), "slave");
+
+  ASSERT_SOME(os::mkdir(flags.work_dir));
 
   Try<Isolator*> isolator = LinuxFilesystemIsolatorProcess::create(flags);
-
   ASSERT_SOME(isolator);
 
   Try<fs::MountInfoTable> table = fs::MountInfoTable::read();
   ASSERT_SOME(table);
 
+  // Verifies that there's no mount for slave's working directory.
   bool mountFound = false;
-  foreach (const fs::MountInfoTable::Entry& entry, table.get().entries) {
+  foreach (const fs::MountInfoTable::Entry& entry, table->entries) {
     if (entry.target == flags.work_dir) {
-      EXPECT_SOME(entry.shared());
       mountFound = true;
     }
   }
 
-  EXPECT_TRUE(mountFound);
+  EXPECT_FALSE(mountFound);
 
   delete isolator.get();
 }
 
 
-// This test verifies the slave's work directory mount preparation if
-// the mount already exists (e.g., to simulate the case when the slave
-// crashes while preparing the work directory mount).
-TEST_F(LinuxFilesystemIsolatorTest, ROOT_WorkDirMountPreExists)
+// This test verifies the case where we do need a bind mount for
+// slave's working directory because the mount containing it is not a
+// shared mount in its own peer group.
+TEST_F(LinuxFilesystemIsolatorTest, ROOT_WorkDirMountNeeded)
 {
-  slave::Flags flags = CreateSlaveFlags();
-
-  // Simulate the situation in which the slave crashes while preparing
-  // the work directory mount.
+  // Make 'sandbox' a private mount.
   ASSERT_SOME(os::shell(
-      "mount --bind %s %s",
-      flags.work_dir.c_str(),
-      flags.work_dir.c_str()));
+      "mount --bind %s %s && "
+      "mount --make-private %s",
+      sandbox->c_str(),
+      sandbox->c_str(),
+      sandbox->c_str()));
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.work_dir = path::join(sandbox.get(), "slave");
+
+  ASSERT_SOME(os::mkdir(flags.work_dir));
 
   Try<Isolator*> isolator = LinuxFilesystemIsolatorProcess::create(flags);
-
   ASSERT_SOME(isolator);
 
   Try<fs::MountInfoTable> table = fs::MountInfoTable::read();
   ASSERT_SOME(table);
 
   bool mountFound = false;
-  foreach (const fs::MountInfoTable::Entry& entry, table.get().entries) {
+  foreach (const fs::MountInfoTable::Entry& entry, table->entries) {
     if (entry.target == flags.work_dir) {
       EXPECT_SOME(entry.shared());
       mountFound = true;
@@ -1479,8 +1482,12 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_VolumeUsageExceedsSandboxQuota)
   ASSERT_SOME(slave);
 
   MockScheduler sched;
+
   MesosSchedulerDriver driver(
-      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched,
+      frameworkInfo,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
 
   Future<FrameworkID> frameworkId;
   EXPECT_CALL(sched, registered(&driver, _, _))
@@ -1496,7 +1503,7 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_VolumeUsageExceedsSandboxQuota)
   AWAIT_READY(frameworkId);
 
   AWAIT_READY(offers);
-  ASSERT_NE(0u, offers.get().size());
+  ASSERT_NE(0u, offers->size());
 
   // We request a sandbox (1MB) that is smaller than the persistent
   // volume (4MB) and attempt to create a file in that volume that is
@@ -1529,18 +1536,16 @@ TEST_F(LinuxFilesystemIsolatorTest, ROOT_VolumeUsageExceedsSandboxQuota)
       LAUNCH({task})});
 
   AWAIT_READY(statusRunning);
-  EXPECT_EQ(task.task_id(), statusRunning.get().task_id());
-  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+  EXPECT_EQ(task.task_id(), statusRunning->task_id());
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
 
   AWAIT_READY(statusFinished);
-  EXPECT_EQ(task.task_id(), statusFinished.get().task_id());
-  EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
+  EXPECT_EQ(task.task_id(), statusFinished->task_id());
+  EXPECT_EQ(TASK_FINISHED, statusFinished->state());
 
   driver.stop();
   driver.join();
 }
-
-#endif // __linux__
 
 } // namespace tests {
 } // namespace internal {
