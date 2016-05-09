@@ -59,6 +59,7 @@
 #include "slave/validation.hpp"
 
 using process::AUTHENTICATION;
+using process::AUTHORIZATION;
 using process::Clock;
 using process::DESCRIPTION;
 using process::Future;
@@ -350,7 +351,10 @@ string Slave::Http::FLAGS_HELP()
   return HELP(
     TLDR("Exposes the agent's flag configuration."),
     None(),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "The request principal should be authorized to query this endpoint.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -371,6 +375,7 @@ Future<Response> Slave::Http::flags(
           return _flags(request, slaveFlags);
         }));
 }
+
 
 Future<Response> Slave::Http::_flags(
   const Request& request,
@@ -616,7 +621,11 @@ string Slave::Http::STATISTICS_HELP()
           "        \"timestamp\":1388534400.0",
           "    }",
           "}]",
-          "```"));
+          "```"),
+      AUTHENTICATION(true),
+      AUTHORIZATION(
+          "The request principal should be authorized to query this endpoint.",
+          "See the authorization documentation for details."));
 }
 
 
