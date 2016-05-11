@@ -16,6 +16,8 @@
 
 #include <string>
 
+#include <glog/logging.h>
+
 #include <mesos/zookeeper/contender.hpp>
 #include <mesos/zookeeper/detector.hpp>
 #include <mesos/zookeeper/group.hpp>
@@ -25,13 +27,19 @@
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
 #include <process/id.hpp>
+#include <process/process.hpp>
 
+#include <stout/check.hpp>
 #include <stout/lambda.hpp>
+#include <stout/nothing.hpp>
 #include <stout/option.hpp>
 
-using namespace process;
-
 using std::string;
+
+using process::Failure;
+using process::Future;
+using process::Process;
+using process::Promise;
 
 namespace zookeeper {
 
@@ -46,7 +54,7 @@ public:
   virtual ~LeaderContenderProcess();
 
   // LeaderContender implementation.
-  Future<Future<Nothing> > contend();
+  Future<Future<Nothing>> contend();
   Future<bool> withdraw();
 
 protected:
@@ -73,7 +81,7 @@ private:
   // is assigned.
 
   // Holds the promise for the future for contend().
-  Option<Promise<Future<Nothing> >*> contending;
+  Option<Promise<Future<Nothing>>*> contending;
 
   // Holds the promise for the inner future enclosed by contend()'s
   // result which is satisfied when the contender's candidacy is
@@ -92,7 +100,7 @@ LeaderContenderProcess::LeaderContenderProcess(
     Group* _group,
     const string& _data,
     const Option<string>& _label)
-  : ProcessBase(ID::generate("leader-contender")),
+  : ProcessBase(process::ID::generate("leader-contender")),
     group(_group),
     data(_data),
     label(_label) {}
@@ -135,7 +143,7 @@ void LeaderContenderProcess::finalize()
 }
 
 
-Future<Future<Nothing> > LeaderContenderProcess::contend()
+Future<Future<Nothing>> LeaderContenderProcess::contend()
 {
   if (contending.isSome()) {
     return Failure("Cannot contend more than once");
@@ -147,7 +155,7 @@ Future<Future<Nothing> > LeaderContenderProcess::contend()
     .onAny(defer(self(), &Self::joined));
 
   // Okay, we wait and see what unfolds.
-  contending = new Promise<Future<Nothing> >();
+  contending = new Promise<Future<Nothing>>();
   return contending.get()->future();
 }
 
@@ -291,7 +299,7 @@ LeaderContender::~LeaderContender()
 }
 
 
-Future<Future<Nothing> > LeaderContender::contend()
+Future<Future<Nothing>> LeaderContender::contend()
 {
   return dispatch(process, &LeaderContenderProcess::contend);
 }
