@@ -155,7 +155,7 @@ public:
     // Load any logging flags from the environment.
     logging::Flags flags;
 
-    Try<Nothing> load = flags.load("MESOS_");
+    Try<flags::Warnings> load = flags.load("MESOS_");
 
     if (load.isError()) {
       EXIT(EXIT_FAILURE) << "Failed to load flags: " << load.error();
@@ -169,6 +169,11 @@ public:
       logging::initialize("mesos", flags);
     } else {
       VLOG(1) << "Disabling initialization of GLOG logging";
+    }
+
+    // Log any flag warnings (after logging is initialized).
+    foreach (const flags::Warning& warning, load->warnings) {
+      LOG(WARNING) << warning.message;
     }
 
     LOG(INFO) << "Version: " << MESOS_VERSION;
@@ -480,7 +485,7 @@ protected:
 
     // Linearly backoff by picking a random duration between 0 and
     // `maxBackoff`.
-    Duration backoff = maxBackoff.get() * ((double) ::random() / RAND_MAX);
+    Duration backoff = maxBackoff.get() * ((double) os::random() / RAND_MAX);
 
     VLOG(1) << "Will retry connecting with the agent again in " << backoff;
 

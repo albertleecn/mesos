@@ -57,6 +57,7 @@
 #include <stout/try.hpp>
 
 #include "common/build.hpp"
+#include "common/http.hpp"
 #include "common/protobuf_utils.hpp"
 
 #include "hook/manager.hpp"
@@ -181,7 +182,7 @@ int main(int argc, char** argv)
             "the IP address which the master will try to bind to.\n"
             "Cannot be used in conjunction with `--ip`.");
 
-  Try<Nothing> load = flags.load("MESOS_", argc, argv);
+  Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
 
   if (load.isError()) {
     cerr << flags.usage(load.error()) << endl;
@@ -250,6 +251,11 @@ int main(int argc, char** argv)
   }
 
   logging::initialize(argv[0], flags, true); // Catch signals.
+
+  // Log any flag warnings (after logging is initialized).
+  foreach (const flags::Warning& warning, load->warnings) {
+    LOG(WARNING) << warning.message;
+  }
 
   // Initialize modules. Note that since other subsystems may depend
   // upon modules, we should initialize modules before anything else.
@@ -424,6 +430,14 @@ int main(int argc, char** argv)
                        << "' authorizer: " << authorizer.error();
   } else if (authorizer.isSome()) {
     authorizer_ = authorizer.get();
+
+    // Set the authorization callbacks for libprocess HTTP endpoints.
+    // Note that these callbacks capture `authorizer_.get()`, but the master
+    // creates a copy of the authorizer during construction. Thus, if in the
+    // future it becomes possible to dynamically set the authorizer, this would
+    // break.
+    process::http::authorization::setCallbacks(
+        createAuthorizationCallbacks(authorizer_.get()));
   }
 
   Option<shared_ptr<RateLimiter>> slaveRemovalLimiter = None();

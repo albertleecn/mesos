@@ -12,19 +12,24 @@
 
 #include <errno.h>
 #include <limits.h>
+#ifndef __WINDOWS__
 #include <netdb.h>
+#endif // __WINDOWS__
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __WINDOWS__
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#endif // __WINDOWS__
 
 #include <glog/logging.h>
 
+#ifndef __WINDOWS__
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
@@ -35,6 +40,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#endif // __WINDOWS__
 
 #include <algorithm>
 #include <deque>
@@ -124,6 +130,8 @@ using process::http::ServiceUnavailable;
 using process::http::authentication::Authenticator;
 using process::http::authentication::AuthenticationResult;
 using process::http::authentication::AuthenticatorManager;
+
+using process::http::authorization::AuthorizationCallbacks;
 
 using process::network::Address;
 using process::network::Socket;
@@ -478,6 +486,9 @@ static Gate* gate = new Gate();
 // Used for authenticating HTTP requests.
 static AuthenticatorManager* authenticator_manager = NULL;
 
+// Authorization callbacks for HTTP endpoints.
+static AuthorizationCallbacks* authorization_callbacks = NULL;
+
 // Filter. Synchronized support for using the filterer needs to be
 // recursive in case a filterer wants to do anything fancy (which is
 // possible and likely given that filters will get used for testing).
@@ -498,6 +509,7 @@ THREAD_LOCAL Executor* _executor_ = NULL;
 
 
 namespace http {
+
 namespace authentication {
 
 Future<Nothing> setAuthenticator(
@@ -518,6 +530,22 @@ Future<Nothing> unsetAuthenticator(const string& realm)
 }
 
 } // namespace authentication {
+
+namespace authorization {
+
+void setCallbacks(const AuthorizationCallbacks& callbacks)
+{
+  authorization_callbacks = new AuthorizationCallbacks(callbacks);
+}
+
+
+void unsetCallbacks()
+{
+  authorization_callbacks = NULL;
+}
+
+} // namespace authorization {
+
 } // namespace http {
 
 
@@ -889,8 +917,15 @@ bool initialize(
   __s__ = new Socket(create.get());
 
   // Allow address reuse.
+  // NOTE: We cast to `char*` here because the function prototypes on Windows
+  // use `char*` instead of `void*`.
   int on = 1;
-  if (setsockopt(__s__->get(), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0) {
+  if (::setsockopt(
+          __s__->get(),
+          SOL_SOCKET,
+          SO_REUSEADDR,
+          reinterpret_cast<char*>(&on),
+          sizeof(on)) < 0) {
     PLOG(FATAL) << "Failed to initialize, setsockopt(SO_REUSEADDR)";
   }
 
@@ -2263,32 +2298,38 @@ long ProcessManager::init_threads()
 
   threads.reserve(num_worker_threads + 1);
 
+  struct
+  {
+    void operator()() const
+    {
+      do {
+        ProcessBase* process = process_manager->dequeue();
+        if (process == NULL) {
+          Gate::state_t old = gate->approach();
+          process = process_manager->dequeue();
+          if (process == NULL) {
+            if (joining_threads.load()) {
+              break;
+            }
+            gate->arrive(old); // Wait at gate if idle.
+            continue;
+          } else {
+            gate->leave();
+          }
+        }
+        process_manager->resume(process);
+      } while (true);
+    }
+
+    // We hold a constant reference to `joining_threads` to make it clear that
+    // this value is only being tested (read), and not manipulated.
+    const std::atomic_bool& joining_threads;
+  } worker{joining_threads};
+
   // Create processing threads.
   for (long i = 0; i < num_worker_threads; i++) {
     // Retain the thread handles so that we can join when shutting down.
-    threads.emplace_back(
-        // We pass a constant reference to `joining` to make it clear that this
-        // value is only being tested (read), and not manipulated.
-        new std::thread(std::bind([](const std::atomic_bool& joining) {
-          do {
-            ProcessBase* process = process_manager->dequeue();
-            if (process == NULL) {
-              Gate::state_t old = gate->approach();
-              process = process_manager->dequeue();
-              if (process == NULL) {
-                if (joining.load()) {
-                  break;
-                }
-                gate->arrive(old); // Wait at gate if idle.
-                continue;
-              } else {
-                gate->leave();
-              }
-            }
-            process_manager->resume(process);
-          } while (true);
-        },
-        std::cref(joining_threads))));
+    threads.emplace_back(new std::thread(worker));
   }
 
   // Create a thread for the event loop.
@@ -3207,7 +3248,7 @@ void ProcessBase::visit(const HttpEvent& event)
           << " with path: '" << event.request->url.path << "'";
 
   // Lazily initialize the Sequence needed for ordering requests
-  // across authentication.
+  // across authentication and authorization.
   if (handlers.httpSequence.get() == NULL) {
     handlers.httpSequence.reset(new Sequence());
   }
@@ -3217,17 +3258,22 @@ void ProcessBase::visit(const HttpEvent& event)
   // Split the path by '/'.
   vector<string> tokens = strings::tokenize(event.request->url.path, "/");
   CHECK(!tokens.empty());
-  CHECK_EQ(pid.id, http::decode(tokens[0]).get());
+
+  const string id = http::decode(tokens[0]).get();
+  CHECK_EQ(pid.id, id);
 
   // First look to see if there is an HTTP handler that can handle the
   // longest prefix of this path.
 
-  // Remove the 'id' prefix from the path.
+  // Remove the `id` prefix from the path.
   string name = strings::remove(
       event.request->url.path, "/" + tokens[0], strings::PREFIX);
-
   name = strings::trim(name, strings::PREFIX, "/");
 
+  // Look for an endpoint handler for this path. We begin with the full path,
+  // but if no handler is found and the path is nested, we shorten it and look
+  // again. For example: if the request is for '/a/b/c' and no handler is found,
+  // we will then check for '/a/b', and finally for '/a'.
   while (Path(name).dirname() != name) {
     if (handlers.http.count(name) == 0) {
       name = Path(name).dirname();
@@ -3252,7 +3298,7 @@ void ProcessBase::visit(const HttpEvent& event)
     event.response->associate(response->future());
 
     authentication
-      .onAny(defer(self(), [endpoint, request, response](
+      .onAny(defer(self(), [this, endpoint, request, response, name, id](
           const Future<Option<AuthenticationResult>>& authentication) {
         if (!authentication.isReady()) {
           response->set(InternalServerError());
@@ -3268,36 +3314,82 @@ void ProcessBase::visit(const HttpEvent& event)
           return;
         }
 
-        if (authentication->isNone()) {
-          // Request didn't need authentication or authentication
-          // is not applicable, just forward the request.
-          if (endpoint.realm.isNone()) {
-            response->associate(endpoint.handler.get()(request));
-          } else {
-            response->associate(endpoint.authenticatedHandler.get()(
-                request, None()));
+        Option<string> principal = None();
+
+        // If authentication failed, we do not continue with authorization.
+        if (authentication->isSome()) {
+          if (authentication.get()->unauthorized.isSome()) {
+            // Request was not authenticated, challenged issued.
+            response->set(authentication.get()->unauthorized.get());
+
+            delete response;
+            return;
+          } else if (authentication.get()->forbidden.isSome()) {
+            // Request was not authenticated, no challenge issued.
+            response->set(authentication.get()->forbidden.get());
+
+            delete response;
+            return;
           }
 
-          delete response;
-          return;
+          principal = authentication.get()->principal;
         }
 
-        if (authentication.get()->unauthorized.isSome()) {
-          // Request was not authenticated, challenged issued.
-          response->set(authentication.get()->unauthorized.get());
-        } else if (authentication.get()->forbidden.isSome()) {
-          // Request was not authenticated, no challenge issued.
-          response->set(authentication.get()->forbidden.get());
+        // The result of a call to an authorization callback.
+        Future<bool> authorization;
+
+        // Look for an authorization callback installed for this endpoint path.
+        // If none is found, use a trivial one.
+        const string callback_path = path::join("/" + id, name);
+        if (authorization_callbacks != NULL &&
+            authorization_callbacks->count(callback_path) > 0) {
+          authorization = authorization_callbacks->at(callback_path)(
+              request, principal);
+
+          // Sequence the authorization future to ensure the handlers
+          // are invoked in the same order that requests arrive.
+          authorization = handlers.httpSequence->add<bool>(
+              [authorization]() { return authorization; });
         } else {
-          Option<string> principal = authentication.get()->principal;
-
-          response->associate(endpoint.authenticatedHandler.get()(
-              request, principal));
+          authorization = handlers.httpSequence->add<bool>(
+              []() { return true; });
         }
 
-        delete response;
-        return;
-    }));
+        // Install a callback on the authorization result.
+        authorization
+          .onAny(defer(self(), [endpoint, request, response, principal](
+              const Future<bool>& authorization) {
+            if (!authorization.isReady()) {
+              response->set(InternalServerError());
+
+              VLOG(1) << "Returning '" << response->future()->status << "'"
+                      << " for '" << request.url.path << "'"
+                      << " (authorization failed: "
+                      << (authorization.isFailed()
+                          ? authorization.failure()
+                          : "discarded") << ")";
+
+              delete response;
+              return;
+            }
+
+            if (authorization.get() == true) {
+              // Authorization succeeded, so forward request to the handler.
+              if (endpoint.realm.isNone()) {
+                response->associate(endpoint.handler.get()(request));
+              } else {
+                response->associate(endpoint.authenticatedHandler.get()(
+                    request, principal));
+              }
+            } else {
+              // Authorization failed, so return a `Forbidden` response.
+              response->set(Forbidden());
+            }
+
+            delete response;
+            return;
+        }));
+      }));
 
     return;
   }

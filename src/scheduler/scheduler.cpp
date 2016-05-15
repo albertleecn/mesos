@@ -28,6 +28,7 @@
 #include <queue>
 #include <string>
 #include <sstream>
+#include <tuple>
 
 #include <mesos/v1/mesos.hpp>
 #include <mesos/v1/scheduler.hpp>
@@ -35,6 +36,7 @@
 #include <mesos/master/detector.hpp>
 
 #include <process/async.hpp>
+#include <process/collect.hpp>
 #include <process/defer.hpp>
 #include <process/delay.hpp>
 #include <process/dispatch.hpp>
@@ -81,16 +83,19 @@ using namespace mesos::internal::master;
 
 using namespace process;
 
+using std::get;
 using std::ostream;
 using std::queue;
 using std::shared_ptr;
 using std::string;
+using std::tuple;
 using std::vector;
 
 using mesos::internal::recordio::Reader;
 
 using mesos::master::detector::MasterDetector;
 
+using process::collect;
 using process::Owned;
 using process::wait; // Necessary on some OS's to disambiguate.
 
@@ -148,7 +153,7 @@ public:
     // master::Flags and slave::Flags as well.
     local::Flags flags;
 
-    Try<Nothing> load = flags.load("MESOS_");
+    Try<flags::Warnings> load = flags.load("MESOS_");
 
     if (load.isError()) {
       EXIT(EXIT_FAILURE) << "Failed to load flags: " << load.error();
@@ -172,6 +177,11 @@ public:
       logging::initialize("mesos", flags);
     } else {
       VLOG(1) << "Disabling initialization of GLOG logging";
+    }
+
+    // Log any flag warnings (after logging is initialized).
+    foreach (const flags::Warning& warning, load->warnings) {
+      LOG(WARNING) << warning.message;
     }
 
     LOG(INFO) << "Version: " << MESOS_VERSION;
@@ -314,30 +324,19 @@ protected:
 
     state = CONNECTING;
 
-    // These automatic variables are needed for lambda capture. We need to
-    // create a copy here because `master` or `connectionId` values might change
-    // by the time the second `http::connect` gets called.
-    ::URL master_ = master.get();
-    UUID connectionId_ = connectionId.get();
+    auto connector = [this]() -> Future<Connection> {
+      return process::http::connect(master.get());
+    };
 
     // We create two persistent connections here, one for subscribe
     // call/streaming response and another for non-subscribe calls/responses.
-    process::http::connect(master_)
-      .onAny(defer(self(), [this, master_, connectionId_](
-                               const Future<Connection>& connection) {
-        process::http::connect(master_)
-          .onAny(defer(self(),
-                       &Self::connected,
-                       connectionId_,
-                       connection,
-                       lambda::_1));
-      }));
+    collect(connector(), connector())
+      .onAny(defer(self(), &Self::connected, connectionId.get(), lambda::_1));
   }
 
   void connected(
       const UUID& _connectionId,
-      const Future<Connection>& connection1,
-      const Future<Connection>& connection2)
+      const Future<tuple<Connection, Connection>>& _connections)
   {
     // It is possible that a new master was detected while we had an ongoing
     // (re-)connection attempt with the old master.
@@ -349,19 +348,11 @@ protected:
     CHECK_EQ(CONNECTING, state);
     CHECK_SOME(connectionId);
 
-    if (!connection1.isReady()) {
+    if (!_connections.isReady()) {
       disconnected(connectionId.get(),
-                   connection1.isFailed()
-                     ? connection1.failure()
-                     : "Subscribe future discarded");
-      return;
-    }
-
-    if (!connection2.isReady()) {
-      disconnected(connectionId.get(),
-                   connection2.isFailed()
-                     ? connection2.failure()
-                     : "Non-subscribe future discarded");
+                   _connections.isFailed()
+                     ? _connections.failure()
+                     : "Connection future discarded");
       return;
     }
 
@@ -369,7 +360,8 @@ protected:
 
     state = CONNECTED;
 
-    connections = Connections {connection1.get(), connection2.get()};
+    connections =
+      Connections {get<0>(_connections.get()), get<1>(_connections.get())};
 
     connections->subscribe.disconnected()
       .onAny(defer(self(),

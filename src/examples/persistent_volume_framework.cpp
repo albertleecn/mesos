@@ -419,7 +419,7 @@ int main(int argc, char** argv)
 {
   Flags flags;
 
-  Try<Nothing> load = flags.load("MESOS_", argc, argv);
+  Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
 
   if (load.isError()) {
     cerr << flags.usage(load.error()) << endl;
@@ -438,6 +438,11 @@ int main(int argc, char** argv)
 
   logging::initialize(argv[0], flags, true); // Catch signals.
 
+  // Log any flag warnings (after logging is initialized).
+  foreach (const flags::Warning& warning, load->warnings) {
+    LOG(WARNING) << warning.message;
+  }
+
   FrameworkInfo framework;
   framework.set_user(""); // Have Mesos fill in the current user.
   framework.set_name("Persistent Volume Framework (C++)");
@@ -448,7 +453,7 @@ int main(int argc, char** argv)
   if (flags.master.get() == "local") {
     // Configure master.
     os::setenv("MESOS_ROLES", flags.role);
-    os::setenv("MESOS_AUTHENTICATE", "false");
+    os::setenv("MESOS_AUTHENTICATE_FRAMEWORKS", "false");
 
     ACLs acls;
     ACL::RegisterFramework* acl = acls.add_register_frameworks();

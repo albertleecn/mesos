@@ -78,6 +78,7 @@ using process::AUTHENTICATION;
 using process::AUTHORIZATION;
 using process::Clock;
 using process::DESCRIPTION;
+using process::Failure;
 using process::Future;
 using process::HELP;
 using process::TLDR;
@@ -335,7 +336,7 @@ string Master::Http::SCHEDULER_HELP()
         "current master is not the leader.",
         "Returns 503 SERVICE_UNAVAILABLE if the leading master cannot be",
         "found."),
-    AUTHENTICATION(false));
+    AUTHENTICATION(true));
 }
 
 
@@ -851,22 +852,52 @@ string Master::Http::FLAGS_HELP()
   return HELP(
     TLDR("Exposes the master's flag configuration."),
     None(),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "Querying this endpoint requires that the current principal",
+        "is authorized to query the path.",
+        "See the authorization documentation for details."));
 }
 
 
 Future<Response> Master::Http::flags(
     const Request& request,
-    const Option<string>& /*principal*/) const
+    const Option<string>& principal) const
+{
+  // TODO(nfnt): Remove check for enabled
+  // authorization as part of MESOS-5346.
+  if (request.method != "GET" && master->authorizer.isSome()) {
+    return MethodNotAllowed({"GET"}, request.method);
+  }
+
+  Try<string> endpoint = extractEndpoint(request.url);
+  if (endpoint.isError()) {
+    return Failure("Failed to extract endpoint: " + endpoint.error());
+  }
+
+  return authorizeEndpoint(principal, endpoint.get(), request.method)
+    .then(defer(
+        master->self(),
+        [this, request](bool authorized) -> Future<Response> {
+          if (!authorized) {
+            return Forbidden();
+          }
+
+          return _flags(request);
+        }));
+}
+
+
+Future<Response> Master::Http::_flags(const Request& request) const
 {
   JSON::Object object;
 
   {
     JSON::Object flags;
-    foreachpair (const string& name, const flags::Flag& flag, master->flags) {
+    foreachvalue (const flags::Flag& flag, master->flags) {
       Option<string> value = flag.stringify(master->flags);
       if (value.isSome()) {
-        flags.values[name] = value.get();
+        flags.values[flag.effective_name().value] = value.get();
       }
     }
     object.values["flags"] = std::move(flags);
@@ -1487,10 +1518,10 @@ Future<Response> Master::Http::state(
     }
 
     writer->field("flags", [this](JSON::ObjectWriter* writer) {
-      foreachpair (const string& name, const flags::Flag& flag, master->flags) {
+      foreachvalue (const flags::Flag& flag, master->flags) {
         Option<string> value = flag.stringify(master->flags);
         if (value.isSome()) {
-          writer->field(name, value.get());
+          writer->field(flag.effective_name().value, value.get());
         }
       }
     });
@@ -2809,6 +2840,58 @@ Future<Response> Master::Http::_operation(
     .repair([](const Future<Response>& result) {
        return Conflict(result.failure());
     });
+}
+
+
+Try<string> Master::Http::extractEndpoint(const process::http::URL& url) const
+{
+  // Paths are of the form "/master/endpoint". We're only interested
+  // in the part after "/master" and tokenize the path accordingly.
+  //
+  // TODO(nfnt): In the long run, absolute paths for
+  // endpoins should be supported, see MESOS-5369.
+  const vector<string> pathComponents = strings::tokenize(url.path, "/", 2);
+
+  if (pathComponents.size() < 2u ||
+      pathComponents[0] != master->self().id) {
+    return Error("Unexpected path '" + url.path + "'");
+  }
+
+  return "/" + pathComponents[1];
+}
+
+
+Future<bool> Master::Http::authorizeEndpoint(
+    const Option<string>& principal,
+    const string& endpoint,
+    const string& method) const
+{
+  if (master->authorizer.isNone()) {
+    return true;
+  }
+
+  authorization::Request request;
+
+  // TODO(nfnt): Add an additional method when POST requests
+  // need to be authorized separately from GET requests.
+  if (method == "GET") {
+    request.set_action(authorization::GET_ENDPOINT_WITH_PATH);
+  } else {
+    return Failure("Unexpected request method '" + method + "'");
+  }
+
+  if (principal.isSome()) {
+    request.mutable_subject()->set_value(principal.get());
+  }
+
+  request.mutable_object()->set_value(endpoint);
+
+  LOG(INFO) << "Authorizing principal '"
+            << (principal.isSome() ? principal.get() : "ANY")
+            << "' to " << method
+            << " the '" << endpoint << "' endpoint";
+
+  return master->authorizer.get()->authorized(request);
 }
 
 } // namespace master {

@@ -56,6 +56,7 @@
 #include <stout/option.hpp>
 #include <stout/os.hpp>
 #include <stout/path.hpp>
+
 #ifdef __linux__
 #include <stout/proc.hpp>
 #endif // __linux__
@@ -91,6 +92,16 @@
 #include "slave/paths.hpp"
 #include "slave/slave.hpp"
 #include "slave/status_update_manager.hpp"
+
+#ifdef __WINDOWS__
+// Used to install a Windows console ctrl handler.
+// https://msdn.microsoft.com/en-us/library/windows/desktop/ms682066(v=vs.85).aspx
+#include <slave/windows_ctrlhandler.hpp>
+#else
+// Used to install a handler for POSIX signal.
+// http://pubs.opengroup.org/onlinepubs/009695399/functions/sigaction.html
+#include <slave/posix_signalhandler.hpp>
+#endif // __WINDOWS__
 
 using mesos::executor::Call;
 
@@ -173,18 +184,6 @@ Slave::~Slave()
 
   delete authenticatee;
 }
-
-
-lambda::function<void(int, int)>* signaledWrapper = NULL;
-
-
-static void signalHandler(int sig, siginfo_t* siginfo, void* context)
-{
-  if (signaledWrapper != NULL) {
-    (*signaledWrapper)(sig, siginfo->si_uid);
-  }
-}
-
 
 void Slave::signaled(int signal, int uid)
 {
@@ -605,7 +604,8 @@ void Slave::initialize()
 
   LOG(INFO) << "Agent hostname: " << info.hostname();
 
-  statusUpdateManager->initialize(defer(self(), &Slave::forward, lambda::_1));
+  statusUpdateManager->initialize(defer(self(), &Slave::forward, lambda::_1)
+    .operator std::function<void(StatusUpdate)>());
 
   // Start disk monitoring.
   // NOTE: We send a delayed message here instead of directly calling
@@ -791,24 +791,20 @@ void Slave::initialize()
       << " Please run the agent with '--help' to see the valid options";
   }
 
-  struct sigaction action;
-  memset(&action, 0, sizeof(struct sigaction));
+  auto signalHandler = defer(self(), &Slave::signaled, lambda::_1, lambda::_2)
+    .operator std::function<void(int, int)>();
 
-  // Do not block additional signals while in the handler.
-  sigemptyset(&action.sa_mask);
-
-  // The SA_SIGINFO flag tells sigaction() to use
-  // the sa_sigaction field, not sa_handler.
-  action.sa_flags = SA_SIGINFO;
-
-  signaledWrapper = new lambda::function<void(int, int)>(
-      defer(self(), &Slave::signaled, lambda::_1, lambda::_2));
-
-  action.sa_sigaction = signalHandler;
-
-  if (sigaction(SIGUSR1, &action, NULL) < 0) {
-    EXIT(EXIT_FAILURE) << "Failed to set sigaction: " << os::strerror(errno);
+#ifdef __WINDOWS__
+  if (!os::internal::installCtrlHandler(&signalHandler)) {
+    EXIT(EXIT_FAILURE)
+      << "Failed to configure consoel handlers: " << WindowsError().message;
   }
+#else
+  if (os::internal::configureSignal(&signalHandler) < 0) {
+    EXIT(EXIT_FAILURE)
+      << "Failed to configure signal handlers: " << os::strerror(errno);
+  }
+#endif  // __WINDOWS__
 
   // Do recovery.
   async(&state::recover, metaDir, flags.strict)
@@ -816,7 +812,6 @@ void Slave::initialize()
     .then(defer(self(), &Slave::_recover))
     .onAny(defer(self(), &Slave::__recover, lambda::_1));
 }
-
 
 void Slave::finalize()
 {
@@ -949,7 +944,6 @@ void Slave::detected(const Future<Option<MasterInfo>>& _master)
     master = UPID(_master.get().get().pid());
 
     LOG(INFO) << "New master detected at " << master.get();
-    link(master.get());
 
     if (state == TERMINATING) {
       LOG(INFO) << "Skipping registration because agent is terminating";
@@ -959,7 +953,7 @@ void Slave::detected(const Future<Option<MasterInfo>>& _master)
     // Wait for a random amount of time before authentication or
     // registration.
     Duration duration =
-      flags.registration_backoff_factor * ((double) ::random() / RAND_MAX);
+      flags.registration_backoff_factor * ((double) os::random() / RAND_MAX);
 
     if (credential.isSome()) {
       // Authenticate with the master.
@@ -1012,6 +1006,10 @@ void Slave::authenticate()
   }
 
   LOG(INFO) << "Authenticating with master " << master.get();
+
+  // Ensure there is a link to the master before we start
+  // communicating with it.
+  link(master.get());
 
   CHECK(authenticatee == NULL);
 
@@ -1356,6 +1354,13 @@ void Slave::doReliableRegistration(Duration maxBackoff)
 
   CHECK_NE("cleanup", flags.recover);
 
+  // Ensure there is a link to the master before we start
+  // communicating with it. We want to link after the initial
+  // registration backoff in order to avoid all of the agents
+  // establishing connections with the master at once.
+  // See MESOS-5330.
+  link(master.get());
+
   if (!info.has_id()) {
     // Registering for the first time.
     RegisterSlaveMessage message;
@@ -1475,7 +1480,7 @@ void Slave::doReliableRegistration(Duration maxBackoff)
 
   // Determine the delay for next attempt by picking a random
   // duration between 0 and 'maxBackoff'.
-  Duration delay = maxBackoff * ((double) ::random() / RAND_MAX);
+  Duration delay = maxBackoff * ((double) os::random() / RAND_MAX);
 
   VLOG(1) << "Will retry registration in " << delay << " if necessary";
 
@@ -2146,6 +2151,10 @@ void Slave::killTask(
 
   switch (executor->state) {
     case Executor::REGISTERING: {
+      LOG(WARNING) << "Transitioning the state of task " << taskId
+                   << " of framework " << frameworkId
+                   << " to TASK_KILED because the executor is not registered";
+
       // The executor hasn't registered yet.
       const StatusUpdate update = protobuf::createStatusUpdate(
           frameworkId,
@@ -2162,24 +2171,6 @@ void Slave::killTask(
       // task from 'executor->queuedTasks', so that if the executor
       // registers at a later point in time, it won't get this task.
       statusUpdate(update, UPID());
-
-      // TODO(jieyu): Here, we kill the executor if it no longer has
-      // any task to run and has not yet registered. This is a
-      // workaround for those single task executors that do not have a
-      // proper self terminating logic when they haven't received the
-      // task within a timeout.
-      if (executor->queuedTasks.empty()) {
-        CHECK(executor->launchedTasks.empty())
-            << " Unregistered executor '" << executor->id
-            << "' has launched tasks";
-
-        LOG(WARNING) << "Killing the unregistered executor " << *executor
-                     << " because it has no tasks";
-
-        executor->state = Executor::TERMINATING;
-
-        containerizer->destroy(executor->containerId);
-      }
       break;
     }
     case Executor::TERMINATING:
@@ -2964,6 +2955,24 @@ void Slave::registerExecutor(
       message.mutable_slave_info()->MergeFrom(info);
       executor->send(message);
 
+      // Here, we kill the executor if it no longer has any task to run
+      // (e.g., framework sent a `killTask()`). This is a workaround for those
+      // single task executors (e.g., command executor) that do not have a
+      // proper self terminating logic when they haven't received the task
+      // within a timeout.
+      if (executor->queuedTasks.empty()) {
+        CHECK(executor->launchedTasks.empty())
+            << " Newly registered executor '" << executor->id
+            << "' has launched tasks";
+
+        LOG(WARNING) << "Shutting down the executor " << *executor
+                     << " because it has no tasks to run";
+
+        _shutdownExecutor(framework, executor);
+
+        return;
+      }
+
       // Update the resource limits for the container. Note that the
       // resource limits include the currently queued tasks because we
       // want the container to have enough resources to hold the
@@ -3117,6 +3126,9 @@ void Slave::reregisterExecutor(
           statusUpdate(update, UPID());
         }
       }
+
+      // TODO(vinod): Similar to what we do in `registerExecutor()` the executor
+      // should be shutdown if it hasn't received any tasks.
       break;
     }
     default:

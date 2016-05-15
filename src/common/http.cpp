@@ -25,6 +25,13 @@
 #include <mesos/http.hpp>
 #include <mesos/resources.hpp>
 
+#include <mesos/authorizer/authorizer.hpp>
+
+#include <process/dispatch.hpp>
+#include <process/future.hpp>
+#include <process/http.hpp>
+#include <process/pid.hpp>
+
 #include <stout/foreach.hpp>
 #include <stout/protobuf.hpp>
 #include <stout/stringify.hpp>
@@ -39,6 +46,8 @@ using std::ostream;
 using std::set;
 using std::string;
 using std::vector;
+
+using process::http::authorization::AuthorizationCallbacks;
 
 namespace mesos {
 
@@ -572,6 +581,42 @@ static void json(JSON::StringWriter* writer, const Value::Set& set)
 static void json(JSON::StringWriter* writer, const Value::Text& text)
 {
   writer->append(text.value());
+}
+
+
+const AuthorizationCallbacks createAuthorizationCallbacks(
+    Authorizer* authorizer)
+{
+  typedef lambda::function<process::Future<bool>(
+      const process::http::Request& httpRequest,
+      const Option<string>& principal)> Callback;
+
+  AuthorizationCallbacks callbacks;
+
+  Callback getEndpoint = [authorizer](
+      const process::http::Request& httpRequest,
+      const Option<string>& principal) -> process::Future<bool> {
+        authorization::Request authRequest;
+        authRequest.set_action(mesos::authorization::GET_ENDPOINT_WITH_PATH);
+
+        if (principal.isSome()) {
+          authRequest.mutable_subject()->set_value(principal.get());
+        }
+
+        const string path = httpRequest.url.path;
+        authRequest.mutable_object()->set_value(path);
+
+        LOG(INFO) << "Authorizing principal '"
+                  << (principal.isSome() ? principal.get() : "ANY")
+                  << "' to GET the endpoint '" << path << "'";
+
+        return authorizer->authorized(authRequest);
+      };
+
+  callbacks.insert(std::make_pair("/logging/toggle", getEndpoint));
+  callbacks.insert(std::make_pair("/metrics/snapshot", getEndpoint));
+
+  return callbacks;
 }
 
 }  // namespace mesos {

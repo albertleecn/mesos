@@ -353,7 +353,7 @@ int main(int argc, char** argv)
 {
   Flags flags;
 
-  Try<Nothing> load = flags.load(None(), argc, argv);
+  Try<flags::Warnings> load = flags.load(None(), argc, argv);
   if (load.isError()) {
     EXIT(EXIT_FAILURE) << flags.usage(load.error());
   } else if (flags.master.isNone()) {
@@ -363,6 +363,11 @@ int main(int argc, char** argv)
   } else if (flags.role.get() == "*") {
     EXIT(EXIT_FAILURE)
       << flags.usage("Role is incorrect; the default '*' role cannot be used");
+  }
+
+  // Log any flag warnings.
+  foreach (const flags::Warning& warning, load->warnings) {
+    LOG(WARNING) << warning.message;
   }
 
   FrameworkInfo framework;
@@ -378,7 +383,7 @@ int main(int argc, char** argv)
 
   if (flags.master.get() == "local") {
     // Configure master.
-    os::setenv("MESOS_AUTHENTICATE", "false");
+    os::setenv("MESOS_AUTHENTICATE_FRAMEWORKS", "false");
 
     ACLs acls;
     ACL::RegisterFramework* acl = acls.add_register_frameworks();
