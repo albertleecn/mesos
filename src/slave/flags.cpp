@@ -365,8 +365,9 @@ mesos::internal::slave::Flags::Flags()
       "handles that can be used with the primary handle. This will take\n"
       "effect only when the `--cgroups_net_cls_primary_handle is set.");
 
-  add(&Flags::slave_subsystems,
-      "slave_subsystems",
+  add(&Flags::agent_subsystems,
+      "agent_subsystems",
+      flags::DeprecatedName("slave_subsystems"),
       "List of comma-separated cgroup subsystems to run the agent binary\n"
       "in, e.g., `memory,cpuacct`. The default is none.\n"
       "Present functionality is intended for resource monitoring and\n"

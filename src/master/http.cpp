@@ -1301,6 +1301,9 @@ string Master::Http::QUOTA_HELP()
         "the current principal is authorized to set quota for the target role.",
         "Similarly, removing quota requires that the principal is authorized",
         "to remove quota created by the quota_principal.",
+        "Getting quota information for a certain role requires that the",
+        "current principal is authorized to get quota for the target role,",
+        "otherwise the entry for the target role could be silently filtered.",
         "See the authorization documentation for details."));
 }
 
@@ -1316,7 +1319,7 @@ Future<Response> Master::Http::quota(
 
   // Dispatch based on HTTP method to separate `QuotaHandler`.
   if (request.method == "GET") {
-    return quotaHandler.status(request);
+    return quotaHandler.status(request, principal);
   }
 
   if (request.method == "POST") {
@@ -1426,8 +1429,8 @@ string Master::Http::STATE_HELP()
         "         \"ip\" : \"127.0.0.1\",",
         "         \"user_sorter\" : \"drf\",",
         "         \"version\" : \"false\",",
-        "         \"max_slave_ping_timeouts\" : \"5\",",
-        "         \"slave_ping_timeout\" : \"15secs\",",
+        "         \"max_agent_ping_timeouts\" : \"5\",",
+        "         \"agent_ping_timeout\" : \"15secs\",",
         "         \"registry_store_timeout\" : \"20secs\",",
         "         \"max_completed_frameworks\" : \"50\",",
         "         \"quiet\" : \"false\",",
@@ -1438,7 +1441,7 @@ string Master::Http::STATE_HELP()
         "         \"registry\" : \"replicated_log\",",
         "         \"registry_strict\" : \"false\",",
         "         \"log_auto_initialize\" : \"true\",",
-        "         \"authenticate_slaves\" : \"false\",",
+        "         \"authenticate_agents\" : \"false\",",
         "         \"registry_fetch_timeout\" : \"1mins\",",
         "         \"allocation_interval\" : \"1secs\",",
         "         \"authenticate_http\" : \"false\",",
