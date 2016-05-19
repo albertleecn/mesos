@@ -698,6 +698,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   docker/spec.cpp							\
   exec/exec.cpp								\
   executor/executor.cpp							\
+  executor/v0_v1executor.cpp						\
   files/files.cpp							\
   hdfs/hdfs.cpp								\
   hook/manager.cpp							\
@@ -818,6 +819,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   examples/test_anonymous_module.hpp					\
   examples/test_module.hpp						\
   examples/utils.hpp							\
+  executor/v0_v1executor.hpp						\
   files/files.hpp							\
   hdfs/hdfs.hpp								\
   hook/manager.hpp							\
@@ -1227,11 +1229,6 @@ mesos_executor_SOURCES = launcher/executor.cpp
 mesos_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_executor_LDADD = libmesos.la $(LDADD)
 
-pkglibexec_PROGRAMS += mesos-http-executor
-mesos_http_executor_SOURCES = launcher/http_command_executor.cpp
-mesos_http_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
-mesos_http_executor_LDADD = libmesos.la $(LDADD)
-
 pkglibexec_PROGRAMS += mesos-containerizer
 mesos_containerizer_SOURCES = slave/containerizer/mesos/main.cpp
 mesos_containerizer_CPPFLAGS = $(MESOS_CPPFLAGS)
@@ -1312,6 +1309,10 @@ nobase_dist_pkgdata_DATA +=						\
 
 # Need to distribute/install webui HTML.
 nobase_dist_pkgdata_DATA +=						\
+  webui/master/static/agent.html					\
+  webui/master/static/agents.html					\
+  webui/master/static/agent_executor.html				\
+  webui/master/static/agent_framework.html				\
   webui/master/static/browse.html					\
   webui/master/static/framework.html					\
   webui/master/static/frameworks.html					\
@@ -1319,10 +1320,6 @@ nobase_dist_pkgdata_DATA +=						\
   webui/master/static/index.html					\
   webui/master/static/offers.html					\
   webui/master/static/pailer.html					\
-  webui/master/static/slave.html					\
-  webui/master/static/slave_executor.html				\
-  webui/master/static/slave_framework.html				\
-  webui/master/static/slaves.html					\
   webui/master/static/directives/pagination.html			\
   webui/master/static/directives/tableHeader.html			\
   webui/master/static/directives/timestamp.html
