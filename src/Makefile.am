@@ -301,6 +301,7 @@ PYTHON_PROTOS =								\
 
 V1_JAVA_PROTOS =							\
   java/generated/org/apache/mesos/v1/Protos.java			\
+  java/generated/org/apache/mesos/v1/executor/Protos.java		\
   java/generated/org/apache/mesos/v1/scheduler/Protos.java
 
 V1_PYTHON_PROTOS =							\
@@ -715,7 +716,6 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/quota.cpp							\
   master/quota_handler.cpp						\
   master/registrar.cpp							\
-  master/repairer.cpp							\
   master/validation.cpp							\
   master/weights.cpp							\
   master/weights_handler.cpp						\
@@ -838,7 +838,6 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   master/quota.hpp							\
   master/registrar.hpp							\
   master/registry.hpp							\
-  master/repairer.hpp							\
   master/validation.hpp							\
   master/weights.hpp							\
   master/allocator/mesos/allocator.hpp					\
@@ -941,6 +940,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
 MESOS_LINUX_FILES =							\
   linux/cgroups.cpp							\
   linux/fs.cpp								\
+  linux/ldcache.cpp							\
   linux/perf.cpp							\
   linux/systemd.cpp							\
   slave/containerizer/mesos/linux_launcher.cpp				\
@@ -960,6 +960,7 @@ MESOS_LINUX_FILES =							\
 MESOS_LINUX_FILES +=							\
   linux/cgroups.hpp							\
   linux/fs.hpp								\
+  linux/ldcache.hpp							\
   linux/ns.hpp								\
   linux/perf.hpp							\
   linux/sched.hpp							\
@@ -1982,7 +1983,6 @@ mesos_tests_SOURCES =						\
   tests/rate_limiting_tests.cpp					\
   tests/reconciliation_tests.cpp				\
   tests/registrar_tests.cpp					\
-  tests/repair_tests.cpp					\
   tests/reservation_endpoints_tests.cpp				\
   tests/reservation_tests.cpp					\
   tests/resource_offers_tests.cpp				\
@@ -2069,6 +2069,7 @@ endif
 
 if ENABLE_NVIDIA_GPU_SUPPORT
 mesos_tests_SOURCES +=						\
+  tests/ldcache_tests.cpp					\
   tests/containerizer/nvidia_gpu_isolator_tests.cpp
 endif
 
