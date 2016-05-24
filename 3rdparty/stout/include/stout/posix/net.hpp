@@ -10,22 +10,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_CONSTANTS_HPP__
-#define __STOUT_OS_CONSTANTS_HPP__
+#ifndef __STOUT_POSIX_NET_HPP__
+#define __STOUT_POSIX_NET_HPP__
+
+#include <unistd.h>
 
 #include <string>
 
-namespace os {
+#include <stout/error.hpp>
+#include <stout/nothing.hpp>
+#include <stout/try.hpp>
 
-constexpr char WINDOWS_PATH_SEPARATOR = '\\';
-constexpr char POSIX_PATH_SEPARATOR = '/';
 
-#ifndef __WINDOWS__
-constexpr char PATH_SEPARATOR = POSIX_PATH_SEPARATOR;
-#else
-constexpr char PATH_SEPARATOR = WINDOWS_PATH_SEPARATOR;
-#endif // __WINDOWS__
+namespace net {
 
-} // namespace os {
+// Returns a `Try` of the result of attempting to set the `hostname`.
+inline Try<Nothing> setHostname(const std::string& hostname)
+{
+  if (sethostname(hostname.c_str(), hostname.size()) != 0) {
+    return ErrnoError();
+  }
 
-#endif // __STOUT_OS_CONSTANTS_HPP__
+  return Nothing();
+}
+
+} // namespace net {
+
+#endif // __STOUT_POSIX_NET_HPP__

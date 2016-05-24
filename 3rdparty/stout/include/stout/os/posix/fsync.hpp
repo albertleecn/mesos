@@ -10,22 +10,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_CONSTANTS_HPP__
-#define __STOUT_OS_CONSTANTS_HPP__
+#ifndef __STOUT_OS_POSIX_FSYNC_HPP__
+#define __STOUT_OS_POSIX_FSYNC_HPP__
 
-#include <string>
+#include <unistd.h>
+
+#include <stout/nothing.hpp>
+#include <stout/try.hpp>
+
 
 namespace os {
 
-constexpr char WINDOWS_PATH_SEPARATOR = '\\';
-constexpr char POSIX_PATH_SEPARATOR = '/';
+inline Try<Nothing> fsync(int fd)
+{
+  if (::fsync(fd) == -1) {
+    return ErrnoError();
+  }
 
-#ifndef __WINDOWS__
-constexpr char PATH_SEPARATOR = POSIX_PATH_SEPARATOR;
-#else
-constexpr char PATH_SEPARATOR = WINDOWS_PATH_SEPARATOR;
-#endif // __WINDOWS__
+  return Nothing();
+}
 
 } // namespace os {
 
-#endif // __STOUT_OS_CONSTANTS_HPP__
+
+#endif // __STOUT_OS_POSIX_FSYNC_HPP__

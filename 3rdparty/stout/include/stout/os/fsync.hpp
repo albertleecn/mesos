@@ -10,22 +10,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_CONSTANTS_HPP__
-#define __STOUT_OS_CONSTANTS_HPP__
+#ifndef __STOUT_OS_FSYNC_HPP__
+#define __STOUT_OS_FSYNC_HPP__
 
-#include <string>
-
-namespace os {
-
-constexpr char WINDOWS_PATH_SEPARATOR = '\\';
-constexpr char POSIX_PATH_SEPARATOR = '/';
-
-#ifndef __WINDOWS__
-constexpr char PATH_SEPARATOR = POSIX_PATH_SEPARATOR;
+// For readability, we minimize the number of #ifdef blocks in the code by
+// splitting platform specifc system calls into separate directories.
+#ifdef __WINDOWS__
+#include <stout/os/windows/fsync.hpp>
 #else
-constexpr char PATH_SEPARATOR = WINDOWS_PATH_SEPARATOR;
+#include <stout/os/posix/fsync.hpp>
 #endif // __WINDOWS__
 
-} // namespace os {
-
-#endif // __STOUT_OS_CONSTANTS_HPP__
+#endif // __STOUT_OS_FSYNC_HPP__
