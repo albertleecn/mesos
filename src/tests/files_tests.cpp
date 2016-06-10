@@ -43,6 +43,7 @@ using process::Future;
 using process::Owned;
 
 using process::http::BadRequest;
+using process::http::Forbidden;
 using process::http::NotFound;
 using process::http::OK;
 using process::http::Response;
@@ -106,6 +107,11 @@ TEST_F(FilesTest, AttachTest)
   AWAIT_EXPECT_READY(files.attach("file", "myname"));       // Re-attach.
   AWAIT_EXPECT_FAILED(files.attach("missing", "somename")); // Missing file.
 
+  auto authorization = [](const Option<string>&) { return true; };
+
+  // Attach with required authorization.
+  AWAIT_EXPECT_READY(files.attach("file", "myname", authorization));
+
   ASSERT_SOME(os::write("file2", "body"));
 
   AWAIT_EXPECT_READY(files.attach("file2", "myname"));  // Overwrite.
@@ -168,6 +174,56 @@ TEST_F(FilesTest, ReadTest)
   AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
 
   response = process::http::get(upid, "read", "path=myname&offset=0");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+
+  // Test reads with authorization enabled.
+  bool authorized = true;
+  auto authorization = [&authorized](const Option<std::string>&) {
+    return authorized;
+  };
+
+  AWAIT_EXPECT_READY(files.attach("file", "authorized", authorization));
+
+  response = process::http::get(upid, "read", "path=authorized&offset=0");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+
+  authorized = false;
+
+  response = process::http::get(upid, "read", "path=authorized&offset=0");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
+
+  // TODO(tomxing): The pailer in the webui will send length=-1 at first to
+  // determine the length of the file, so we need to accept a length of -1.
+  // Setting `length=-1` has the same effect as not providing a length: we
+  // read to the end of the file, up to the maximum read length.
+  // Will change or remove this test case in MESOS-5334.
+  // Read a valid file with length set as -1.
+  response = process::http::get(
+    upid,
+    "read",
+    "path=/myname&length=-1&offset=0");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+
+  // Read a valid file with negative length(not -1).
+  response = process::http::get(upid, "read", "path=/myname&length=-2");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(BadRequest().status, response);
+  AWAIT_EXPECT_RESPONSE_BODY_EQ(
+    "Negative length provided: -2.\n",
+    response);
+
+  // Read a valid file with positive length.
+  expected.values["offset"] = 0;
+  expected.values["data"] = "bo";
+
+  response = process::http::get(upid, "read", "path=/myname&offset=0&length=2");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
@@ -305,6 +361,27 @@ TEST_F(FilesTest, BrowseTest)
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(
       NotFound().status,
       process::http::get(upid, "browse", "path=missing"));
+
+  // Test browse with authorization enabled.
+  files.detach("one");
+
+  bool authorized = true;
+  auto authorization = [&authorized](const Option<std::string>&) {
+    return authorized;
+  };
+
+  AWAIT_EXPECT_READY(files.attach("1", "one", authorization));
+
+  response = process::http::get(upid, "browse", "path=one");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_BODY_EQ(stringify(expected), response);
+
+  authorized = false;
+
+  response = process::http::get(upid, "browse", "path=one");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
 }
 
 
@@ -340,6 +417,27 @@ TEST_F(FilesTest, DownloadTest)
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   AWAIT_EXPECT_RESPONSE_HEADER_EQ("image/gif", "Content-Type", response);
   AWAIT_EXPECT_RESPONSE_BODY_EQ(data, response);
+
+  // Test downloads with authorization enabled.
+  bool authorized = true;
+  auto authorization = [&authorized](const Option<std::string>&) {
+    return authorized;
+  };
+
+  AWAIT_EXPECT_READY(
+      files.attach("black.gif", "authorized.gif", authorization));
+
+  response = process::http::get(upid, "download", "path=authorized.gif");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ("image/gif", "Content-Type", response);
+  AWAIT_EXPECT_RESPONSE_BODY_EQ(data, response);
+
+  authorized = false;
+
+  response = process::http::get(upid, "download", "path=authorized.gif");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response);
 }
 
 

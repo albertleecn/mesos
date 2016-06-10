@@ -111,6 +111,11 @@ public:
     slave::Flags flags;
     flags.launcher_dir = getLauncherDir();
 
+    string directory = "./work_dir";
+    Try<Nothing> mkdir = os::mkdir(directory);
+    CHECK_SOME(mkdir) << "Failed to create work directory";
+    flags.work_dir = directory;
+
     Try<Launcher*> launcher = PosixLauncher::create(flags);
     if (launcher.isError()) {
       return Error(launcher.error());
@@ -168,7 +173,7 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ScriptSucceeds)
   ASSERT_SOME(containerizer);
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   Future<bool> launch = containerizer.get()->launch(
       containerId,
@@ -217,7 +222,7 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ScriptFails)
   ASSERT_SOME(containerizer);
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   Future<bool> launch = containerizer.get()->launch(
       containerId,
@@ -279,7 +284,7 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, MultipleScripts)
   ASSERT_SOME(containerizer);
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   Future<bool> launch = containerizer.get()->launch(
       containerId,
@@ -341,7 +346,7 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ExecutorEnvironmentVariable)
   ASSERT_SOME(containerizer);
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   // Ensure that LIBPROCESS_IP has been passed despite the explicit
   // specification of the environment. If so, then touch the test file.
@@ -396,6 +401,11 @@ TEST_F(MesosContainerizerExecuteTest, IoRedirection)
   slave::Flags flags;
   flags.launcher_dir = getLauncherDir();
 
+  string workDirectory = "./work_dir";
+  Try<Nothing> mkdir = os::mkdir(workDirectory);
+  CHECK_SOME(mkdir) << "Failed to create work directory";
+  flags.work_dir = workDirectory;
+
   Fetcher fetcher;
 
   // Use local=false so std{err,out} are redirected to files.
@@ -406,7 +416,7 @@ TEST_F(MesosContainerizerExecuteTest, IoRedirection)
   Owned<MesosContainerizer> containerizer(_containerizer.get());
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   string errMsg = "this is stderr";
   string outMsg = "this is stdout";
@@ -593,7 +603,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
   MesosContainerizer containerizer((Owned<MesosContainerizerProcess>(process)));
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   TaskInfo taskInfo;
   CommandInfo commandInfo;
@@ -661,7 +671,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
   MesosContainerizer containerizer((Owned<MesosContainerizerProcess>(process)));
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   TaskInfo taskInfo;
   CommandInfo commandInfo;
@@ -766,7 +776,7 @@ TEST_F(MesosContainerizerProvisionerTest, ProvisionFailed)
   MesosContainerizer containerizer((Owned<MesosContainerizerProcess>(process)));
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   TaskInfo taskInfo;
   CommandInfo commandInfo;
@@ -958,7 +968,7 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
   MesosContainerizer containerizer((Owned<MesosContainerizerProcess>(process)));
 
   ContainerID containerId;
-  containerId.set_value("test_container");
+  containerId.set_value(UUID::random().toString());
 
   TaskInfo taskInfo;
   CommandInfo commandInfo;

@@ -47,6 +47,8 @@ DRFSorter::DRFSorter(
 
 void DRFSorter::add(const string& name, double weight)
 {
+  CHECK(!contains(name));
+
   Client client(name, 0, 0);
   clients.insert(client);
 
@@ -87,8 +89,11 @@ void DRFSorter::activate(const string& name)
 {
   CHECK(allocations.contains(name));
 
-  Client client(name, calculateShare(name), 0);
-  clients.insert(client);
+  set<Client, DRFComparator>::iterator it = find(name);
+  if (it == clients.end()) {
+    Client client(name, calculateShare(name), 0);
+    clients.insert(client);
+  }
 }
 
 

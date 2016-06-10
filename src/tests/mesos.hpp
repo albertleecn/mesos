@@ -288,7 +288,7 @@ public:
   static void TearDownTestCase()
   {
     delete server;
-    server = NULL;
+    server = nullptr;
   }
 
   virtual void SetUp()
@@ -518,12 +518,17 @@ inline Resource::DiskInfo createDiskInfo(
     const Option<std::string>& containerPath,
     const Option<Volume::Mode>& mode = None(),
     const Option<std::string>& hostPath = None(),
-    const Option<Resource::DiskInfo::Source>& source = None())
+    const Option<Resource::DiskInfo::Source>& source = None(),
+    const Option<std::string>& principal = None())
 {
   Resource::DiskInfo info;
 
   if (persistenceId.isSome()) {
     info.mutable_persistence()->set_id(persistenceId.get());
+  }
+
+  if (principal.isSome()) {
+    info.mutable_persistence()->set_principal(principal.get());
   }
 
   if (containerPath.isSome()) {
@@ -597,7 +602,8 @@ inline Resource createPersistentVolume(
     const std::string& persistenceId,
     const std::string& containerPath,
     const Option<std::string>& reservationPrincipal = None(),
-    const Option<Resource::DiskInfo::Source>& source = None())
+    const Option<Resource::DiskInfo::Source>& source = None(),
+    const Option<std::string>& creatorPrincipal = None())
 {
   Resource volume = Resources::parse(
       "disk",
@@ -605,7 +611,13 @@ inline Resource createPersistentVolume(
       role).get();
 
   volume.mutable_disk()->CopyFrom(
-      createDiskInfo(persistenceId, containerPath, None(), None(), source));
+      createDiskInfo(
+          persistenceId,
+          containerPath,
+          None(),
+          None(),
+          source,
+          creatorPrincipal));
 
   if (reservationPrincipal.isSome()) {
     volume.mutable_reservation()->set_principal(reservationPrincipal.get());
@@ -621,7 +633,8 @@ inline Resource createPersistentVolume(
     Resource volume,
     const std::string& persistenceId,
     const std::string& containerPath,
-    const Option<std::string>& reservationPrincipal = None())
+    const Option<std::string>& reservationPrincipal = None(),
+    const Option<std::string>& creatorPrincipal = None())
 {
   Option<Resource::DiskInfo::Source> source = None();
   if (volume.has_disk() && volume.disk().has_source()) {
@@ -629,7 +642,13 @@ inline Resource createPersistentVolume(
   }
 
   volume.mutable_disk()->CopyFrom(
-      createDiskInfo(persistenceId, containerPath, None(), None(), source));
+      createDiskInfo(
+          persistenceId,
+          containerPath,
+          None(),
+          None(),
+          source,
+          creatorPrincipal));
 
   if (reservationPrincipal.isSome()) {
     volume.mutable_reservation()->set_principal(reservationPrincipal.get());
@@ -953,7 +972,13 @@ public:
   MOCK_METHOD1_T(heartbeat, void(Mesos*));
   MOCK_METHOD2_T(subscribed, void(Mesos*, const typename Event::Subscribed&));
   MOCK_METHOD2_T(offers, void(Mesos*, const typename Event::Offers&));
+  MOCK_METHOD2_T(
+      inverseOffers,
+      void(Mesos*, const typename Event::InverseOffers&));
   MOCK_METHOD2_T(rescind, void(Mesos*, const typename Event::Rescind&));
+  MOCK_METHOD2_T(
+      rescindInverseOffers,
+      void(Mesos*, const typename Event::RescindInverseOffer&));
   MOCK_METHOD2_T(update, void(Mesos*, const typename Event::Update&));
   MOCK_METHOD2_T(message, void(Mesos*, const typename Event::Message&));
   MOCK_METHOD2_T(failure, void(Mesos*, const typename Event::Failure&));
@@ -968,8 +993,14 @@ public:
       case Event::OFFERS:
         offers(mesos, event.offers());
         break;
+      case Event::INVERSE_OFFERS:
+        inverseOffers(mesos, event.inverse_offers());
+        break;
       case Event::RESCIND:
         rescind(mesos, event.rescind());
+        break;
+      case Event::RESCIND_INVERSE_OFFER:
+        rescindInverseOffers(mesos, event.rescind_inverse_offer());
         break;
       case Event::UPDATE:
         update(mesos, event.update());
@@ -1434,7 +1465,7 @@ public:
 
   MOCK_CONST_METHOD9(
       run,
-      process::Future<Nothing>(
+      process::Future<Option<int>>(
           const mesos::ContainerInfo&,
           const mesos::CommandInfo&,
           const std::string&,
@@ -1470,7 +1501,7 @@ public:
           const std::string&,
           const Option<Duration>&));
 
-  process::Future<Nothing> _run(
+  process::Future<Option<int>> _run(
       const mesos::ContainerInfo& containerInfo,
       const mesos::CommandInfo& commandInfo,
       const std::string& name,
@@ -1682,6 +1713,11 @@ public:
 
   MOCK_METHOD1(
       authorized, process::Future<bool>(const authorization::Request& request));
+
+  MOCK_METHOD2(
+      getObjectApprover, process::Future<process::Owned<ObjectApprover>>(
+          const Option<authorization::Subject>& subject,
+          const authorization::Action& action));
 };
 
 

@@ -94,12 +94,6 @@ using std::string;
 using std::vector;
 
 
-void version()
-{
-  cout << "mesos" << " " << MESOS_VERSION << endl;
-}
-
-
 int main(int argc, char** argv)
 {
 #ifdef __WINDOWS__
@@ -175,7 +169,7 @@ int main(int argc, char** argv)
   }
 
   if (flags.version) {
-    version();
+    cout << "mesos" << " " << MESOS_VERSION << endl;
     return EXIT_SUCCESS;
   }
 
@@ -238,6 +232,18 @@ int main(int argc, char** argv)
 
   // Initialize modules. Note that since other subsystems may depend
   // upon modules, we should initialize modules before anything else.
+  if (flags.modules.isSome() && flags.modulesDir.isSome()) {
+    EXIT(EXIT_FAILURE) <<
+      flags.usage("Only one of --modules or --modules_dir should be specified");
+  }
+
+  if (flags.modulesDir.isSome()) {
+    Try<Nothing> result = ModuleManager::load(flags.modulesDir.get());
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE) << "Error loading modules: " << result.error();
+    }
+  }
+
   if (flags.modules.isSome()) {
     Try<Nothing> result = ModuleManager::load(flags.modules.get());
     if (result.isError()) {

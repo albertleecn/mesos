@@ -588,7 +588,7 @@ private:
 
 MesosExecutorDriver::MesosExecutorDriver(Executor* _executor)
   : executor(_executor),
-    process(NULL),
+    process(nullptr),
     status(DRIVER_NOT_STARTED)
 {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
@@ -648,9 +648,18 @@ Status MesosExecutorDriver::start()
 
     // Set stream buffering mode to flush on newlines so that we
     // capture logs from user processes even when output is redirected
-    // to a file.
-    setvbuf(stdout, 0, _IOLBF, 0);
-    setvbuf(stderr, 0, _IOLBF, 0);
+    // to a file. On POSIX, the buffer size is determined by the system
+    // when the `buf` parameter is null. On Windows we have to specify
+    // the size, so we use 1024 bytes, a number that is arbitrary, but
+    // large enough to not affect performance.
+    const size_t bufferSize =
+#ifdef __WINDOWS__
+      1024;
+#else // __WINDOWS__
+      0;
+#endif // __WINDOWS__
+    setvbuf(stdout, nullptr, _IOLBF, bufferSize);
+    setvbuf(stderr, nullptr, _IOLBF, bufferSize);
 
     bool local;
 
@@ -750,7 +759,7 @@ Status MesosExecutorDriver::start()
       }
     }
 
-    CHECK(process == NULL);
+    CHECK(process == nullptr);
 
     process = new ExecutorProcess(
         slave,
@@ -781,7 +790,7 @@ Status MesosExecutorDriver::stop()
       return status;
     }
 
-    CHECK(process != NULL);
+    CHECK(process != nullptr);
 
     dispatch(process, &ExecutorProcess::stop);
 
@@ -801,7 +810,7 @@ Status MesosExecutorDriver::abort()
       return status;
     }
 
-    CHECK(process != NULL);
+    CHECK(process != nullptr);
 
     // We set the atomic aborted to true here to prevent any further
     // messages from being processed in the ExecutorProcess. However,
@@ -856,7 +865,7 @@ Status MesosExecutorDriver::sendStatusUpdate(const TaskStatus& taskStatus)
       return status;
     }
 
-    CHECK(process != NULL);
+    CHECK(process != nullptr);
 
     dispatch(process, &ExecutorProcess::sendStatusUpdate, taskStatus);
 
@@ -872,7 +881,7 @@ Status MesosExecutorDriver::sendFrameworkMessage(const string& data)
       return status;
     }
 
-    CHECK(process != NULL);
+    CHECK(process != nullptr);
 
     dispatch(process, &ExecutorProcess::sendFrameworkMessage, data);
 

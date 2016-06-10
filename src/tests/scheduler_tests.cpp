@@ -16,6 +16,7 @@
 
 #include <string>
 #include <queue>
+#include <vector>
 
 #include <gmock/gmock.h>
 
@@ -70,7 +71,10 @@ using process::Owned;
 using process::PID;
 using process::Queue;
 
+using std::cout;
+using std::endl;
 using std::string;
+using std::vector;
 
 using testing::_;
 using testing::AtMost;
@@ -133,8 +137,8 @@ TEST_P(SchedulerTest, Subscribe)
 
   AWAIT_READY(subscribed);
 
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
+  ASSERT_EQ(master::DEFAULT_HEARTBEAT_INTERVAL.secs(),
+            subscribed->heartbeat_interval_seconds());
 }
 
 
@@ -223,12 +227,6 @@ TEST_P(SchedulerTest, SchedulerFailover)
   AWAIT_READY(subscribed);
 
   EXPECT_EQ(frameworkId, subscribed.get().framework_id());
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler2, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -433,9 +431,6 @@ TEST_P(SchedulerTest, TaskRunning)
 
   EXPECT_CALL(*executor, disconnected(_))
     .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -561,9 +556,6 @@ TEST_P(SchedulerTest, ReconcileTask)
     .Times(AtMost(1));
 
   EXPECT_CALL(*executor, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
     .Times(AtMost(1));
 }
 
@@ -708,9 +700,6 @@ TEST_P(SchedulerTest, KillTask)
 
   EXPECT_CALL(*executor, disconnected(_))
     .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -837,9 +826,6 @@ TEST_P(SchedulerTest, ShutdownExecutor)
   // Executor termination results in a 'FAILURE' event.
   AWAIT_READY(failure);
   EXPECT_EQ(executorId, devolve(failure->executor_id()));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -943,6 +929,10 @@ TEST_P(SchedulerTest, Teardown)
   EXPECT_CALL(*executor, shutdown(_))
     .WillOnce(FutureSatisfy(&shutdown));
 
+  Future<Nothing> disconnected;
+  EXPECT_CALL(*scheduler, disconnected(_))
+    .WillOnce(FutureSatisfy(&disconnected));
+
   {
     Call call;
     call.mutable_framework_id()->CopyFrom(frameworkId);
@@ -952,9 +942,7 @@ TEST_P(SchedulerTest, Teardown)
   }
 
   AWAIT_READY(shutdown);
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
+  AWAIT_READY(disconnected);
 }
 
 
@@ -1047,9 +1035,6 @@ TEST_P(SchedulerTest, Decline)
   AWAIT_READY(offers2);
   ASSERT_EQ(1, offers2->offers().size());
   ASSERT_EQ(offer.resources(), offers2->offers(0).resources());
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -1146,9 +1131,6 @@ TEST_P(SchedulerTest, Revive)
   AWAIT_READY(offers2);
   EXPECT_NE(0, offers2->offers().size());
   ASSERT_EQ(offer.resources(), offers2->offers(0).resources());
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -1262,9 +1244,6 @@ TEST_P(SchedulerTest, Suppress)
 
   EXPECT_NE(0, offers2->offers().size());
   ASSERT_EQ(offer.resources(), offers2->offers(0).resources());
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -1389,9 +1368,6 @@ TEST_P(SchedulerTest, Message)
 
   EXPECT_CALL(*executor, disconnected(_))
     .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -1450,9 +1426,6 @@ TEST_P(SchedulerTest, Request)
   }
 
   AWAIT_READY(requestResources);
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
 }
 
 
@@ -1519,6 +1492,137 @@ TEST_P(SchedulerTest, SchedulerReconnect)
 
 // TODO(benh): Write test for sending Call::Acknowledgement through
 // master to slave when Event::Update was generated locally.
+
+
+class SchedulerReconcileTasks_BENCHMARK_Test
+  : public MesosTest,
+    public WithParamInterface<size_t> {};
+
+
+// The scheduler reconcile benchmark tests are parameterized by the number of
+// tasks that need to be reconciled.
+INSTANTIATE_TEST_CASE_P(
+    Tasks,
+    SchedulerReconcileTasks_BENCHMARK_Test,
+    ::testing::Values(1000U, 10000U, 50000U, 100000U));
+
+
+// This benchmark simulates a large reconcile request containing tasks unknown
+// to the master using the scheduler library/driver. It then measures the time
+// required for processing the received `TASK_LOST` status updates.
+TEST_P(SchedulerReconcileTasks_BENCHMARK_Test, SchedulerLibrary)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  auto scheduler = std::make_shared<MockV1HTTPScheduler>();
+
+  Future<Nothing> connected;
+  EXPECT_CALL(*scheduler, connected(_))
+    .WillOnce(FutureSatisfy(&connected));
+
+  scheduler::TestV1Mesos mesos(
+      master.get()->pid, ContentType::PROTOBUF, scheduler);
+
+  AWAIT_READY(connected);
+
+  Future<Event::Subscribed> subscribed;
+  EXPECT_CALL(*scheduler, subscribed(_, _))
+    .WillOnce(FutureArg<1>(&subscribed));
+
+  EXPECT_CALL(*scheduler, heartbeat(_))
+    .WillRepeatedly(Return()); // Ignore heartbeats.
+
+  {
+    Call call;
+    call.set_type(Call::SUBSCRIBE);
+
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(DEFAULT_V1_FRAMEWORK_INFO);
+
+    mesos.send(call);
+  }
+
+  AWAIT_READY(subscribed);
+
+  v1::FrameworkID frameworkId(subscribed->framework_id());
+
+  const size_t tasks = GetParam();
+
+  EXPECT_CALL(*scheduler, update(_, _))
+    .Times(tasks);
+
+  Call call;
+  call.mutable_framework_id()->CopyFrom(frameworkId);
+  call.set_type(Call::RECONCILE);
+
+  for (size_t i = 0; i < tasks; ++i) {
+    Call::Reconcile::Task* task = call.mutable_reconcile()->add_tasks();
+    task->mutable_task_id()->set_value("task " + stringify(i));
+  }
+
+  Stopwatch watch;
+  watch.start();
+
+  mesos.send(call);
+
+  Clock::pause();
+  Clock::settle();
+
+  cout << "Reconciling " << tasks << " tasks took " << watch.elapsed()
+       << " using the scheduler library" << endl;
+}
+
+
+TEST_P(SchedulerReconcileTasks_BENCHMARK_Test, SchedulerDriver)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched,
+      DEFAULT_FRAMEWORK_INFO,
+      master.get()->pid,
+      false,
+      DEFAULT_CREDENTIAL);
+
+  Future<FrameworkID> frameworkId;
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .WillOnce(FutureArg<1>(&frameworkId));
+
+  driver.start();
+
+  AWAIT_READY(frameworkId);
+
+  const size_t tasks = GetParam();
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .Times(tasks);
+
+  vector<TaskStatus> statuses;
+
+  for (size_t i = 0; i < tasks; ++i) {
+    TaskStatus status;
+    status.mutable_task_id()->set_value("task " + stringify(i));
+
+    statuses.push_back(status);
+  }
+
+  Stopwatch watch;
+  watch.start();
+
+  driver.reconcileTasks(statuses);
+
+  Clock::pause();
+  Clock::settle();
+
+  cout << "Reconciling " << tasks << " tasks took " << watch.elapsed()
+       << " using the scheduler driver" << endl;
+
+  driver.stop();
+  driver.join();
+}
 
 } // namespace tests {
 } // namespace internal {

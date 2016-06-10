@@ -39,8 +39,13 @@ PROTOC_TO_INCLUDE_DIR(QUOTA            mesos/quota/quota)
 PROTOC_TO_INCLUDE_DIR(SCHEDULER        mesos/scheduler/scheduler)
 PROTOC_TO_INCLUDE_DIR(STATE            mesos/state/state)
 PROTOC_TO_INCLUDE_DIR(URI              mesos/uri/uri)
+PROTOC_TO_INCLUDE_DIR(V1_AGENT         mesos/v1/agent)
+PROTOC_TO_INCLUDE_DIR(V1_ALLOCATOR     mesos/v1/master/allocator)
 PROTOC_TO_INCLUDE_DIR(V1_EXECUTOR      mesos/v1/executor/executor)
+PROTOC_TO_INCLUDE_DIR(V1_MAINTENANCE   mesos/v1/maintenance/maintenance)
+PROTOC_TO_INCLUDE_DIR(V1_MASTER        mesos/v1/master)
 PROTOC_TO_INCLUDE_DIR(V1_MESOS         mesos/v1/mesos)
+PROTOC_TO_INCLUDE_DIR(V1_QUOTA         mesos/v1/quota/quota)
 PROTOC_TO_INCLUDE_DIR(V1_SCHEDULER     mesos/v1/scheduler/scheduler)
 
 PROTOC_TO_SRC_DIR(REGISTRY                      master/registry)
@@ -81,8 +86,13 @@ set(MESOS_PROTOBUF_SRC
   ${SCHEDULER_PROTO_CC}
   ${STATE_PROTO_CC}
   ${URI_PROTO_CC}
+  ${V1_AGENT_PROTO_CC}
+  ${V1_ALLOCATOR_PROTO_CC}
   ${V1_EXECUTOR_PROTO_CC}
+  ${V1_MAINTENANCE_PROTO_CC}
+  ${V1_MASTER_PROTO_CC}
   ${V1_MESOS_PROTO_CC}
+  ${V1_QUOTA_PROTO_CC}
   ${V1_SCHEDULER_PROTO_CC}
   )
 
@@ -138,6 +148,7 @@ set(LINUX_SRC
   linux/systemd.cpp
   slave/containerizer/mesos/linux_launcher.cpp
   slave/containerizer/mesos/isolators/cgroups/cpushare.cpp
+  slave/containerizer/mesos/isolators/cgroups/devices.cpp
   slave/containerizer/mesos/isolators/cgroups/mem.cpp
   slave/containerizer/mesos/isolators/cgroups/net_cls.cpp
   slave/containerizer/mesos/isolators/cgroups/perf_event.cpp
@@ -151,6 +162,12 @@ set(LINUX_SRC
   slave/containerizer/mesos/isolators/network/cni/cni.cpp
   slave/containerizer/mesos/provisioner/backends/bind.cpp
   slave/containerizer/mesos/provisioner/backends/overlay.cpp
+  )
+
+set(WIN32_SRC
+  ${WIN32_SRC}
+  slave/containerizer/mesos/isolators/filesystem/posix.cpp
+  slave/containerizer/mesos/isolators/filesystem/windows.cpp
   )
 
 set(DOCKER_SRC
@@ -255,6 +272,7 @@ set(AGENT_SRC
   slave/state.cpp
   slave/status_update_manager.cpp
   slave/validation.cpp
+  slave/containerizer/mesos/launch.cpp
   )
 
 if (NOT WIN32)
@@ -273,7 +291,6 @@ if (NOT WIN32)
     slave/containerizer/fetcher.cpp
     slave/containerizer/mesos/containerizer.cpp
     slave/containerizer/mesos/isolator.cpp
-    slave/containerizer/mesos/launch.cpp
     slave/containerizer/mesos/launcher.cpp
     slave/containerizer/mesos/mount.cpp
     slave/containerizer/mesos/isolators/filesystem/posix.cpp
@@ -381,6 +398,11 @@ endif (NOT WIN32)
 if (LINUX)
   set(MESOS_SRC ${MESOS_SRC} ${LINUX_SRC})
 endif (LINUX)
+
+# Include source for Windows build.
+if (WIN32)
+  set(MESOS_SRC ${MESOS_SRC} ${WIN32_SRC})
+endif (WIN32)
 
 add_definitions(-DUSE_STATIC_LIB -DBUILD_DATE=0 -DBUILD_TIME=0 -DBUILD_USER="frank" -DBUILD_FLAGS="" -DBUILD_JAVA_JVM_LIBRARY="")
 

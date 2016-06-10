@@ -18,7 +18,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.61])
-AC_INIT([mesos], [0.29.0])
+AC_INIT([mesos], [1.0.0])
 
 # Have autoconf setup some variables related to the system.
 AC_CANONICAL_HOST
@@ -635,6 +635,22 @@ if test -z "`echo $PATCHCOMMAND_TEST`"; then
     AC_MSG_ERROR([patch command not found in PATH])
 fi
 
+# Check if we need to do anything special to use the fts_*
+# functions. On some systems (e.g., those that use musl instead of
+# glibc), FTS support requires linking against an additional library.
+AC_CHECK_HEADERS([fts.h], [], [AC_MSG_ERROR([cannot find fts.h
+-------------------------------------------------------------------
+Failed to find fts.h. If this header file is not provided by libc
+on this system (e.g., musl), a separate FTS package must be installed.
+-------------------------------------------------------------------
+])])
+
+AC_SEARCH_LIBS(fts_close, fts, [], [AC_MSG_ERROR([cannot find libfts
+-------------------------------------------------------------------
+Failed to find fts_close. If this function is not provided by libc
+on this system (e.g., musl), a separate FTS package must be installed.
+-------------------------------------------------------------------
+])])
 
 ###############################################################################
 # Miscellaneous checks related to (un)bundled software.

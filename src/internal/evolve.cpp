@@ -14,11 +14,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <mesos/v1/agent.hpp>
+#include <mesos/v1/master.hpp>
+
 #include <process/pid.hpp>
 
 #include <stout/check.hpp>
+#include <stout/json.hpp>
+#include <stout/protobuf.hpp>
 
 #include "internal/evolve.hpp"
+
+#include "master/constants.hpp"
 
 using std::string;
 
@@ -138,6 +145,12 @@ v1::TaskStatus evolve(const TaskStatus& status)
 }
 
 
+v1::MasterInfo evolve(const MasterInfo& masterInfo)
+{
+  return evolve<v1::MasterInfo>(masterInfo);
+}
+
+
 v1::scheduler::Call evolve(const scheduler::Call& call)
 {
   return evolve<v1::scheduler::Call>(call);
@@ -158,6 +171,11 @@ v1::scheduler::Event evolve(const FrameworkRegisteredMessage& message)
   v1::scheduler::Event::Subscribed* subscribed = event.mutable_subscribed();
   subscribed->mutable_framework_id()->CopyFrom(evolve(message.framework_id()));
 
+  // TODO(anand): The master should pass the heartbeat interval as an argument
+  // to `evolve()`.
+  subscribed->set_heartbeat_interval_seconds(
+      master::DEFAULT_HEARTBEAT_INTERVAL.secs());
+
   return event;
 }
 
@@ -170,6 +188,11 @@ v1::scheduler::Event evolve(const FrameworkReregisteredMessage& message)
   v1::scheduler::Event::Subscribed* subscribed = event.mutable_subscribed();
   subscribed->mutable_framework_id()->CopyFrom(evolve(message.framework_id()));
 
+  // TODO(anand): The master should pass the heartbeat interval as an argument
+  // to `evolve()`.
+  subscribed->set_heartbeat_interval_seconds(
+      master::DEFAULT_HEARTBEAT_INTERVAL.secs());
+
   return event;
 }
 
@@ -181,7 +204,20 @@ v1::scheduler::Event evolve(const ResourceOffersMessage& message)
 
   v1::scheduler::Event::Offers* offers = event.mutable_offers();
   offers->mutable_offers()->CopyFrom(evolve<v1::Offer>(message.offers()));
-  offers->mutable_inverse_offers()->CopyFrom(evolve<v1::InverseOffer>(
+
+  return event;
+}
+
+
+v1::scheduler::Event evolve(const InverseOffersMessage& message)
+{
+  v1::scheduler::Event event;
+  event.set_type(v1::scheduler::Event::INVERSE_OFFERS);
+
+  v1::scheduler::Event::InverseOffers* inverse_offers =
+    event.mutable_inverse_offers();
+
+  inverse_offers->mutable_inverse_offers()->CopyFrom(evolve<v1::InverseOffer>(
       message.inverse_offers()));
 
   return event;
@@ -194,7 +230,23 @@ v1::scheduler::Event evolve(const RescindResourceOfferMessage& message)
   event.set_type(v1::scheduler::Event::RESCIND);
 
   v1::scheduler::Event::Rescind* rescind = event.mutable_rescind();
+
   rescind->mutable_offer_id()->CopyFrom(evolve(message.offer_id()));
+
+  return event;
+}
+
+
+v1::scheduler::Event evolve(const RescindInverseOfferMessage& message)
+{
+  v1::scheduler::Event event;
+  event.set_type(v1::scheduler::Event::RESCIND_INVERSE_OFFER);
+
+  v1::scheduler::Event::RescindInverseOffer* rescindInverseOffer =
+    event.mutable_rescind_inverse_offer();
+
+  rescindInverseOffer->mutable_inverse_offer_id()->CopyFrom(evolve(
+      message.inverse_offer_id()));
 
   return event;
 }
@@ -384,6 +436,98 @@ v1::executor::Event evolve(const ShutdownExecutorMessage&)
   event.set_type(v1::executor::Event::SHUTDOWN);
 
   return event;
+}
+
+
+template<>
+v1::master::Response evolve<v1::master::Response::GET_FLAGS>(
+    const JSON::Object& object)
+{
+  v1::master::Response response;
+  response.set_type(v1::master::Response::GET_FLAGS);
+
+  v1::master::Response::GetFlags* getFlags = response.mutable_get_flags();
+
+  Result<JSON::Object> flags = object.at<JSON::Object>("flags");
+  CHECK_SOME(flags) << "Failed to find 'flags' key in the JSON object";
+
+  foreachpair (const string& key,
+               const JSON::Value& value,
+               flags.get().values) {
+    v1::Flag* flag = getFlags->add_flags();
+    flag->set_name(key);
+
+    CHECK(value.is<JSON::String>())
+      << "Flag '" + key + "' value is not a string";
+
+    flag->set_value(value.as<JSON::String>().value);
+  }
+
+  return response;
+}
+
+
+// TODO(vinod): Consolidate master and agent flags evolution.
+template<>
+v1::agent::Response evolve<v1::agent::Response::GET_FLAGS>(
+    const JSON::Object& object)
+{
+  v1::agent::Response response;
+  response.set_type(v1::agent::Response::GET_FLAGS);
+
+  v1::agent::Response::GetFlags* getFlags = response.mutable_get_flags();
+
+  Result<JSON::Object> flags = object.at<JSON::Object>("flags");
+  CHECK_SOME(flags) << "Failed to find 'flags' key in the JSON object";
+
+  foreachpair (const string& key,
+               const JSON::Value& value,
+               flags.get().values) {
+    v1::Flag* flag = getFlags->add_flags();
+    flag->set_name(key);
+
+    CHECK(value.is<JSON::String>())
+      << "Flag '" + key + "' value is not a string";
+
+    flag->set_value(value.as<JSON::String>().value);
+  }
+
+  return response;
+}
+
+
+template<>
+v1::master::Response evolve<v1::master::Response::GET_VERSION>(
+    const JSON::Object& object)
+{
+  v1::master::Response response;
+  response.set_type(v1::master::Response::GET_VERSION);
+
+  Try<v1::VersionInfo> version = protobuf::parse<v1::VersionInfo>(object);
+  CHECK_SOME(version);
+
+  response.mutable_get_version()->mutable_version_info()->CopyFrom(
+      version.get());
+
+  return response;
+}
+
+
+// TODO(vinod): Consolidate master and agent version evolution.
+template<>
+v1::agent::Response evolve<v1::agent::Response::GET_VERSION>(
+    const JSON::Object& object)
+{
+  v1::agent::Response response;
+  response.set_type(v1::agent::Response::GET_VERSION);
+
+  Try<v1::VersionInfo> version = protobuf::parse<v1::VersionInfo>(object);
+  CHECK_SOME(version);
+
+  response.mutable_get_version()->mutable_version_info()->CopyFrom(
+      version.get());
+
+  return response;
 }
 
 } // namespace internal {

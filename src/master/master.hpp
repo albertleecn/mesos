@@ -42,6 +42,8 @@
 
 #include <mesos/scheduler/scheduler.hpp>
 
+#include <mesos/v1/master.hpp>
+
 #include <process/limiter.hpp>
 #include <process/http.hpp>
 #include <process/owned.hpp>
@@ -127,7 +129,7 @@ struct Slave
       connected(true),
       active(true),
       checkpointedResources(_checkpointedResources),
-      observer(NULL)
+      observer(nullptr)
   {
     CHECK(_info.has_id());
 
@@ -156,7 +158,7 @@ struct Slave
     if (tasks.contains(frameworkId) && tasks[frameworkId].contains(taskId)) {
       return tasks[frameworkId][taskId];
     }
-    return NULL;
+    return nullptr;
   }
 
   void addTask(Task* task)
@@ -878,9 +880,17 @@ private:
     const scheduler::Call::Accept& accept,
     const process::Future<std::list<process::Future<bool>>>& authorizations);
 
+  void acceptInverseOffers(
+      Framework* framework,
+      const scheduler::Call::AcceptInverseOffers& accept);
+
   void decline(
       Framework* framework,
       const scheduler::Call::Decline& decline);
+
+  void declineInverseOffers(
+      Framework* framework,
+      const scheduler::Call::DeclineInverseOffers& decline);
 
   void revive(Framework* framework);
 
@@ -914,6 +924,9 @@ private:
   {
     return leader.isSome() && leader.get() == info_;
   }
+
+  process::Future<bool> authorizeLogAccess(
+      const Option<std::string>& principal);
 
   /**
    * Returns whether the given role is on the whitelist.
@@ -1047,16 +1060,26 @@ private:
     }
 
     process::Future<process::http::Response> get(
-        const process::http::Request& request) const;
+        const process::http::Request& request,
+        const Option<std::string>& principal) const;
 
     process::Future<process::http::Response> update(
         const process::http::Request& request,
         const Option<std::string>& principal) const;
 
   private:
-    process::Future<bool> authorize(
+    process::Future<bool> authorizeGetWeight(
+        const Option<std::string>& principal,
+        const std::string& role) const;
+
+    process::Future<bool> authorizeUpdateWeights(
         const Option<std::string>& principal,
         const std::vector<std::string>& roles) const;
+
+    process::Future<process::http::Response> _get(
+        const process::http::Request& request,
+        const std::vector<WeightInfo>& weightInfos,
+        const std::list<bool>& authorized) const;
 
     process::Future<process::http::Response> _update(
         const std::vector<WeightInfo>& updateWeightInfos) const;
@@ -1080,6 +1103,11 @@ private:
     // Logs the request, route handlers can compose this with the
     // desired request handler to get consistent request logging.
     static void log(const process::http::Request& request);
+
+    // /api/v1
+    process::Future<process::http::Response> api(
+        const process::http::Request& request,
+        const Option<std::string>& principal) const;
 
     // /api/v1/scheduler
     process::Future<process::http::Response> scheduler(
@@ -1184,6 +1212,7 @@ private:
         const process::http::Request& request,
         const Option<std::string>& principal) const;
 
+    static std::string API_HELP();
     static std::string SCHEDULER_HELP();
     static std::string FLAGS_HELP();
     static std::string FRAMEWORKS_HELP();
@@ -1207,9 +1236,7 @@ private:
     static std::string WEIGHTS_HELP();
 
   private:
-    // Continuations.
-    process::Future<process::http::Response> _flags(
-        const process::http::Request& request) const;
+    JSON::Object _flags() const;
 
     process::Future<process::http::Response> _teardown(
         const FrameworkID& id) const;
@@ -1253,6 +1280,33 @@ private:
         const std::string& endpoint,
         const std::string& method) const;
 
+    // v1 master API handlers.
+
+    process::Future<process::http::Response> getFlags(
+        const v1::master::Call& call,
+        const Option<std::string>& principal,
+        const ContentType& responseContentType) const;
+
+    process::Future<process::http::Response> getHealth(
+        const v1::master::Call& call,
+        const Option<std::string>& principal,
+        const ContentType& responseContentType) const;
+
+    process::Future<process::http::Response> getVersion(
+        const v1::master::Call& call,
+        const Option<std::string>& principal,
+        const ContentType& responseContentType) const;
+
+    process::Future<process::http::Response> getLoggingLevel(
+        const v1::master::Call& call,
+        const Option<std::string>& principal,
+        const ContentType& responseContentType) const;
+
+    process::Future<process::http::Response> getLeadingMaster(
+        const v1::master::Call& call,
+        const Option<std::string>& principal,
+        const ContentType& responseContentType) const;
+
     Master* master;
 
     // NOTE: The quota specific pieces of the Operator API are factored
@@ -1270,9 +1324,12 @@ private:
   friend struct Framework;
   friend struct Metrics;
 
-  // NOTE: Since 'getOffer' and 'slaves' are protected,
-  // we need to make the following functions friends.
+  // NOTE: Since 'getOffer', 'getInverseOffer' and 'slaves' are
+  // protected, we need to make the following functions friends.
   friend Offer* validation::offer::getOffer(
+      Master* master, const OfferID& offerId);
+
+  friend InverseOffer* validation::offer::getInverseOffer(
       Master* master, const OfferID& offerId);
 
   friend Slave* validation::offer::getSlave(
@@ -1353,12 +1410,12 @@ private:
 
       Slave* get(const SlaveID& slaveId) const
       {
-        return ids.get(slaveId).getOrElse(NULL);
+        return ids.get(slaveId).getOrElse(nullptr);
       }
 
       Slave* get(const process::UPID& pid) const
       {
-        return pids.get(pid).getOrElse(NULL);
+        return pids.get(pid).getOrElse(nullptr);
       }
 
       void put(Slave* slave)
@@ -1808,7 +1865,7 @@ struct Framework
       return tasks[taskId];
     }
 
-    return NULL;
+    return nullptr;
   }
 
   void addTask(Task* task)

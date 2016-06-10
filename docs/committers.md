@@ -125,6 +125,13 @@ We'd like to thank the following committers to the Apache Mesos project who have
       <td>tmarshall@apache.org</td>
     </tr>
     <tr>
+      <td>+1</td>
+      <td>Bernd Mathiske</td>
+      <td>Mesosphere</td>
+      <td>bernd</td>
+      <td>bernd@apache.org</td>
+    </tr>
+    <tr>
       <td>-8</td>
       <td>Brenden Matthews</td>
       <td>Mesosphere</td>
@@ -137,6 +144,13 @@ We'd like to thank the following committers to the Apache Mesos project who have
       <td>NASA JPL</td>
       <td></td>
       <td>mattmann@apache.org</td>
+    </tr>
+    <tr>
+      <td>-8</td>
+      <td>Anand Mazumdar</td>
+      <td>Mesosphere</td>
+      <td>anandm</td>
+      <td>anand@apache.org</td>
     </tr>
     <tr>
       <td>-8</td>
@@ -165,6 +179,20 @@ We'd like to thank the following committers to the Apache Mesos project who have
       <td>UC Berkeley</td>
       <td></td>
       <td>woggle@apache.org</td>
+    </tr>
+    <tr>
+      <td>-8</td>
+      <td>Joris Van Remoortere</td>
+      <td>Mesosphere</td>
+      <td>joris</td>
+      <td>joris@apache.org</td>
+    </tr>
+    <tr>
+      <td>+1</td>
+      <td>Alex R</td>
+      <td>Mesosphere</td>
+      <td>alexr</td>
+      <td>alexr@apache.org</td>
     </tr>
     <tr>
       <td>-5</td>

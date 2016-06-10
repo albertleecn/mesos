@@ -25,6 +25,8 @@
 
 #include <mesos/executor/executor.hpp>
 
+#include <mesos/v1/agent.hpp>
+
 #include <mesos/v1/executor/executor.hpp>
 
 #include <mesos/attributes.hpp>
@@ -57,6 +59,8 @@
 
 #include "slave/slave.hpp"
 #include "slave/validation.hpp"
+
+#include "version/version.hpp"
 
 using process::AUTHENTICATION;
 using process::AUTHORIZATION;
@@ -196,6 +200,125 @@ void Slave::Http::log(const Request& request)
 }
 
 
+string Slave::Http::API_HELP()
+{
+  return HELP(
+    TLDR(
+        "Endpoint for API calls against the agent."),
+    DESCRIPTION(
+        "Returns 200 OK if the call is successful"),
+    AUTHENTICATION(false));
+}
+
+
+Future<Response> Slave::Http::api(
+    const Request& request,
+    const Option<string>& principal) const
+{
+  // TODO(anand): Add metrics for rejected requests.
+
+  if (slave->state == Slave::RECOVERING) {
+    return ServiceUnavailable("Agent has not finished recovery");
+  }
+
+  if (request.method != "POST") {
+    return MethodNotAllowed({"POST"}, request.method);
+  }
+
+  v1::agent::Call call;
+
+  Option<string> contentType = request.headers.get("Content-Type");
+  if (contentType.isNone()) {
+    return BadRequest("Expecting 'Content-Type' to be present");
+  }
+
+  if (contentType.get() == APPLICATION_PROTOBUF) {
+    if (!call.ParseFromString(request.body)) {
+      return BadRequest("Failed to parse body into Call protobuf");
+    }
+  } else if (contentType.get() == APPLICATION_JSON) {
+    Try<JSON::Value> value = JSON::parse(request.body);
+    if (value.isError()) {
+      return BadRequest("Failed to parse body into JSON: " + value.error());
+    }
+
+    Try<v1::agent::Call> parse =
+      ::protobuf::parse<v1::agent::Call>(value.get());
+
+    if (parse.isError()) {
+      return BadRequest("Failed to convert JSON into Call protobuf: " +
+                        parse.error());
+    }
+
+    call = parse.get();
+  } else {
+    return UnsupportedMediaType(
+        string("Expecting 'Content-Type' of ") +
+        APPLICATION_JSON + " or " + APPLICATION_PROTOBUF);
+  }
+
+  Option<Error> error = validation::agent::call::validate(call);
+
+  if (error.isSome()) {
+    return BadRequest("Failed to validate v1::agent::Call: " +
+                      error.get().message);
+  }
+
+  LOG(INFO) << "Processing call " << call.type();
+
+  ContentType responseContentType;
+  if (request.acceptsMediaType(APPLICATION_JSON)) {
+    responseContentType = ContentType::JSON;
+  } else if (request.acceptsMediaType(APPLICATION_PROTOBUF)) {
+    responseContentType = ContentType::PROTOBUF;
+  } else {
+    return NotAcceptable(
+        string("Expecting 'Accept' to allow ") +
+        "'" + APPLICATION_PROTOBUF + "' or '" + APPLICATION_JSON + "'");
+  }
+
+  switch (call.type()) {
+    case v1::agent::Call::UNKNOWN:
+      return NotImplemented();
+
+    case v1::agent::Call::GET_HEALTH:
+      return getHealth(call, principal, responseContentType);
+
+    case v1::agent::Call::GET_FLAGS:
+      return getFlags(call, principal, responseContentType);
+
+    case v1::agent::Call::GET_VERSION:
+      return getVersion(call, principal, responseContentType);
+
+    case v1::agent::Call::GET_METRICS:
+      return NotImplemented();
+
+    case v1::agent::Call::GET_LOGGING_LEVEL:
+      return getLoggingLevel(call, principal, responseContentType);
+
+    case v1::agent::Call::SET_LOGGING_LEVEL:
+      return NotImplemented();
+
+    case v1::agent::Call::LIST_FILES:
+      return NotImplemented();
+
+    case v1::agent::Call::READ_FILE:
+      return NotImplemented();
+
+    case v1::agent::Call::GET_STATE:
+      return NotImplemented();
+
+    case v1::agent::Call::GET_RESOURCE_STATISTICS:
+      return NotImplemented();
+
+    case v1::agent::Call::GET_CONTAINERS:
+      return NotImplemented();
+  }
+
+  UNREACHABLE();
+}
+
+
 string Slave::Http::EXECUTOR_HELP() {
   return HELP(
     TLDR(
@@ -285,12 +408,12 @@ Future<Response> Slave::Http::executor(const Request& request) const
   // We consolidate the framework/executor lookup logic here because
   // it is common for all the call handlers.
   Framework* framework = slave->getFramework(call.framework_id());
-  if (framework == NULL) {
+  if (framework == nullptr) {
     return BadRequest("Framework cannot be found");
   }
 
   Executor* executor = framework->getExecutor(call.executor_id());
-  if (executor == NULL) {
+  if (executor == nullptr) {
     return BadRequest("Executor cannot be found");
   }
 
@@ -366,8 +489,6 @@ Future<Response> Slave::Http::flags(
     return MethodNotAllowed({"GET"}, request.method);
   }
 
-  const Flags slaveFlags = slave->flags;
-
   Try<string> endpoint = extractEndpoint(request.url);
   if (endpoint.isError()) {
     return Failure("Failed to extract endpoint: " + endpoint.error());
@@ -376,26 +497,24 @@ Future<Response> Slave::Http::flags(
   return authorizeEndpoint(principal, endpoint.get(), request.method)
     .then(defer(
         slave->self(),
-        [request, slaveFlags](bool authorized) -> Future<Response> {
+        [this, request](bool authorized) -> Future<Response> {
           if (!authorized) {
             return Forbidden();
           }
 
-          return _flags(request, slaveFlags);
+          return OK(_flags(), request.url.query.get("jsonp"));
         }));
 }
 
 
-Future<Response> Slave::Http::_flags(
-  const Request& request,
-  const Flags& slaveFlags)
+JSON::Object Slave::Http::_flags() const
 {
   JSON::Object object;
 
   {
     JSON::Object flags;
-    foreachvalue (const flags::Flag& flag, slaveFlags) {
-      Option<string> value = flag.stringify(slaveFlags);
+    foreachvalue (const flags::Flag& flag, slave->flags) {
+      Option<string> value = flag.stringify(slave->flags);
       if (value.isSome()) {
         flags.values[flag.effective_name().value] = value.get();
       }
@@ -403,7 +522,22 @@ Future<Response> Slave::Http::_flags(
     object.values["flags"] = std::move(flags);
   }
 
-  return OK(object, request.url.query.get("jsonp"));
+  return object;
+}
+
+
+Future<Response> Slave::Http::getFlags(
+    const v1::agent::Call& call,
+    const Option<string>& principal,
+    const ContentType& responseContentType) const
+{
+  CHECK_EQ(v1::agent::Call::GET_FLAGS, call.type());
+
+  v1::agent::Response response =
+    evolve<v1::agent::Response::GET_FLAGS>(_flags());
+
+  return OK(serialize(responseContentType, response),
+            stringify(responseContentType));
 }
 
 
@@ -422,6 +556,53 @@ string Slave::Http::HEALTH_HELP()
 Future<Response> Slave::Http::health(const Request& request) const
 {
   return OK();
+}
+
+
+Future<Response> Slave::Http::getHealth(
+    const v1::agent::Call& call,
+    const Option<string>& principal,
+    const ContentType& responseContentType) const
+{
+  CHECK_EQ(v1::agent::Call::GET_HEALTH, call.type());
+
+  v1::agent::Response response;
+  response.set_type(v1::agent::Response::GET_HEALTH);
+  response.mutable_get_health()->set_healthy(true);
+
+  return OK(serialize(responseContentType, response),
+            stringify(responseContentType));
+}
+
+
+Future<Response> Slave::Http::getVersion(
+    const v1::agent::Call& call,
+    const Option<string>& principal,
+    const ContentType& responseContentType) const
+{
+  CHECK_EQ(v1::agent::Call::GET_VERSION, call.type());
+
+  v1::agent::Response response =
+    evolve<v1::agent::Response::GET_VERSION>(version());
+
+  return OK(serialize(responseContentType, response),
+            stringify(responseContentType));
+}
+
+
+Future<Response> Slave::Http::getLoggingLevel(
+    const v1::agent::Call& call,
+    const Option<string>& principal,
+    const ContentType& responseContentType) const
+{
+  CHECK_EQ(v1::agent::Call::GET_LOGGING_LEVEL, call.type());
+
+  v1::agent::Response response;
+  response.set_type(v1::agent::Response::GET_LOGGING_LEVEL);
+  response.mutable_get_logging_level()->set_level(FLAGS_v);
+
+  return OK(serialize(responseContentType, response),
+            stringify(responseContentType));
 }
 
 
@@ -648,9 +829,6 @@ Future<Response> Slave::Http::statistics(
     return MethodNotAllowed({"GET"}, request.method);
   }
 
-  const PID<Slave> pid = slave->self();
-  Shared<RateLimiter> limiter = statisticsLimiter;
-
   Try<string> endpoint = extractEndpoint(request.url);
   if (endpoint.isError()) {
     return Failure("Failed to extract endpoint: " + endpoint.error());
@@ -658,21 +836,21 @@ Future<Response> Slave::Http::statistics(
 
   return authorizeEndpoint(principal, endpoint.get(), request.method)
     .then(defer(
-        pid,
-        [pid, limiter, request](bool authorized) -> Future<Response> {
+        slave->self(),
+        [this, request](bool authorized) -> Future<Response> {
           if (!authorized) {
             return Forbidden();
           }
 
-          return limiter->acquire()
-            .then(defer(pid, &Slave::usage))
-            .then(defer(pid, [request](const ResourceUsage& usage) {
+          return statisticsLimiter->acquire()
+            .then(defer(slave->self(), &Slave::usage))
+            .then(defer(slave->self(),
+                  [this, request](const ResourceUsage& usage) {
               return _statistics(usage, request);
             }));
         }))
     .repair([](const Future<Response>& future) {
-      LOG(WARNING) << "Could not collect statistics: "
-                   << (future.isFailed() ? future.failure() : "discarded");
+      LOG(WARNING) << "Could not collect statistics: " << future.failure();
 
       return InternalServerError();
     });
@@ -681,7 +859,7 @@ Future<Response> Slave::Http::statistics(
 
 Response Slave::Http::_statistics(
     const ResourceUsage& usage,
-    const Request& request)
+    const Request& request) const
 {
   JSON::Array result;
 
@@ -766,28 +944,20 @@ Future<Response> Slave::Http::containers(
     return Failure("Failed to extract endpoint: " + endpoint.error());
   }
 
-  const PID<Slave> pid = slave->self();
-
-  // NOTE: We should not leak the slave instance because the its
-  // lifetime is not guaranteed. See MESOS-5293 for details.
-  const Slave* localSlave = slave;
-
   return authorizeEndpoint(principal, endpoint.get(), request.method)
     .then(defer(
-        pid,
-        [pid, localSlave, request](bool authorized) -> Future<Response> {
+        slave->self(),
+        [this, request](bool authorized) -> Future<Response> {
           if (!authorized) {
             return Forbidden();
           }
 
-          return _containers(request, localSlave);
+          return _containers(request);
         }));
 }
 
 
-Future<Response> Slave::Http::_containers(
-    const Request& request,
-    const Slave* slave)
+Future<Response> Slave::Http::_containers(const Request& request) const
 {
   Owned<list<JSON::Object>> metadata(new list<JSON::Object>());
   list<Future<ContainerStatus>> statusFutures;
@@ -867,9 +1037,9 @@ Future<Response> Slave::Http::_containers(
       })
       .repair([](const Future<Response>& future) {
         LOG(WARNING) << "Could not collect container status and statistics: "
-                     << (future.isFailed() ? future.failure() : "discarded");
+                     << future.failure();
 
-        return process::http::InternalServerError();
+        return InternalServerError();
       });
 }
 

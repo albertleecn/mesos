@@ -181,7 +181,12 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::work_dir,
       "work_dir",
-      "Directory path to place framework work directories\n", "/tmp/mesos");
+      "Path of the agent work directory. This is where executor sandboxes\n"
+      "will be placed, as well as the agent's checkpointed state in case of\n"
+      "failover. Note that locations like `/tmp` which are cleaned\n"
+      "automatically are not suitable for the work directory when running in\n"
+      "production, since long-running agents could lose data when cleanup\n"
+      "occurs. (Example: `/var/lib/mesos/agent`)");
 
   add(&Flags::launcher_dir, // TODO(benh): This needs a better name.
       "launcher_dir",
@@ -675,7 +680,7 @@ mesos::internal::slave::Flags::Flags()
   add(&Flags::container_disk_watch_interval,
       "container_disk_watch_interval",
       "The interval between disk quota checks for containers. This flag is\n"
-      "used for the `posix/disk` isolator.",
+      "used for the `disk/du` isolator.",
       Seconds(15));
 
   // TODO(jieyu): Consider enabling this flag by default. Remember
@@ -683,11 +688,11 @@ mesos::internal::slave::Flags::Flags()
   add(&Flags::enforce_container_disk_quota,
       "enforce_container_disk_quota",
       "Whether to enable disk quota enforcement for containers. This flag\n"
-      "is used for the `posix/disk` isolator.",
+      "is used for the `disk/du` isolator.",
       false);
 
   // This help message for --modules flag is the same for
-  // {master,slave,tests}/flags.hpp and should always be kept in
+  // {master,slave,sched,tests}/flags.[ch]pp and should always be kept in
   // sync.
   // TODO(karya): Remove the JSON example and add reference to the
   // doc file explaining the --modules flag.
@@ -732,6 +737,16 @@ mesos::internal::slave::Flags::Flags()
       "    }\n"
       "  ]\n"
       "}");
+
+  // This help message for --modules_dir flag is the same for
+  // {master,slave,sched,tests}/flags.[ch]pp and should always be kept in
+  // sync.
+  add(&Flags::modulesDir,
+      "modules_dir",
+      "Directory path of the module manifest files.\n"
+      "The manifest files are processed in alphabetical order.\n"
+      "(See --modules for more information on module manifest files)\n"
+      "Cannot be used in conjunction with --modules.\n");
 
   add(&Flags::authenticatee,
       "authenticatee",

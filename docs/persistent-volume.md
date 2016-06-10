@@ -88,8 +88,15 @@ an `Offer::Operation` message via the `acceptOffers` API.
 volume information. We need to specify the following:
 
 1. The ID for the persistent volume; this must be unique per role on each agent.
-1. The non-nested relative path within the container to mount the volume.
-1. The permissions for the volume. Currently, `"RW"` is the only possible value.
+2. The non-nested relative path within the container to mount the volume.
+3. The permissions for the volume. Currently, `"RW"` is the only possible value.
+4. If the framework provided a principal when registering with the master, then
+   the `disk.persistence.principal` field must be set to that principal. If the
+   framework did not provide a principal when registering, then the
+   `disk.persistence.principal` field can take any value, or can be left unset.
+   Note that the `principal` field determines the "creator principal" when
+   [authorization](authorization.md) is enabled, even if authentication is
+   disabled.
 
         {
           "type" : Offer::Operation::CREATE,
@@ -105,7 +112,8 @@ volume information. We need to specify the following:
                 },
                 "disk": {
                   "persistence": {
-                    "id" : <persistent_volume_id>
+                    "id" : <persistent_volume_id>,
+                    "principal" : <framework_principal>
                   },
                   "volume" : {
                     "container_path" : <container_path>,
@@ -251,7 +259,15 @@ by operators and administrative tools.
 To use this endpoint, the operator should first ensure that a reservation for
 the necessary resources has been made on the appropriate agent (e.g., by using
 the [/reserve](endpoints/master/reserve.md) HTTP endpoint or by configuring a
-static reservation).
+static reservation). The information that must be included in a request to this
+endpoint is similar to that of the `CREATE` offer operation. One difference is
+the required value of the `disk.persistence.principal` field: when HTTP
+authentication is enabled on the master, the field must be set to the same
+principal that is provided in the request's HTTP headers. When HTTP
+authentication is disabled, the `disk.persistence.principal` field can take any
+value, or can be left unset. Note that the `principal` field determines the
+"creator principal" when [authorization](authorization.md) is enabled, even if
+HTTP authentication is disabled.
 
 To create a 512MB persistent volume for the `ads` role on a dynamically reserved
 disk resource, we can send an HTTP POST request to the master's
@@ -271,7 +287,8 @@ disk resource, we can send an HTTP POST request to the master's
              },
              "disk": {
                "persistence": {
-                 "id" : <persistence_id>
+                 "id" : <persistence_id>,
+                 "principal" : <operator_principal>
                },
                "volume": {
                  "mode": "RW",
@@ -366,6 +383,16 @@ volumes:
 * A single `acceptOffers` call can be used to both create a new dynamic
   reservation (via `Offer::Operation::Reserve`) and create a new persistent
   volume on those newly reserved resources (via `Offer::Operation::Create`).
+
+* Volume IDs must be unique per role on each agent. However, it is strongly
+  recommended that frameworks use globally unique volume IDs, to avoid potential
+  confusion between volumes on different agents that use the same volume
+  ID. Note also that the agent ID where a volume resides might change over
+  time. For example, suppose a volume is created on an agent and then the
+  agent's host machine is rebooted. When the agent registers with Mesos after
+  the reboot, it will be assigned a new AgentID---but it will retain the same
+  volume it had previouly. Hence, frameworks should not assume that using the
+  pair <AgentID, VolumeID> is a stable way to identify a volume in a cluster.
 
 * Attempts to dynamically reserve resources or create persistent volumes might
   fail---for example, because the network message containing the operation did
