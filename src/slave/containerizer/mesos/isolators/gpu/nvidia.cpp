@@ -65,7 +65,7 @@ namespace internal {
 namespace slave {
 
 // TODO(klueska): Expand this when we support other GPU types.
-static constexpr dev_t NVIDIA_MAJOR_DEVICE = 195;
+static constexpr unsigned int NVIDIA_MAJOR_DEVICE = 195;
 
 
 NvidiaGpuIsolatorProcess::NvidiaGpuIsolatorProcess(
@@ -304,8 +304,8 @@ Future<Nothing> NvidiaGpuIsolatorProcess::update(
                      " " + stringify(additional) + " additional GPUs");
     }
 
-    // Grant access from /dev/nvidiactl and /dev/nvida-uvm
-    // if this container no longer has access to any GPUs.
+    // Grant access to /dev/nvidiactl and /dev/nvida-uvm
+    // if this container is about to get its first GPU.
     if (info->allocated.empty()) {
       map<string, cgroups::devices::Entry> entries = {
         { "/dev/nvidiactl", NVIDIA_CTL_DEVICE_ENTRY },
