@@ -96,8 +96,22 @@ or specify the special types `ANY` or `NONE`.
 
 A global field which affects all ACLs can be set. This field is called
 `permissive` and it defines the behavior when no ACL applies to the request
-made. If set to `true` it will allow by default all non matching requests, if
-set to `false` it will reject all non matching requests.
+made. If set to `true` (which is the default) it will allow by default all
+non-matching requests, if set to `false` it will reject all non-matching
+requests.
+
+Note that when setting `permissive` to `false` a number of standard operations
+(e.g., `run_tasks` or `register_frameworks`) will require ACLs in order to work.
+There are two ways to disallow unauthorized uses on specific operations:
+
+1. Leave `permissive` set to `true` and disallow `ANY` principal to perform
+   actions to all objects except the ones explicitly allowed.
+   Consider the [example below](#disallowExample) for details.
+
+2. Set `permissive` to `false` but allow for `ANY` principle to perform the
+   action on `ANY` object. This needs to be done for all actions which should
+   work without being checked against ACLs. A template doing this for all
+   actions can be found in [acls_template.json](../examples/acls_template.json).
 
 More information about the structure of the ACLs can be found in
 [their definition](https://github.com/apache/mesos/blob/master/include/mesos/authorizer/acls.proto)
@@ -127,10 +141,11 @@ entries, each representing an authorizable action:
 |`destroy_volumes`|Framework principal or Operator username.|Principals whose volumes can be destroyed by the operator.|Destroying [volumes](persistent-volume.md).|
 |`get_quotas`|Operator username.|Resource role whose quota status will be queried.|Querying [quota](quota.md) status for roles.|
 |`update_quotas`|Operator username.|Resource role whose quota will be updated.|Modifying [quotas](quota.md) for roles.|
-|`update_weights`|Operator username.|Resource roles whose weights can be updated by the operator.|Updating weights.|
-|`view_framework`|UNIX user of whom executors can be viewed.|`Framework_Info` which can be viewed.|Filtering http endpoints.|
-|`view_executor`|UNIX user of whom executors can be viewed.|`Executor_Info` and `Framework_Info` which can be viewed.|Filtering http endpoints.|
-|`view_task`|UNIX user of whom tasks can be viewed.|(`Task` or `Task_Info`) and `Framework_Info` which can be viewed.|Filtering http endpoints.|
+|`get_weights`|Operator username.|Resource roles whose [weights](weights.md) can be viewed by the operator.|Get weights for roles.|
+|`update_weights`|Operator username.|Resource roles whose [weights](weights.md) can be updated by the operator.|Updating weights.|
+|`view_frameworks`|HTTP user.|UNIX user of whom executors can be viewed.|Filtering http endpoints.|
+|`view_executors`|HTTP user.|UNIX user of whom executors can be viewed.|Filtering http endpoints.|
+|`view_tasks`|HTTP user.|UNIX user of whom executors can be viewed.|Filtering http endpoints.|
 |`access_sandboxes`|Operator username.|Operating system user whose executor/task sandboxes can be accessed.|Access task sandboxes.|
 |`access_mesos_logs`|Operator username.|Implicitly given. A user should only use types ANY and NONE to allow/deny access to the log.|Access Mesos logs.|
 
@@ -307,7 +322,6 @@ though the intention clearly is to allow only `admin` to shut them down:
 
 ```json
 {
-  "permissive": false,
   "teardown_frameworks": [
                            {
                              "principals": { "type": "NONE" },
@@ -321,11 +335,11 @@ though the intention clearly is to allow only `admin` to shut them down:
 }
 ```
 
+<a name="disallowExample"></a>
 The previous ACL can be fixed as follows:
 
 ```json
 {
-  "permissive": false,
   "teardown_frameworks": [
                            {
                              "principals": { "type": "admin" },
