@@ -183,8 +183,8 @@ LDADD += -lzookeeper_mt
 endif
 
 if ENABLE_NVIDIA_GPU_SUPPORT
-LIB_NVIDIA = -lnvidia-ml
-LDADD += -lnvidia-ml
+LIB_ELF = -lelf
+LDADD += -lelf
 endif
 
 # TODO(hausdorff): Remove our hard dependency on SASL, as some platforms
@@ -879,6 +879,9 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   hook/manager.hpp							\
   internal/devolve.hpp							\
   internal/evolve.hpp							\
+  launcher/executor.hpp							\
+  launcher/posix/executor.hpp						\
+  launcher/windows/executor.hpp						\
   local/flags.hpp							\
   local/local.hpp							\
   logging/flags.hpp							\
@@ -1087,10 +1090,12 @@ MESOS_NETWORK_ISOLATOR_FILES +=						\
   slave/containerizer/mesos/isolators/network/port_mapping.hpp
 
 MESOS_NVIDIA_GPU_ISOLATOR_FILES =					\
-  slave/containerizer/mesos/isolators/gpu/nvidia.cpp
+  slave/containerizer/mesos/isolators/gpu/nvidia.cpp			\
+  slave/containerizer/mesos/isolators/gpu/nvml.cpp
 
 MESOS_NVIDIA_GPU_ISOLATOR_FILES +=					\
-  slave/containerizer/mesos/isolators/gpu/nvidia.hpp
+  slave/containerizer/mesos/isolators/gpu/nvidia.hpp 			\
+  slave/containerizer/mesos/isolators/gpu/nvml.hpp
 
 if OS_LINUX
 libmesos_no_3rdparty_la_SOURCES += $(MESOS_LINUX_FILES)
@@ -1251,9 +1256,9 @@ libmesos_la_LIBTOOLFLAGS = --tag=CXX
 # Add the convenience library.
 libmesos_la_LIBADD =							\
   libmesos_no_3rdparty.la						\
+  $(LIB_ELF)								\
   $(LIB_GLOG)								\
   $(LIB_LEVELDB)							\
-  $(LIB_NVIDIA)								\
   $(LIB_PROCESS)							\
   $(LIB_PROTOBUF)							\
   $(LIB_ZOOKEEPER)							\
@@ -1291,7 +1296,9 @@ mesos_fetcher_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_fetcher_LDADD = libmesos.la $(LDADD)
 
 pkglibexec_PROGRAMS += mesos-executor
-mesos_executor_SOURCES = launcher/executor.cpp
+mesos_executor_SOURCES = 						\
+  launcher/executor.cpp							\
+  launcher/posix/executor.cpp
 mesos_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_executor_LDADD = libmesos.la $(LDADD)
 

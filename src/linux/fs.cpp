@@ -47,6 +47,8 @@ namespace fs {
 
 Try<bool> supported(const std::string& fsname)
 {
+  hashset<string> overlayfs{"overlay", "overlayfs"};
+
   Try<string> lines = os::read("/proc/filesystems");
   if (lines.isError()) {
     return Error("Failed to read /proc/filesystems: " + lines.error());
@@ -60,42 +62,17 @@ Try<bool> supported(const std::string& fsname)
     if (tokens.size() != 1 && tokens.size() != 2) {
       return Error("Failed to parse /proc/filesystems: '" + line + "'");
     }
+
+    // The "overlayfs" was renamed to "overlay" in kernel 4.2, for overlay
+    // support check function, it should check both "overlay" and "overlayfs"
+    // in "/proc/filesystems".
+    if (overlayfs.contains(fsname) && overlayfs.contains(tokens.back())) {
+      return true;
+    }
+
     if (fsname == tokens.back()) {
       return true;
     }
-  }
-
-  return false;
-}
-
-
-Try<bool> overlay::supported()
-{
-  Try<bool> overlay = fs::supported("overlay");
-  if (overlay.isError()) {
-    return Error(overlay.error());
-  } else if (overlay.get() == true) {
-    return true;
-  }
-
-  Try<bool> overlayfs = fs::supported("overlayfs");
-  if (overlayfs.isError()) {
-    return Error(overlayfs.error());
-  } else if (overlayfs.get() == true) {
-    return true;
-  }
-
-  return false;
-}
-
-
-Try<bool> aufs::supported()
-{
-  Try<bool> aufs = fs::supported("aufs");
-  if (aufs.isError()) {
-    return Error(aufs.error());
-  } else if (aufs.get() == true) {
-    return true;
   }
 
   return false;
