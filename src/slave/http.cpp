@@ -21,20 +21,23 @@
 #include <tuple>
 #include <vector>
 
+#include <mesos/attributes.hpp>
+#include <mesos/type_utils.hpp>
+
+#include <mesos/agent/agent.hpp>
+
 #include <mesos/authorizer/authorizer.hpp>
 
 #include <mesos/executor/executor.hpp>
 
-#include <mesos/v1/agent.hpp>
+#include <mesos/v1/agent/agent.hpp>
 
 #include <mesos/v1/executor/executor.hpp>
-
-#include <mesos/attributes.hpp>
-#include <mesos/type_utils.hpp>
 
 #include <process/collect.hpp>
 #include <process/help.hpp>
 #include <process/http.hpp>
+#include <process/logging.hpp>
 #include <process/limiter.hpp>
 #include <process/owned.hpp>
 
@@ -68,6 +71,7 @@ using process::Clock;
 using process::DESCRIPTION;
 using process::Future;
 using process::HELP;
+using process::Logging;
 using process::Owned;
 using process::TLDR;
 
@@ -225,7 +229,7 @@ Future<Response> Slave::Http::api(
     return MethodNotAllowed({"POST"}, request.method);
   }
 
-  v1::agent::Call call;
+  v1::agent::Call v1Call;
 
   Option<string> contentType = request.headers.get("Content-Type");
   if (contentType.isNone()) {
@@ -233,7 +237,7 @@ Future<Response> Slave::Http::api(
   }
 
   if (contentType.get() == APPLICATION_PROTOBUF) {
-    if (!call.ParseFromString(request.body)) {
+    if (!v1Call.ParseFromString(request.body)) {
       return BadRequest("Failed to parse body into Call protobuf");
     }
   } else if (contentType.get() == APPLICATION_JSON) {
@@ -250,18 +254,19 @@ Future<Response> Slave::Http::api(
                         parse.error());
     }
 
-    call = parse.get();
+    v1Call = parse.get();
   } else {
     return UnsupportedMediaType(
         string("Expecting 'Content-Type' of ") +
         APPLICATION_JSON + " or " + APPLICATION_PROTOBUF);
   }
 
+  agent::Call call = devolve(v1Call);
+
   Option<Error> error = validation::agent::call::validate(call);
 
   if (error.isSome()) {
-    return BadRequest("Failed to validate v1::agent::Call: " +
-                      error.get().message);
+    return BadRequest("Failed to validate agent::Call: " + error.get().message);
   }
 
   LOG(INFO) << "Processing call " << call.type();
@@ -278,40 +283,40 @@ Future<Response> Slave::Http::api(
   }
 
   switch (call.type()) {
-    case v1::agent::Call::UNKNOWN:
+    case agent::Call::UNKNOWN:
       return NotImplemented();
 
-    case v1::agent::Call::GET_HEALTH:
+    case agent::Call::GET_HEALTH:
       return getHealth(call, principal, acceptType);
 
-    case v1::agent::Call::GET_FLAGS:
+    case agent::Call::GET_FLAGS:
       return getFlags(call, principal, acceptType);
 
-    case v1::agent::Call::GET_VERSION:
+    case agent::Call::GET_VERSION:
       return getVersion(call, principal, acceptType);
 
-    case v1::agent::Call::GET_METRICS:
-      return NotImplemented();
+    case agent::Call::GET_METRICS:
+      return getMetrics(call, principal, acceptType);
 
-    case v1::agent::Call::GET_LOGGING_LEVEL:
+    case agent::Call::GET_LOGGING_LEVEL:
       return getLoggingLevel(call, principal, acceptType);
 
-    case v1::agent::Call::SET_LOGGING_LEVEL:
+    case agent::Call::SET_LOGGING_LEVEL:
+      return setLoggingLevel(call, principal, acceptType);
+
+    case agent::Call::LIST_FILES:
       return NotImplemented();
 
-    case v1::agent::Call::LIST_FILES:
+    case agent::Call::READ_FILE:
       return NotImplemented();
 
-    case v1::agent::Call::READ_FILE:
+    case agent::Call::GET_STATE:
       return NotImplemented();
 
-    case v1::agent::Call::GET_STATE:
+    case agent::Call::GET_RESOURCE_STATISTICS:
       return NotImplemented();
 
-    case v1::agent::Call::GET_RESOURCE_STATISTICS:
-      return NotImplemented();
-
-    case v1::agent::Call::GET_CONTAINERS:
+    case agent::Call::GET_CONTAINERS:
       return NotImplemented();
   }
 
@@ -527,16 +532,14 @@ JSON::Object Slave::Http::_flags() const
 
 
 Future<Response> Slave::Http::getFlags(
-    const v1::agent::Call& call,
+    const agent::Call& call,
     const Option<string>& principal,
     ContentType contentType) const
 {
-  CHECK_EQ(v1::agent::Call::GET_FLAGS, call.type());
+  CHECK_EQ(agent::Call::GET_FLAGS, call.type());
 
-  v1::agent::Response response =
-    evolve<v1::agent::Response::GET_FLAGS>(_flags());
-
-  return OK(serialize(contentType, response),
+  return OK(serialize(contentType,
+                      evolve<v1::agent::Response::GET_FLAGS>(_flags())),
             stringify(contentType));
 }
 
@@ -560,49 +563,97 @@ Future<Response> Slave::Http::health(const Request& request) const
 
 
 Future<Response> Slave::Http::getHealth(
-    const v1::agent::Call& call,
+    const agent::Call& call,
     const Option<string>& principal,
     ContentType contentType) const
 {
-  CHECK_EQ(v1::agent::Call::GET_HEALTH, call.type());
+  CHECK_EQ(agent::Call::GET_HEALTH, call.type());
 
-  v1::agent::Response response;
-  response.set_type(v1::agent::Response::GET_HEALTH);
+  agent::Response response;
+  response.set_type(agent::Response::GET_HEALTH);
   response.mutable_get_health()->set_healthy(true);
 
-  return OK(serialize(contentType, response),
+  return OK(serialize(contentType, evolve(response)),
             stringify(contentType));
 }
 
 
 Future<Response> Slave::Http::getVersion(
-    const v1::agent::Call& call,
+    const agent::Call& call,
     const Option<string>& principal,
     ContentType contentType) const
 {
-  CHECK_EQ(v1::agent::Call::GET_VERSION, call.type());
+  CHECK_EQ(agent::Call::GET_VERSION, call.type());
 
-  v1::agent::Response response =
-    evolve<v1::agent::Response::GET_VERSION>(version());
-
-  return OK(serialize(contentType, response),
+  return OK(serialize(contentType,
+                      evolve<v1::agent::Response::GET_VERSION>(version())),
             stringify(contentType));
 }
 
 
-Future<Response> Slave::Http::getLoggingLevel(
-    const v1::agent::Call& call,
+Future<Response> Slave::Http::getMetrics(
+    const agent::Call& call,
     const Option<string>& principal,
     ContentType contentType) const
 {
-  CHECK_EQ(v1::agent::Call::GET_LOGGING_LEVEL, call.type());
+  CHECK_EQ(agent::Call::GET_METRICS, call.type());
+  CHECK(call.has_get_metrics());
 
-  v1::agent::Response response;
-  response.set_type(v1::agent::Response::GET_LOGGING_LEVEL);
+  Option<Duration> timeout;
+  if (call.get_metrics().has_timeout()) {
+    timeout = Nanoseconds(call.get_metrics().timeout().nanoseconds());
+  }
+
+  return process::metrics::snapshot(timeout)
+      .then([contentType](const hashmap<string, double>& metrics) -> Response {
+        agent::Response response;
+        response.set_type(agent::Response::GET_METRICS);
+        agent::Response::GetMetrics* _getMetrics =
+          response.mutable_get_metrics();
+
+        foreachpair (const string& key, double value, metrics) {
+          Metric* metric = _getMetrics->add_metrics();
+          metric->set_name(key);
+          metric->set_value(value);
+        }
+
+        return OK(serialize(contentType, response), stringify(contentType));
+      });
+}
+
+
+Future<Response> Slave::Http::getLoggingLevel(
+    const agent::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(agent::Call::GET_LOGGING_LEVEL, call.type());
+
+  agent::Response response;
+  response.set_type(agent::Response::GET_LOGGING_LEVEL);
   response.mutable_get_logging_level()->set_level(FLAGS_v);
 
-  return OK(serialize(contentType, response),
+  return OK(serialize(contentType, evolve(response)),
             stringify(contentType));
+}
+
+
+Future<Response> Slave::Http::setLoggingLevel(
+    const agent::Call& call,
+    const Option<string>& principal,
+    ContentType /*contentType*/) const
+{
+  CHECK_EQ(agent::Call::SET_LOGGING_LEVEL, call.type());
+  CHECK(call.has_set_logging_level());
+
+  uint32_t level = call.set_logging_level().level();
+  Duration duration =
+    Nanoseconds(call.set_logging_level().duration().nanoseconds());
+
+  return dispatch(process::logging(), &Logging::set_level, level, duration)
+      .then([]() -> Response {
+        return OK();
+      });
 }
 
 

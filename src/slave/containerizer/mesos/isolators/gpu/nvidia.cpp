@@ -38,6 +38,8 @@
 
 #include "slave/flags.hpp"
 
+#include "slave/containerizer/containerizer.hpp"
+
 #include "slave/containerizer/mesos/isolator.hpp"
 
 #include "slave/containerizer/mesos/isolators/gpu/nvidia.hpp"
@@ -111,30 +113,49 @@ Try<Isolator*> NvidiaGpuIsolatorProcess::create(const Flags& flags)
     return Error("Failed to initialize nvml: " + initialize.error());
   }
 
-  // Enumerate all available GPU devices.
-  list<Gpu> gpus;
+  // Grab the full list of resources computed for this containerizer
+  // and filter it down to just the GPU resources.
+  //
+  // TODO(klueska): Calling into the containerizer helper here is
+  // a hack. Consider passing the resources directly into `create`.
+  Try<Resources> resources = Containerizer::resources(flags);
+  if (resources.isError()) {
+    return Error(resources.error());
+  }
+
+  // Figure out the list of GPUs to make available by their index.
+  vector<unsigned int> indices;
 
   if (flags.nvidia_gpu_devices.isSome()) {
-    foreach (unsigned int index, flags.nvidia_gpu_devices.get()) {
-      Try<nvmlDevice_t> handle = nvml::deviceGetHandleByIndex(index);
-      if (handle.isError()) {
-        return Error("Failed to obtain Nvidia device handle for"
-                     " index " + stringify(index) + ": " + handle.error());
-      }
-
-      Try<unsigned int> minor = nvml::deviceGetMinorNumber(handle.get());
-      if (minor.isError()) {
-        return Error("Failed to obtain Nvidia device minor number: " +
-                     minor.error());
-      }
-
-      Gpu gpu;
-      gpu.handle = handle.get();
-      gpu.major = NVIDIA_MAJOR_DEVICE;
-      gpu.minor = minor.get();
-
-      gpus.push_back(gpu);
+    indices = flags.nvidia_gpu_devices.get();
+  } else if (resources->gpus().isSome()) {
+    for (unsigned int i = 0; i < resources->gpus().get(); ++i) {
+      indices.push_back(i);
     }
+  }
+
+  // Build the list of available GPUs using the ids computed above.
+  list<Gpu> gpus;
+
+  foreach (unsigned int index, indices) {
+    Try<nvmlDevice_t> handle = nvml::deviceGetHandleByIndex(index);
+    if (handle.isError()) {
+      return Error("Failed to obtain Nvidia device handle for"
+                   " index " + stringify(index) + ": " + handle.error());
+    }
+
+    Try<unsigned int> minor = nvml::deviceGetMinorNumber(handle.get());
+    if (minor.isError()) {
+      return Error("Failed to obtain Nvidia device minor number: " +
+                   minor.error());
+    }
+
+    Gpu gpu;
+    gpu.handle = handle.get();
+    gpu.major = NVIDIA_MAJOR_DEVICE;
+    gpu.minor = minor.get();
+
+    gpus.push_back(gpu);
   }
 
   // Retrieve the cgroups devices hierarchy.
@@ -253,6 +274,26 @@ Future<Option<ContainerLaunchInfo>> NvidiaGpuIsolatorProcess::prepare(
   infos[containerId] = new Info(
       containerId, path::join(flags.cgroups_root, containerId.value()));
 
+  // Grant access to /dev/nvidiactl and /dev/nvida-uvm.
+  //
+  // This allows standard NVIDIA tools like `nvidia-smi` to be
+  // used within the container even if no GPUs are allocated.
+  // Without these devices, these tools fail abnormally.
+  map<string, const cgroups::devices::Entry> entries = {
+    { "/dev/nvidiactl", NVIDIA_CTL_DEVICE_ENTRY },
+    { "/dev/nvidia-uvm", NVIDIA_UVM_DEVICE_ENTRY },
+  };
+
+  foreachkey (const string& device, entries) {
+    Try<Nothing> allow = cgroups::devices::allow(
+        hierarchy, infos[containerId]->cgroup, entries[device]);
+
+    if (allow.isError()) {
+      return Failure("Failed to grant cgroups access to"
+                     " '" + device + "': " + allow.error());
+    }
+  }
+
   return update(containerId, containerConfig.executor_info().resources())
     .then([]() -> Future<Option<ContainerLaunchInfo>> {
       return None();
@@ -287,25 +328,6 @@ Future<Nothing> NvidiaGpuIsolatorProcess::update(
     if (additional > available.size()) {
       return Failure("Not enough GPUs available to reserve"
                      " " + stringify(additional) + " additional GPUs");
-    }
-
-    // Grant access to /dev/nvidiactl and /dev/nvida-uvm
-    // if this container is about to get its first GPU.
-    if (info->allocated.empty()) {
-      map<string, cgroups::devices::Entry> entries = {
-        { "/dev/nvidiactl", NVIDIA_CTL_DEVICE_ENTRY },
-        { "/dev/nvidia-uvm", NVIDIA_UVM_DEVICE_ENTRY },
-      };
-
-      foreachkey (const string& device, entries) {
-        Try<Nothing> allow = cgroups::devices::allow(
-            hierarchy, info->cgroup, entries[device]);
-
-        if (allow.isError()) {
-          return Failure("Failed to grant cgroups access to"
-                         " '" + device + "': " + allow.error());
-        }
-      }
     }
 
     for (size_t i = 0; i < additional; i++) {
@@ -354,25 +376,6 @@ Future<Nothing> NvidiaGpuIsolatorProcess::update(
 
       info->allocated.pop_front();
       available.push_back(gpu);
-    }
-
-    // Revoke access from /dev/nvidiactl and /dev/nvida-uvm
-    // if this container no longer has access to any GPUs.
-    if (info->allocated.empty()) {
-      map<string, cgroups::devices::Entry> entries = {
-        { "/dev/nvidiactl", NVIDIA_CTL_DEVICE_ENTRY },
-        { "/dev/nvidia-uvm", NVIDIA_UVM_DEVICE_ENTRY },
-      };
-
-      foreachkey (const string& device, entries) {
-        Try<Nothing> deny = cgroups::devices::deny(
-            hierarchy, info->cgroup, entries[device]);
-
-        if (deny.isError()) {
-          return Failure("Failed to deny cgroups access to"
-                         " '" + device + "': " + deny.error());
-        }
-      }
     }
   }
 

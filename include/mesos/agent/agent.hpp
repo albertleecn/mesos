@@ -14,45 +14,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __SLAVE_VALIDATION_HPP__
-#define __SLAVE_VALIDATION_HPP__
+#ifndef __MESOS_AGENT_PROTO_HPP__
+#define __MESOS_AGENT_PROTO_HPP__
 
-#include <mesos/agent/agent.hpp>
+#include <ostream>
 
-#include <mesos/executor/executor.hpp>
-
-#include <stout/error.hpp>
-#include <stout/option.hpp>
+// ONLY USEFUL AFTER RUNNING PROTOC.
+#include <mesos/agent/agent.pb.h>
 
 namespace mesos {
-namespace internal {
-namespace slave {
-namespace validation {
-
 namespace agent {
-namespace call {
 
-// Validates that a agent:Call is well-formed.
-// TODO(bmahler): Add unit tests.
-Option<Error> validate(
-    const mesos::agent::Call& call,
-    const Option<std::string>& principal = None());
+inline std::ostream& operator<<(std::ostream& stream, const Call::Type& type)
+{
+  return stream << Call::Type_Name(type);
+}
 
-} // namespace call {
+
+inline std::ostream& operator<<(
+  std::ostream& stream, const Response::Type& type)
+{
+  return stream << Response::Type_Name(type);
+}
+
 } // namespace agent {
-
-namespace executor {
-namespace call {
-
-// Validates that an executor call is well-formed.
-// TODO(ijimenez): Add unit tests.
-Option<Error> validate(const mesos::executor::Call& call);
-
-} // namespace call {
-} // namespace executor {
-} // namespace validation {
-} // namespace slave {
-} // namespace internal {
 } // namespace mesos {
 
-#endif // __SLAVE_VALIDATION_HPP__
+#endif // __MESOS_AGENT_PROTO_HPP__

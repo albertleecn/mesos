@@ -38,6 +38,7 @@ GMOCK = 3rdparty/gmock-$(GMOCK_VERSION)
 GTEST = $(GMOCK)/gtest
 PROTOBUF = 3rdparty/protobuf-$(PROTOBUF_VERSION)
 PICOJSON = 3rdparty/picojson-$(PICOJSON_VERSION)
+NVML = 3rdparty/nvml-$(NVML_VERSION)
 
 
 # Unfortunatley, 'pkglibexecdir' and 'pkgsysconfdir' are not set
@@ -157,6 +158,10 @@ else
 LIB_PROCESS = -lprocess
 endif
 
+if WITH_BUNDLED_NVML
+MESOS_CPPFLAGS += -I../$(NVML)
+endif
+
 if WITH_BUNDLED_PICOJSON
 MESOS_CPPFLAGS += -I../$(PICOJSON)
 endif
@@ -206,6 +211,7 @@ MESOS_CPPFLAGS += -DHAS_AUTHENTICATION=1
 # First, let's define necessary protocol buffer files.
 
 ACLS_PROTO = $(top_srcdir)/include/mesos/authorizer/acls.proto
+AGENT_PROTO = $(top_srcdir)/include/mesos/agent/agent.proto
 ALLOCATOR_PROTO = $(top_srcdir)/include/mesos/master/allocator.proto
 APPC_SPEC_PROTO = $(top_srcdir)/include/mesos/appc/spec.proto
 AUTHENTICATION_PROTO = $(top_srcdir)/include/mesos/authentication/authentication.proto
@@ -217,6 +223,7 @@ DOCKER_V2_PROTO = $(top_srcdir)/include/mesos/docker/v2.proto
 EXECUTOR_PROTO = $(top_srcdir)/include/mesos/executor/executor.proto
 FETCHER_PROTO = $(top_srcdir)/include/mesos/fetcher/fetcher.proto
 MAINTENANCE_PROTO = $(top_srcdir)/include/mesos/maintenance/maintenance.proto
+MASTER_PROTO = $(top_srcdir)/include/mesos/master/master.proto
 MESOS_PROTO = $(top_srcdir)/include/mesos/mesos.proto
 MODULE_PROTO = $(top_srcdir)/include/mesos/module/module.proto
 QUOTA_PROTO = $(top_srcdir)/include/mesos/quota/quota.proto
@@ -225,11 +232,11 @@ STATE_PROTO = $(top_srcdir)/include/mesos/state/state.proto
 ISOLATOR_PROTO = $(top_srcdir)/include/mesos/slave/isolator.proto
 OVERSUBSCRIPTION_PROTO = $(top_srcdir)/include/mesos/slave/oversubscription.proto
 URI_PROTO = $(top_srcdir)/include/mesos/uri/uri.proto
-V1_AGENT_PROTO = $(top_srcdir)/include/mesos/v1/agent.proto
+V1_AGENT_PROTO = $(top_srcdir)/include/mesos/v1/agent/agent.proto
 V1_ALLOCATOR_PROTO = $(top_srcdir)/include/mesos/v1/master/allocator.proto
 V1_EXECUTOR_PROTO = $(top_srcdir)/include/mesos/v1/executor/executor.proto
 V1_MAINTENANCE_PROTO = $(top_srcdir)/include/mesos/v1/maintenance/maintenance.proto
-V1_MASTER_PROTO = $(top_srcdir)/include/mesos/v1/master.proto
+V1_MASTER_PROTO = $(top_srcdir)/include/mesos/v1/master/master.proto
 V1_MESOS_PROTO = $(top_srcdir)/include/mesos/v1/mesos.proto
 V1_QUOTA_PROTO = $(top_srcdir)/include/mesos/v1/quota/quota.proto
 V1_SCHEDULER_PROTO = $(top_srcdir)/include/mesos/v1/scheduler/scheduler.proto
@@ -238,6 +245,8 @@ V1_SCHEDULER_PROTO = $(top_srcdir)/include/mesos/v1/scheduler/scheduler.proto
 CXX_PROTOS =								\
   ../include/mesos/mesos.pb.cc						\
   ../include/mesos/mesos.pb.h						\
+  ../include/mesos/agent/agent.pb.cc					\
+  ../include/mesos/agent/agent.pb.h					\
   ../include/mesos/appc/spec.pb.cc					\
   ../include/mesos/appc/spec.pb.h					\
   ../include/mesos/authentication/authentication.pb.cc			\
@@ -262,6 +271,8 @@ CXX_PROTOS =								\
   ../include/mesos/maintenance/maintenance.pb.h				\
   ../include/mesos/master/allocator.pb.cc				\
   ../include/mesos/master/allocator.pb.h				\
+  ../include/mesos/master/master.pb.cc					\
+  ../include/mesos/master/master.pb.h					\
   ../include/mesos/module/module.pb.cc					\
   ../include/mesos/module/module.pb.h					\
   ../include/mesos/quota/quota.pb.cc					\
@@ -276,18 +287,18 @@ CXX_PROTOS =								\
   ../include/mesos/state/state.pb.h					\
   ../include/mesos/uri/uri.pb.cc					\
   ../include/mesos/uri/uri.pb.h						\
-  ../include/mesos/v1/agent.pb.cc					\
-  ../include/mesos/v1/agent.pb.h					\
-  ../include/mesos/v1/master.pb.cc					\
-  ../include/mesos/v1/master.pb.h					\
   ../include/mesos/v1/mesos.pb.cc					\
   ../include/mesos/v1/mesos.pb.h					\
+  ../include/mesos/v1/agent/agent.pb.cc					\
+  ../include/mesos/v1/agent/agent.pb.h					\
   ../include/mesos/v1/executor/executor.pb.cc				\
   ../include/mesos/v1/executor/executor.pb.h				\
   ../include/mesos/v1/maintenance/maintenance.pb.cc			\
   ../include/mesos/v1/maintenance/maintenance.pb.h			\
   ../include/mesos/v1/master/allocator.pb.cc				\
   ../include/mesos/v1/master/allocator.pb.h				\
+  ../include/mesos/v1/master/master.pb.cc				\
+  ../include/mesos/v1/master/master.pb.h				\
   ../include/mesos/v1/quota/quota.pb.cc					\
   ../include/mesos/v1/quota/quota.pb.h					\
   ../include/mesos/v1/scheduler/scheduler.pb.cc				\
@@ -553,10 +564,13 @@ master_HEADERS =							\
   $(top_srcdir)/include/mesos/master/allocator.hpp			\
   $(top_srcdir)/include/mesos/master/allocator.proto			\
   $(top_srcdir)/include/mesos/master/contender.hpp			\
-  $(top_srcdir)/include/mesos/master/detector.hpp
+  $(top_srcdir)/include/mesos/master/detector.hpp			\
+  $(top_srcdir)/include/mesos/master/master.hpp				\
+  $(top_srcdir)/include/mesos/master/master.proto
 
 nodist_master_HEADERS =							\
-  ../include/mesos/master/allocator.pb.h
+  ../include/mesos/master/allocator.pb.h				\
+  ../include/mesos/master/master.pb.h
 
 moduledir = $(pkgincludedir)/module
 
@@ -601,6 +615,8 @@ nodist_scheduler_HEADERS =						\
 agentdir = $(pkgincludedir)/agent
 
 agent_HEADERS =								\
+  $(top_srcdir)/include/mesos/agent/agent.hpp				\
+  $(top_srcdir)/include/mesos/agent/agent.proto			\
   $(top_srcdir)/include/mesos/slave/container_logger.hpp		\
   $(top_srcdir)/include/mesos/slave/isolator.hpp			\
   $(top_srcdir)/include/mesos/slave/isolator.proto			\
@@ -610,6 +626,7 @@ agent_HEADERS =								\
   $(top_srcdir)/include/mesos/slave/resource_estimator.hpp
 
 nodist_agent_HEADERS =							\
+  ../include/mesos/agent/agent.pb.h					\
   ../include/mesos/slave/isolator.pb.h					\
   ../include/mesos/slave/oversubscription.pb.h
 
@@ -641,12 +658,8 @@ nodist_uri_HEADERS =							\
 v1dir = $(pkgincludedir)/v1
 
 v1_HEADERS =								\
-  $(top_srcdir)/include/mesos/v1/agent.hpp				\
-  $(top_srcdir)/include/mesos/v1/agent.proto				\
   $(top_srcdir)/include/mesos/v1/attributes.hpp				\
   $(top_srcdir)/include/mesos/v1/executor.hpp				\
-  $(top_srcdir)/include/mesos/v1/master.hpp				\
-  $(top_srcdir)/include/mesos/v1/master.proto				\
   $(top_srcdir)/include/mesos/v1/mesos.hpp				\
   $(top_srcdir)/include/mesos/v1/mesos.proto				\
   $(top_srcdir)/include/mesos/v1/resources.hpp				\
@@ -654,9 +667,16 @@ v1_HEADERS =								\
   $(top_srcdir)/include/mesos/v1/values.hpp
 
 nodist_v1_HEADERS =							\
-  ../include/mesos/v1/agent.pb.h					\
-  ../include/mesos/v1/master.pb.h					\
   ../include/mesos/v1/mesos.pb.h
+
+v1agentdir = $(pkgincludedir)/v1/agent
+
+v1agent_HEADERS =							\
+  $(top_srcdir)/include/mesos/v1/agent/agent.hpp			\
+  $(top_srcdir)/include/mesos/v1/agent/agent.proto
+
+nodist_v1agent_HEADERS =						\
+  ../include/mesos/v1/agent/agent.pb.h
 
 v1executordir = $(pkgincludedir)/v1/executor
 
@@ -678,10 +698,13 @@ nodist_v1maintenance_HEADERS =						\
 v1masterdir = $(pkgincludedir)/v1/master
 
 v1master_HEADERS =							\
-  $(top_srcdir)/include/mesos/v1/master/allocator.proto
+  $(top_srcdir)/include/mesos/v1/master/allocator.proto			\
+  $(top_srcdir)/include/mesos/v1/master/master.hpp			\
+  $(top_srcdir)/include/mesos/v1/master/master.proto
 
 nodist_v1master_HEADERS =						\
-  ../include/mesos/v1/master/allocator.pb.h
+  ../include/mesos/v1/master/allocator.pb.h				\
+  ../include/mesos/v1/master/master.pb.h
 
 v1quotadir = $(pkgincludedir)/v1/quota
 
@@ -1219,6 +1242,7 @@ lib_LTLIBRARIES += libmesos.la
 # Include as part of the distribution.
 libmesos_la_SOURCES =							\
   $(ACLS_PROTO)								\
+  $(AGENT_PROTO)								\
   $(ALLOCATOR_PROTO)							\
   $(APPC_SPEC_PROTO)							\
   $(AUTHENTICATION_PROTO)						\
@@ -1231,6 +1255,7 @@ libmesos_la_SOURCES =							\
   $(FETCHER_PROTO)							\
   $(ISOLATOR_PROTO)							\
   $(MAINTENANCE_PROTO)							\
+  $(MASTER_PROTO)							\
   $(MESOS_PROTO)							\
   $(MODULE_PROTO)							\
   $(OVERSUBSCRIPTION_PROTO)						\

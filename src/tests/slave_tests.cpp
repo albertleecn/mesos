@@ -663,12 +663,28 @@ TEST_F(SlaveTest, GetExecutorInfo)
 
   task.mutable_command()->MergeFrom(command);
 
+  DiscoveryInfo* info = task.mutable_discovery();
+  info->set_visibility(DiscoveryInfo::EXTERNAL);
+  info->set_name("mytask");
+  info->set_environment("mytest");
+  info->set_location("mylocation");
+  info->set_version("v0.1.1");
+
+  Labels* labels = task.mutable_labels();
+  labels->add_labels()->CopyFrom(createLabel("label1", "key1"));
+  labels->add_labels()->CopyFrom(createLabel("label2", "key2"));
+
   const ExecutorInfo& executor = slave.getExecutorInfo(frameworkInfo, task);
 
   // Now assert that it actually is running mesos-executor without any
   // bleedover from the command we intend on running.
   EXPECT_TRUE(executor.command().shell());
   EXPECT_EQ(0, executor.command().arguments_size());
+  ASSERT_TRUE(executor.has_labels());
+  EXPECT_EQ(2, executor.labels().labels_size());
+  ASSERT_TRUE(executor.has_discovery());
+  ASSERT_TRUE(executor.discovery().has_name());
+  EXPECT_EQ("mytask", executor.discovery().name());
   EXPECT_NE(string::npos, executor.command().value().find("mesos-executor"));
 }
 
@@ -1288,7 +1304,7 @@ TEST_F(SlaveTest, StateEndpoint)
   slave::Flags flags = this->CreateSlaveFlags();
 
   flags.hostname = "localhost";
-  flags.resources = "cpus:4;mem:2048;disk:512;ports:[33000-34000]";
+  flags.resources = "cpus:4;gpus:0;mem:2048;disk:512;ports:[33000-34000]";
   flags.attributes = "rack:abc;host:myhost";
 
   MockExecutor exec(DEFAULT_EXECUTOR_ID);
@@ -3556,7 +3572,7 @@ TEST_F(SlaveTest, TotalSlaveResourcesIncludedInUsage)
   StandaloneMasterDetector detector(master.get()->pid);
 
   slave::Flags flags = CreateSlaveFlags();
-  flags.resources = "cpus:2;mem:1024;disk:1024;ports:[31000-32000]";
+  flags.resources = "cpus:2;gpus:0;mem:1024;disk:1024;ports:[31000-32000]";
 
   MockSlave slave(flags, &detector, &containerizer);
   spawn(slave);
