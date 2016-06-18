@@ -150,6 +150,12 @@ v1::TaskStatus evolve(const TaskStatus& status)
 }
 
 
+v1::Task evolve(const Task& task)
+{
+  return evolve<v1::Task>(task);
+}
+
+
 v1::MasterInfo evolve(const MasterInfo& masterInfo)
 {
   return evolve<v1::MasterInfo>(masterInfo);
@@ -453,6 +459,34 @@ v1::executor::Event evolve(const ShutdownExecutorMessage&)
   event.set_type(v1::executor::Event::SHUTDOWN);
 
   return event;
+}
+
+
+v1::master::Response evolve(const maintenance::ClusterStatus& status)
+{
+  v1::master::Response response;
+  response.set_type(v1::master::Response::GET_MAINTENANCE_STATUS);
+
+  v1::master::Response::GetMaintenanceStatus* maintenanceStatus =
+      response.mutable_get_maintenance_status();
+  maintenanceStatus->mutable_status()->CopyFrom(
+      evolve<v1::maintenance::ClusterStatus>(status));
+
+  return response;
+}
+
+
+v1::master::Response evolve(const maintenance::Schedule& schedule)
+{
+  v1::master::Response response;
+  response.set_type(v1::master::Response::GET_MAINTENANCE_SCHEDULE);
+
+  v1::master::Response::GetMaintenanceSchedule* maintenanceSchedule =
+      response.mutable_get_maintenance_schedule();
+  maintenanceSchedule->mutable_schedule()->CopyFrom(
+      evolve<v1::maintenance::Schedule>(schedule));
+
+  return response;
 }
 
 

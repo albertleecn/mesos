@@ -1,20 +1,20 @@
 ## Container Network Interface (CNI) for Mesos Containers
 
-  This document describes the `network/cni` isolator, a network
-  isolator for the [MesosContainerizer](mesos-containerizer.md) that implements the
-  [Container Network Interface
-  (CNI)](https://github.com/containernetworking/cni) specification for
-  enabling networking support for Mesos containers.  The `network/cni`
-  isolator allows containers launched using the `MesosContainerizer`
-  to be attached to several different types of IP networks.  The
-  network technologies on which containers can possibly be launched,
-  using the `network/cni` isolator, range from traditional layer
-  3/layer 2 networks such as VLAN, ipvlan, macvlan, to the new class
-  of networks designed for container orchestration such as
-  [Calico](https://www.projectcalico.org/), [Weave](https://weave.in/)
-  and [Flannel](https://coreos.com/flannel/docs/latest/).  The
-  `MesosContainerizer` has the `network/cni` isolator enabled by
-  default.
+This document describes the `network/cni` isolator, a network isolator
+for the [MesosContainerizer](mesos-containerizer.md) that implements
+the [Container Network Interface
+(CNI)](https://github.com/containernetworking/cni) specification for
+enabling networking support for Mesos containers.  The `network/cni`
+isolator allows containers launched using the `MesosContainerizer` to
+be attached to several different types of IP networks.  The network
+technologies on which containers can possibly be launched, using the
+`network/cni` isolator, range from traditional layer 3/layer 2
+networks such as VLAN, ipvlan, macvlan, to the new class of networks
+designed for container orchestration such as
+[Calico](https://www.projectcalico.org/), [Weave](https://weave.in/)
+and [Flannel](https://coreos.com/flannel/docs/latest/).  The
+`MesosContainerizer` has the `network/cni` isolator enabled by
+default.
 
 ### Table of Contents
 - [Motivation](#motivation)
@@ -129,6 +129,44 @@ container to the host network as well as other CNI networks you
 will need to attach the container to a CNI network (such as
 bridge/macvlan) that, in turn, is attached to the host network.
 ```
+
+#### <a name="mesos-meta-data-to-cni-plugins"></a>Mesos meta-data to CNI plugins
+
+When invoking CNI plugins (e.g., with command ADD), the isolator will
+pass on some Mesos meta-data to the plugins by specifying the `args`
+field in the [network configuration
+JSON](https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration)
+according to the CNI spec. Currently, the isolator only passes on
+`NetworkInfo` of the corresponding network to the plugin. This is
+simply the JSON representation of the `NetworkInfo` protobuf. For
+instance:
+
+```{.json}
+{
+  "name" : "mynet",
+  "type" : "bridge",
+  "args" : {
+    "org.apache.mesos" : {
+      "network_info" : {
+        "name" : "mynet",
+        "labels" : {
+          "labels" : [
+            { "key" : "app", "value" : "myapp" },
+            { "key" : "env", "value" : "prod" }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+It is important to note that `labels` within the `NetworkInfo` is set
+by frameworks launching the container, and the isolator passses on
+this information to the CNI plugins. As per the spec, it is the
+prerogative of the CNI plugins to use this meta-data information to
+enforce domain specific policies while attaching containers to a CNI
+network.
 
 #### <a name="accessing-container-network-namespace"></a>Accessing container network namespace
 

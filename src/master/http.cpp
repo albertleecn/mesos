@@ -635,7 +635,7 @@ Future<Response> Master::Http::api(
       return NotImplemented();
 
     case mesos::master::Call::GET_TASKS:
-      return NotImplemented();
+      return getTasks(call, principal, acceptType);
 
     case mesos::master::Call::GET_ROLES:
       return NotImplemented();
@@ -662,19 +662,19 @@ Future<Response> Master::Http::api(
       return NotImplemented();
 
     case mesos::master::Call::GET_MAINTENANCE_STATUS:
-      return NotImplemented();
+      return getMaintenanceStatus(call, principal, acceptType);
 
     case mesos::master::Call::GET_MAINTENANCE_SCHEDULE:
-      return NotImplemented();
+      return getMaintenanceSchedule(call, principal, acceptType);
 
     case mesos::master::Call::UPDATE_MAINTENANCE_SCHEDULE:
-      return NotImplemented();
+      return updateMaintenanceSchedule(call, principal, acceptType);
 
     case mesos::master::Call::START_MAINTENANCE:
-      return NotImplemented();
+      return startMaintenance(call, principal, acceptType);
 
     case mesos::master::Call::STOP_MAINTENANCE:
-      return NotImplemented();
+      return stopMaintenance(call, principal, acceptType);
 
     case mesos::master::Call::GET_QUOTA:
       return NotImplemented();
@@ -1433,6 +1433,45 @@ Future<Response> Master::Http::getLeadingMaster(
 
   return OK(serialize(contentType, evolve(response)),
             stringify(contentType));
+}
+
+
+Future<Response> Master::Http::getTasks(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(mesos::master::Call::GET_TASKS, call.type());
+
+  // Get list options (limit and offset).
+  Result<int> result = call.get_tasks().limit();
+  CHECK_SOME(result);
+  size_t limit = result.get();
+
+  result = call.get_tasks().offset();
+  size_t offset = result.isSome() ? result.get() : 0;
+
+  Option<string> order = call.get_tasks().order();
+  string _order = order.isSome() && (order.get() == "asc") ? "asc" : "des";
+
+  return _tasks(limit, offset, _order, principal)
+    .then([contentType](const vector<const Task*>& tasks) -> Response {
+      v1::master::Response response;
+      response.set_type(v1::master::Response::GET_TASKS);
+
+      v1::master::Response::GetTasks* getTasks = response.mutable_get_tasks();
+
+      foreach (const Task* task, tasks) {
+        getTasks->add_tasks()->CopyFrom(evolve(*task));
+      }
+
+      return OK(serialize(contentType, response),
+                stringify(contentType));
+    })
+    .repair([](const Future<Response>& response) {
+      LOG(WARNING) << "Authorization failed: " << response.failure();
+      return InternalServerError(response.failure());
+    });
 }
 
 
@@ -2692,6 +2731,40 @@ Future<Response> Master::Http::tasks(
     return redirect(request);
   }
 
+  // Get list options (limit and offset).
+  Result<int> result = numify<int>(request.url.query.get("limit"));
+  size_t limit = result.isSome() ? result.get() : TASK_LIMIT;
+
+  result = numify<int>(request.url.query.get("offset"));
+  size_t offset = result.isSome() ? result.get() : 0;
+
+  Option<string> order = request.url.query.get("order");
+  string _order = order.isSome() && (order.get() == "asc") ? "asc" : "des";
+
+  return _tasks(limit, offset, _order, principal)
+    .then([=](const vector<const Task*>& tasks) -> Response {
+      auto tasksWriter = [&tasks](JSON::ObjectWriter* writer) {
+        writer->field("tasks", [&tasks](JSON::ArrayWriter* writer) {
+          foreach (const Task* task, tasks) {
+            writer->element(*task);
+          }
+        });
+      };
+
+      return OK(jsonify(tasksWriter), request.url.query.get("jsonp"));
+    })
+    .repair([](const Future<Response>& response) {
+      LOG(WARNING) << "Authorization failed: " << response.failure();
+      return InternalServerError(response.failure());
+    });
+}
+
+Future<vector<const Task*>> Master::Http::_tasks(
+    const size_t limit,
+    const size_t offset,
+    const string& order,
+    const Option<string>& principal) const
+{
   // Retrieve Approvers for authorizing frameworks and tasks.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> tasksApprover;
@@ -2717,22 +2790,15 @@ Future<Response> Master::Http::tasks(
   }
 
   return collect(frameworksApprover, tasksApprover, executorsApprover)
-    .then(defer(master->self(),
-        [=](const tuple<Owned<ObjectApprover>,
-                        Owned<ObjectApprover>,
-                        Owned<ObjectApprover>>& approvers) -> Response {
+    .then([=](const tuple<Owned<ObjectApprover>,
+                          Owned<ObjectApprover>,
+                          Owned<ObjectApprover>>& approvers)
+      -> vector<const Task*> {
       // Get approver from tuple.
       Owned<ObjectApprover> frameworksApprover;
       Owned<ObjectApprover> tasksApprover;
       Owned<ObjectApprover> executorsApprover;
       tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
-
-      // Get list options (limit and offset).
-      Result<int> result = numify<int>(request.url.query.get("limit"));
-      size_t limit = result.isSome() ? result.get() : TASK_LIMIT;
-
-      result = numify<int>(request.url.query.get("offset"));
-      size_t offset = result.isSome() ? result.get() : 0;
 
       // TODO(nnielsen): Currently, formatting errors in offset and/or limit
       // will silently be ignored. This could be reported to the user instead.
@@ -2782,29 +2848,21 @@ Future<Response> Master::Http::tasks(
       // Sort tasks by task status timestamp. Default order is descending.
       // The earliest timestamp is chosen for comparison when
       // multiple are present.
-      Option<string> order = request.url.query.get("order");
-      if (order.isSome() && (order.get() == "asc")) {
+      if (order == "asc") {
         sort(tasks.begin(), tasks.end(), TaskComparator::ascending);
       } else {
         sort(tasks.begin(), tasks.end(), TaskComparator::descending);
       }
 
-      auto tasksWriter = [&tasks, limit, offset](JSON::ObjectWriter* writer) {
-        writer->field("tasks",
-                      [&tasks, limit, offset](JSON::ArrayWriter* writer) {
-          size_t end = std::min(offset + limit, tasks.size());
-          for (size_t i = offset; i < end; i++) {
-            const Task* task = tasks[i];
-            writer->element(*task);
-          }
-        });
-      };
+      // Collect 'limit' number of tasks starting from 'offset'.
+      vector<const Task*> _tasks;
+      size_t end = std::min(offset + limit, tasks.size());
+      for (size_t i = offset; i < end; i++) {
+        const Task* task = tasks[i];
+        _tasks.push_back(task);
+      }
 
-      return OK(jsonify(tasksWriter), request.url.query.get("jsonp"));
-  }))
-  .repair([](const Future<Response>& response) {
-    LOG(WARNING) << "Authorization failed: " << response.failure();
-    return InternalServerError(response.failure());
+      return _tasks;
   });
 }
 
@@ -2830,48 +2888,11 @@ string Master::Http::MAINTENANCE_SCHEDULE_HELP()
 }
 
 
-// /master/maintenance/schedule endpoint handler.
-Future<Response> Master::Http::maintenanceSchedule(
-    const Request& request,
-    const Option<string>& /*principal*/) const
+Future<Response> Master::Http::_updateMaintenanceSchedule(
+    const mesos::maintenance::Schedule& schedule) const
 {
-  // When current master is not the leader, redirect to the leading master.
-  if (!master->elected()) {
-    return redirect(request);
-  }
-
-  if (request.method != "GET" && request.method != "POST") {
-    return MethodNotAllowed({"GET", "POST"}, request.method);
-  }
-
-  // JSON-ify and return the current maintenance schedule.
-  if (request.method == "GET") {
-    // TODO(josephw): Return more than one schedule.
-    const mesos::maintenance::Schedule schedule =
-      master->maintenance.schedules.empty() ?
-        mesos::maintenance::Schedule() :
-        master->maintenance.schedules.front();
-
-    return OK(JSON::protobuf(schedule), request.url.query.get("jsonp"));
-  }
-
-  // Parse the POST body as JSON.
-  Try<JSON::Object> jsonSchedule = JSON::parse<JSON::Object>(request.body);
-  if (jsonSchedule.isError()) {
-    return BadRequest(jsonSchedule.error());
-  }
-
-  // Convert the schedule to a protobuf.
-  Try<mesos::maintenance::Schedule> protoSchedule =
-    ::protobuf::parse<mesos::maintenance::Schedule>(jsonSchedule.get());
-
-  if (protoSchedule.isError()) {
-    return BadRequest(protoSchedule.error());
-  }
-
   // Validate that the schedule only transitions machines between
   // `UP` and `DRAINING` modes.
-  mesos::maintenance::Schedule schedule = protoSchedule.get();
   Try<Nothing> isValid = maintenance::validation::schedule(
       schedule,
       master->machines);
@@ -2957,6 +2978,83 @@ Future<Response> Master::Http::maintenanceSchedule(
 }
 
 
+mesos::maintenance::Schedule Master::Http::_getMaintenanceSchedule() const
+{
+  // TODO(josephw): Return more than one schedule.
+  const mesos::maintenance::Schedule schedule =
+    master->maintenance.schedules.empty() ?
+      mesos::maintenance::Schedule() :
+      master->maintenance.schedules.front();
+
+  return schedule;
+}
+
+
+// /master/maintenance/schedule endpoint handler.
+Future<Response> Master::Http::maintenanceSchedule(
+    const Request& request,
+    const Option<string>& /*principal*/) const
+{
+  // When current master is not the leader, redirect to the leading master.
+  if (!master->elected()) {
+    return redirect(request);
+  }
+
+  if (request.method != "GET" && request.method != "POST") {
+    return MethodNotAllowed({"GET", "POST"}, request.method);
+  }
+
+  // JSON-ify and return the current maintenance schedule.
+  if (request.method == "GET") {
+    const mesos::maintenance::Schedule schedule = _getMaintenanceSchedule();
+    return OK(JSON::protobuf(schedule), request.url.query.get("jsonp"));
+  }
+
+  // Parse the POST body as JSON.
+  Try<JSON::Object> jsonSchedule = JSON::parse<JSON::Object>(request.body);
+  if (jsonSchedule.isError()) {
+    return BadRequest(jsonSchedule.error());
+  }
+
+  // Convert the schedule to a protobuf.
+  Try<mesos::maintenance::Schedule> protoSchedule =
+    ::protobuf::parse<mesos::maintenance::Schedule>(jsonSchedule.get());
+
+  if (protoSchedule.isError()) {
+    return BadRequest(protoSchedule.error());
+  }
+
+  return _updateMaintenanceSchedule(protoSchedule.get());
+}
+
+
+Future<Response> Master::Http::getMaintenanceSchedule(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(mesos::master::Call::GET_MAINTENANCE_SCHEDULE, call.type());
+
+  return OK(serialize(contentType, evolve(_getMaintenanceSchedule())),
+            stringify(contentType));
+}
+
+
+Future<Response> Master::Http::updateMaintenanceSchedule(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType /*contentType*/) const
+{
+  CHECK_EQ(mesos::master::Call::UPDATE_MAINTENANCE_SCHEDULE, call.type());
+  CHECK(call.has_update_maintenance_schedule());
+
+  mesos::maintenance::Schedule schedule =
+    call.update_maintenance_schedule().schedule();
+
+  return _updateMaintenanceSchedule(schedule);
+}
+
+
 // /master/machine/down endpoint help.
 string Master::Http::MACHINE_DOWN_HELP()
 {
@@ -2973,6 +3071,79 @@ string Master::Http::MACHINE_DOWN_HELP()
         "  the list of machines into DOWN mode.  Currently, only",
         "  machines in DRAINING mode are allowed to be brought down."),
     AUTHENTICATION(true));
+}
+
+
+Future<Response> Master::Http::_startMaintenance(
+    const RepeatedPtrField<MachineID>& machineIds) const
+{
+  // Validate every machine in the list.
+  Try<Nothing> isValid = maintenance::validation::machines(machineIds);
+  if (isValid.isError()) {
+    return BadRequest(isValid.error());
+  }
+
+  // Check that all machines are part of a maintenance schedule.
+  // TODO(josephw): Allow a transition from `UP` to `DOWN`.
+  foreach (const MachineID& id, machineIds) {
+    if (!master->machines.contains(id)) {
+      return BadRequest(
+          "Machine '" + stringify(JSON::protobuf(id)) +
+            "' is not part of a maintenance schedule");
+    }
+
+    if (master->machines[id].info.mode() != MachineInfo::DRAINING) {
+      return BadRequest(
+          "Machine '" + stringify(JSON::protobuf(id)) +
+            "' is not in DRAINING mode and cannot be brought down");
+    }
+  }
+
+  return master->registrar->apply(Owned<Operation>(
+      new maintenance::StartMaintenance(machineIds)))
+    .then(defer(master->self(), [=](bool result) -> Future<Response> {
+      // See the top comment in "master/maintenance.hpp" for why this check
+      // is here, and is appropriate.
+      CHECK(result);
+
+      // We currently send a `ShutdownMessage` to each slave. This terminates
+      // all the executors for all the frameworks running on that slave.
+      // We also manually remove the slave to force sending TASK_LOST updates
+      // for all the tasks that were running on the slave and `LostSlaveMessage`
+      // messages to the framework. This guards against the slave having dropped
+      // the `ShutdownMessage`.
+      foreach (const MachineID& machineId, machineIds) {
+        // The machine may not be in machines. This means no slaves are
+        // currently registered on that machine so this is a no-op.
+        if (master->machines.contains(machineId)) {
+          // NOTE: Copies are needed because removeSlave modifies
+          // master->machines.
+          foreach (
+              const SlaveID& slaveId,
+              utils::copy(master->machines[machineId].slaves)) {
+            Slave* slave = master->slaves.registered.get(slaveId);
+            CHECK_NOTNULL(slave);
+
+            // Tell the slave to shut down.
+            ShutdownMessage shutdownMessage;
+            shutdownMessage.set_message("Operator initiated 'Machine DOWN'");
+            master->send(slave->pid, shutdownMessage);
+
+            // Immediately remove the slave to force sending `TASK_LOST` status
+            // updates as well as `LostSlaveMessage` messages to the frameworks.
+            // See comment above.
+            master->removeSlave(slave, "Operator initiated 'Machine DOWN'");
+          }
+        }
+      }
+
+      // Update the master's local state with the downed machines.
+      foreach (const MachineID& id, machineIds) {
+        master->machines[id].info.set_mode(MachineInfo::DOWN);
+      }
+
+      return OK();
+    }));
 }
 
 
@@ -3002,73 +3173,21 @@ Future<Response> Master::Http::machineDown(
     return BadRequest(ids.error());
   }
 
-  // Validate every machine in the list.
-  Try<Nothing> isValid = maintenance::validation::machines(ids.get());
-  if (isValid.isError()) {
-    return BadRequest(isValid.error());
-  }
+  return _startMaintenance(ids.get());
+}
 
-  // Check that all machines are part of a maintenance schedule.
-  // TODO(josephw): Allow a transition from `UP` to `DOWN`.
-  foreach (const MachineID& id, ids.get()) {
-    if (!master->machines.contains(id)) {
-      return BadRequest(
-          "Machine '" + stringify(JSON::protobuf(id)) +
-            "' is not part of a maintenance schedule");
-    }
 
-    if (master->machines[id].info.mode() != MachineInfo::DRAINING) {
-      return BadRequest(
-          "Machine '" + stringify(JSON::protobuf(id)) +
-            "' is not in DRAINING mode and cannot be brought down");
-    }
-  }
+Future<Response> Master::Http::startMaintenance(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType /*contentType*/) const
+{
+  CHECK_EQ(mesos::master::Call::START_MAINTENANCE, call.type());
+  CHECK(call.has_start_maintenance());
 
-  return master->registrar->apply(Owned<Operation>(
-      new maintenance::StartMaintenance(ids.get())))
-    .then(defer(master->self(), [=](bool result) -> Future<Response> {
-      // See the top comment in "master/maintenance.hpp" for why this check
-      // is here, and is appropriate.
-      CHECK(result);
+  RepeatedPtrField<MachineID> machineIds = call.start_maintenance().machines();
 
-      // We currently send a `ShutdownMessage` to each slave. This terminates
-      // all the executors for all the frameworks running on that slave.
-      // We also manually remove the slave to force sending TASK_LOST updates
-      // for all the tasks that were running on the slave and `LostSlaveMessage`
-      // messages to the framework. This guards against the slave having dropped
-      // the `ShutdownMessage`.
-      foreach (const MachineID& machineId, ids.get()) {
-        // The machine may not be in machines. This means no slaves are
-        // currently registered on that machine so this is a no-op.
-        if (master->machines.contains(machineId)) {
-          // NOTE: Copies are needed because removeSlave modifies
-          // master->machines.
-          foreach (
-              const SlaveID& slaveId,
-              utils::copy(master->machines[machineId].slaves)) {
-            Slave* slave = master->slaves.registered.get(slaveId);
-            CHECK_NOTNULL(slave);
-
-            // Tell the slave to shut down.
-            ShutdownMessage shutdownMessage;
-            shutdownMessage.set_message("Operator initiated 'Machine DOWN'");
-            master->send(slave->pid, shutdownMessage);
-
-            // Immediately remove the slave to force sending `TASK_LOST` status
-            // updates as well as `LostSlaveMessage` messages to the frameworks.
-            // See comment above.
-            master->removeSlave(slave, "Operator initiated 'Machine DOWN'");
-          }
-        }
-      }
-
-      // Update the master's local state with the downed machines.
-      foreach (const MachineID& id, ids.get()) {
-        master->machines[id].info.set_mode(MachineInfo::DOWN);
-      }
-
-      return OK();
-    }));
+  return _startMaintenance(machineIds);
 }
 
 
@@ -3091,40 +3210,17 @@ string Master::Http::MACHINE_UP_HELP()
 }
 
 
-// /master/machine/up endpoint handler.
-Future<Response> Master::Http::machineUp(
-    const Request& request,
-    const Option<string>& /*principal*/) const
+Future<Response> Master::Http::_stopMaintenance(
+    const RepeatedPtrField<MachineID>& machineIds) const
 {
-  // When current master is not the leader, redirect to the leading master.
-  if (!master->elected()) {
-    return redirect(request);
-  }
-
-  if (request.method != "POST") {
-    return MethodNotAllowed({"POST"}, request.method);
-  }
-
-  // Parse the POST body as JSON.
-  Try<JSON::Array> jsonIds = JSON::parse<JSON::Array>(request.body);
-  if (jsonIds.isError()) {
-    return BadRequest(jsonIds.error());
-  }
-
-  // Convert the machines to a protobuf.
-  auto ids = ::protobuf::parse<RepeatedPtrField<MachineID>>(jsonIds.get());
-  if (ids.isError()) {
-    return BadRequest(ids.error());
-  }
-
   // Validate every machine in the list.
-  Try<Nothing> isValid = maintenance::validation::machines(ids.get());
+  Try<Nothing> isValid = maintenance::validation::machines(machineIds);
   if (isValid.isError()) {
     return BadRequest(isValid.error());
   }
 
   // Check that all machines are part of a maintenance schedule.
-  foreach (const MachineID& id, ids.get()) {
+  foreach (const MachineID& id, machineIds) {
     if (!master->machines.contains(id)) {
       return BadRequest(
           "Machine '" + stringify(JSON::protobuf(id)) +
@@ -3139,7 +3235,7 @@ Future<Response> Master::Http::machineUp(
   }
 
   return master->registrar->apply(Owned<Operation>(
-      new maintenance::StopMaintenance(ids.get())))
+      new maintenance::StopMaintenance(machineIds)))
     .then(defer(master->self(), [=](bool result) -> Future<Response> {
       // See the top comment in "master/maintenance.hpp" for why this check
       // is here, and is appropriate.
@@ -3147,7 +3243,7 @@ Future<Response> Master::Http::machineUp(
 
       // Update the master's local state with the reactivated machines.
       hashset<MachineID> updated;
-      foreach (const MachineID& id, ids.get()) {
+      foreach (const MachineID& id, machineIds) {
         master->machines[id].info.set_mode(MachineInfo::UP);
         master->machines[id].info.clear_unavailability();
         updated.insert(id);
@@ -3186,6 +3282,50 @@ Future<Response> Master::Http::machineUp(
 }
 
 
+// /master/machine/up endpoint handler.
+Future<Response> Master::Http::machineUp(
+    const Request& request,
+    const Option<string>& /*principal*/) const
+{
+  // When current master is not the leader, redirect to the leading master.
+  if (!master->elected()) {
+    return redirect(request);
+  }
+
+  if (request.method != "POST") {
+    return MethodNotAllowed({"POST"}, request.method);
+  }
+
+  // Parse the POST body as JSON.
+  Try<JSON::Array> jsonIds = JSON::parse<JSON::Array>(request.body);
+  if (jsonIds.isError()) {
+    return BadRequest(jsonIds.error());
+  }
+
+  // Convert the machines to a protobuf.
+  auto ids = ::protobuf::parse<RepeatedPtrField<MachineID>>(jsonIds.get());
+  if (ids.isError()) {
+    return BadRequest(ids.error());
+  }
+
+  return _stopMaintenance(ids.get());
+}
+
+
+Future<Response> Master::Http::stopMaintenance(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType /*contentType*/) const
+{
+  CHECK_EQ(mesos::master::Call::STOP_MAINTENANCE, call.type());
+  CHECK(call.has_stop_maintenance());
+
+  RepeatedPtrField<MachineID> machineIds = call.stop_maintenance().machines();
+
+  return _stopMaintenance(machineIds);
+}
+
+
 // /master/maintenance/status endpoint help.
 string Master::Http::MAINTENANCE_STATUS_HELP()
 {
@@ -3208,20 +3348,9 @@ string Master::Http::MAINTENANCE_STATUS_HELP()
 }
 
 
-// /master/maintenance/status endpoint handler.
-Future<Response> Master::Http::maintenanceStatus(
-    const Request& request,
-    const Option<string>& /*principal*/) const
+Future<mesos::maintenance::ClusterStatus>
+  Master::Http::_getMaintenanceStatus() const
 {
-  // When current master is not the leader, redirect to the leading master.
-  if (!master->elected()) {
-    return redirect(request);
-  }
-
-  if (request.method != "GET") {
-    return MethodNotAllowed({"GET"}, request.method);
-  }
-
   return master->allocator->getInverseOfferStatuses()
     .then(defer(
         master->self(),
@@ -3229,7 +3358,7 @@ Future<Response> Master::Http::maintenanceStatus(
             hashmap<
                 SlaveID,
                 hashmap<FrameworkID, mesos::master::InverseOfferStatus>> result)
-          -> Future<Response> {
+          -> Future<mesos::maintenance::ClusterStatus> {
     // Unwrap the master's machine information into two arrays of machines.
     // The data is coming from the allocator and therefore could be stale.
     // Also, if the master fails over, this data is cleared.
@@ -3271,8 +3400,46 @@ Future<Response> Master::Http::maintenanceStatus(
       }
     }
 
-    return OK(JSON::protobuf(status), request.url.query.get("jsonp"));
+    return status;
   }));
+}
+
+
+// /master/maintenance/status endpoint handler.
+Future<Response> Master::Http::maintenanceStatus(
+    const Request& request,
+    const Option<string>& /*principal*/) const
+{
+  // When current master is not the leader, redirect to the leading master.
+  if (!master->elected()) {
+    return redirect(request);
+  }
+
+  if (request.method != "GET") {
+    return MethodNotAllowed({"GET"}, request.method);
+  }
+
+  return _getMaintenanceStatus()
+    .then([request](const mesos::maintenance::ClusterStatus& status)
+            -> Response {
+      return OK(JSON::protobuf(status), request.url.query.get("jsonp"));
+    });
+}
+
+
+Future<Response> Master::Http::getMaintenanceStatus(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(mesos::master::Call::GET_MAINTENANCE_STATUS, call.type());
+
+  return _getMaintenanceStatus()
+    .then([contentType](const mesos::maintenance::ClusterStatus& status)
+          -> Response {
+      return OK(serialize(contentType, evolve(status)),
+                stringify(contentType));
+    });
 }
 
 

@@ -27,6 +27,8 @@
 
 #include <mesos/master/master.hpp>
 
+#include <mesos/maintenance/maintenance.hpp>
+
 #include <mesos/scheduler/scheduler.hpp>
 
 #include <mesos/v1/mesos.hpp>
@@ -36,6 +38,8 @@
 #include <mesos/v1/executor/executor.hpp>
 
 #include <mesos/v1/master/master.hpp>
+
+#include <mesos/v1/maintenance/maintenance.hpp>
 
 #include <mesos/v1/scheduler/scheduler.hpp>
 
@@ -61,6 +65,7 @@ v1::OfferID evolve(const OfferID& offerId);
 v1::TaskID evolve(const TaskID& taskId);
 v1::TaskInfo evolve(const TaskInfo& taskInfo);
 v1::TaskStatus evolve(const TaskStatus& status);
+v1::Task evolve(const Task& task);
 v1::MasterInfo evolve(const MasterInfo& masterInfo);
 
 v1::agent::Response evolve(const mesos::agent::Response& response);
@@ -127,6 +132,12 @@ v1::executor::Event evolve(const ShutdownExecutorMessage& message);
 // REST endpoints pre v1 API.
 template <v1::master::Response::Type T>
 v1::master::Response evolve(const JSON::Object& object);
+
+
+// Helper functions that evolve old style internal messages to a
+// v1::master::Response.
+v1::master::Response evolve(const mesos::maintenance::ClusterStatus& status);
+v1::master::Response evolve(const mesos::maintenance::Schedule& schedule);
 
 
 // Declaration of helper functions for evolving JSON objects used in agent's

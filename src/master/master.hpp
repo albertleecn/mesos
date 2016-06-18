@@ -35,14 +35,13 @@
 #include <mesos/master/allocator.hpp>
 #include <mesos/master/contender.hpp>
 #include <mesos/master/detector.hpp>
+#include <mesos/master/master.hpp>
 
 #include <mesos/module/authenticator.hpp>
 
 #include <mesos/quota/quota.hpp>
 
 #include <mesos/scheduler/scheduler.hpp>
-
-#include <mesos/master/master.hpp>
 
 #include <process/limiter.hpp>
 #include <process/http.hpp>
@@ -1238,8 +1237,28 @@ private:
   private:
     JSON::Object _flags() const;
 
+    process::Future<std::vector<const Task*>> _tasks(
+        const size_t limit,
+        const size_t offset,
+        const std::string& order,
+        const Option<std::string>& principal) const;
+
     process::Future<process::http::Response> _teardown(
         const FrameworkID& id) const;
+
+    process::Future<process::http::Response> _updateMaintenanceSchedule(
+        const mesos::maintenance::Schedule& schedule) const;
+
+    mesos::maintenance::Schedule _getMaintenanceSchedule() const;
+
+    process::Future<mesos::maintenance::ClusterStatus>
+      _getMaintenanceStatus() const;
+
+    process::Future<process::http::Response> _startMaintenance(
+        const google::protobuf::RepeatedPtrField<MachineID>& machineIds) const;
+
+    process::Future<process::http::Response> _stopMaintenance(
+        const google::protobuf::RepeatedPtrField<MachineID>& machineIds) const;
 
     /**
      * Continuation for operations: /reserve, /unreserve,
@@ -1313,6 +1332,36 @@ private:
         ContentType contentType) const;
 
     process::Future<process::http::Response> getLeadingMaster(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> updateMaintenanceSchedule(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> getMaintenanceSchedule(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> getMaintenanceStatus(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> startMaintenance(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> stopMaintenance(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> getTasks(
         const mesos::master::Call& call,
         const Option<std::string>& principal,
         ContentType contentType) const;
