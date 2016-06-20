@@ -1214,7 +1214,19 @@ bool HttpProxy::process(const Future<Response>& future, const Request& request)
   if (!future.isReady()) {
     // TODO(benh): Consider handling other "states" of future
     // (discarded, failed, etc) with different HTTP statuses.
-    socket_manager->send(ServiceUnavailable(), request, socket);
+    Response response = future.isFailed()
+      ? ServiceUnavailable(future.failure())
+      : ServiceUnavailable();
+
+    VLOG(1) << "Returning '" << response.status << "'"
+            << " for '" << request.url.path << "'"
+            << " ("
+            << (future.isFailed()
+                  ? future.failure()
+                  : "discarded") << ")";
+
+    socket_manager->send(response, request, socket);
+
     return true; // All done, can process next response.
   }
 
@@ -3320,7 +3332,10 @@ void ProcessBase::visit(const HttpEvent& event)
       .onAny(defer(self(), [this, endpoint, request, response, name, id](
           const Future<Option<AuthenticationResult>>& authentication) {
         if (!authentication.isReady()) {
-          response->set(InternalServerError());
+          response->set(
+              authentication.isFailed()
+                ? ServiceUnavailable(authentication.failure())
+                : ServiceUnavailable());
 
           VLOG(1) << "Returning '" << response->future()->status << "'"
                   << " for '" << request.url.path << "'"
@@ -3379,7 +3394,10 @@ void ProcessBase::visit(const HttpEvent& event)
           .onAny(defer(self(), [endpoint, request, response, principal](
               const Future<bool>& authorization) {
             if (!authorization.isReady()) {
-              response->set(InternalServerError());
+              response->set(
+                  authorization.isFailed()
+                    ? ServiceUnavailable(authorization.failure())
+                    : ServiceUnavailable());
 
               VLOG(1) << "Returning '" << response->future()->status << "'"
                       << " for '" << request.url.path << "'"
