@@ -109,8 +109,7 @@ TEST_F(HttpFaultToleranceTest, SchedulerSubscribeAfterFailoverTimeout)
 
     Future<Nothing> connected;
     EXPECT_CALL(*scheduler, connected(_))
-      .WillOnce(FutureSatisfy(&connected))
-      .WillRepeatedly(Return()); // Ignore future invocations.
+      .WillOnce(FutureSatisfy(&connected));
 
     scheduler::TestV1Mesos schedulerLibrary(
         master.get()->pid, contentType, scheduler);
@@ -428,15 +427,15 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
 
   auto scheduler2 = std::make_shared<MockV1HTTPScheduler>();
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler2, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   // Failover to another scheduler instance.
   scheduler::TestV1Mesos schedulerLibrary2(
       master.get()->pid, contentType, scheduler2);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   // The previously connected scheduler instance should receive an
   // error/disconnected event.
@@ -490,12 +489,6 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverStatusUpdate)
     .Times(AtMost(1));
 
   EXPECT_CALL(*executor, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler2, disconnected(_))
     .Times(AtMost(1));
 }
 
@@ -596,15 +589,15 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
 
   auto scheduler2 = std::make_shared<MockV1HTTPScheduler>();
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler2, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   // Failover to another scheduler instance.
   scheduler::TestV1Mesos schedulerLibrary2(
       master.get()->pid, contentType, scheduler2);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   // The previously connected scheduler instance should receive an
   // error/disconnected event.
@@ -664,12 +657,6 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverExecutorToFrameworkMessage)
     .Times(AtMost(1));
 
   EXPECT_CALL(*executor, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler2, disconnected(_))
     .Times(AtMost(1));
 }
 
@@ -768,15 +755,15 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
 
   auto scheduler2 = std::make_shared<MockV1HTTPScheduler>();
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler2, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   // Failover to another scheduler instance.
   scheduler::TestV1Mesos schedulerLibrary2(
       master.get()->pid, contentType, scheduler2);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   // The previously connected scheduler instance should receive an
   // error/disconnected event.
@@ -836,12 +823,6 @@ TEST_F(HttpFaultToleranceTest, SchedulerFailoverFrameworkToExecutorMessage)
     .Times(AtMost(1));
 
   EXPECT_CALL(*executor, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler, disconnected(_))
-    .Times(AtMost(1));
-
-  EXPECT_CALL(*scheduler2, disconnected(_))
     .Times(AtMost(1));
 }
 

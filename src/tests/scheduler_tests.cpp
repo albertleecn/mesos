@@ -110,8 +110,7 @@ TEST_P(SchedulerTest, Subscribe)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -185,14 +184,14 @@ TEST_P(SchedulerTest, SchedulerFailover)
 
   auto scheduler2 = std::make_shared<MockV1HTTPScheduler>();
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler2, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   // Failover to another scheduler instance.
   scheduler::TestV1Mesos mesos2(master.get()->pid, contentType, scheduler2);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   // The previously connected scheduler instance should receive an
   // error/disconnected event.
@@ -284,13 +283,13 @@ TEST_P(SchedulerTest, MasterFailover)
 
   AWAIT_READY(disconnected);
 
+  Future<Nothing> connected2;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected2));
 
   detector->appoint(master.get()->pid);
 
-  AWAIT_READY(connected);
+  AWAIT_READY(connected2);
 
   EXPECT_CALL(*scheduler, subscribed(_, _))
     .WillOnce(FutureArg<1>(&subscribed));
@@ -330,8 +329,7 @@ TEST_P(SchedulerTest, TaskRunning)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -451,8 +449,7 @@ TEST_P(SchedulerTest, ReconcileTask)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -577,8 +574,7 @@ TEST_P(SchedulerTest, KillTask)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -720,8 +716,7 @@ TEST_P(SchedulerTest, ShutdownExecutor)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -961,8 +956,7 @@ TEST_P(SchedulerTest, Decline)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -1051,8 +1045,7 @@ TEST_P(SchedulerTest, Revive)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -1147,8 +1140,7 @@ TEST_P(SchedulerTest, Suppress)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -1264,8 +1256,7 @@ TEST_P(SchedulerTest, Message)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
@@ -1380,8 +1371,7 @@ TEST_P(SchedulerTest, Request)
 
   Future<Nothing> connected;
   EXPECT_CALL(*scheduler, connected(_))
-    .WillOnce(FutureSatisfy(&connected))
-    .WillRepeatedly(Return()); // Ignore future invocations.
+    .WillOnce(FutureSatisfy(&connected));
 
   ContentType contentType = GetParam();
 
