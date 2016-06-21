@@ -99,17 +99,18 @@ class WhitelistWatcher;
 
 namespace master {
 
+class Master;
 class SlaveObserver;
 
 struct BoundedRateLimiter;
 struct Framework;
-struct HttpConnection;
 struct Role;
 
 
 struct Slave
 {
-  Slave(const SlaveInfo& _info,
+  Slave(Master* const _master,
+        const SlaveInfo& _info,
         const process::UPID& _pid,
         const MachineID& _machineId,
         const std::string& _version,
@@ -119,7 +120,8 @@ struct Slave
           std::vector<ExecutorInfo>(),
         const std::vector<Task> tasks =
           std::vector<Task>())
-    : id(_info.id()),
+    : master(_master),
+      id(_info.id()),
       info(_info),
       machineId(_machineId),
       pid(_pid),
@@ -160,24 +162,7 @@ struct Slave
     return nullptr;
   }
 
-  void addTask(Task* task)
-  {
-    const TaskID& taskId = task->task_id();
-    const FrameworkID& frameworkId = task->framework_id();
-
-    CHECK(!tasks[frameworkId].contains(taskId))
-      << "Duplicate task " << taskId << " of framework " << frameworkId;
-
-    tasks[frameworkId][taskId] = task;
-
-    if (!protobuf::isTerminalState(task->state())) {
-      usedResources[frameworkId] += task->resources();
-    }
-
-    LOG(INFO) << "Adding task " << taskId
-              << " with resources " << task->resources()
-              << " on agent " << id << " (" << info.hostname() << ")";
-  }
+  void addTask(Task* task);
 
   // Notification of task termination, for resource accounting.
   // TODO(bmahler): This is a hack for performance. We need to
@@ -295,6 +280,7 @@ struct Slave
     checkpointedResources = totalResources.filter(needCheckpointing);
   }
 
+  Master* const master;
   const SlaveID id;
   const SlaveInfo info;
 
@@ -363,6 +349,44 @@ inline std::ostream& operator<<(std::ostream& stream, const Slave& slave)
   return stream << slave.id << " at " << slave.pid
                 << " (" << slave.info.hostname() << ")";
 }
+
+
+// Represents the streaming HTTP connection to a framework or a client
+// subscribed to the '/api/vX' endpoint.
+struct HttpConnection
+{
+  HttpConnection(const process::http::Pipe::Writer& _writer,
+                 ContentType _contentType,
+                 UUID _streamId)
+    : writer(_writer),
+      contentType(_contentType),
+      streamId(_streamId) {}
+
+  // We need to evolve the internal old style message/unversioned event into a
+  // versioned event e.g., `v1::scheduler::Event` or `v1::master::Event`.
+  template <typename Message, typename Event = v1::scheduler::Event>
+  bool send(const Message& message)
+  {
+    ::recordio::Encoder<Event> encoder (lambda::bind(
+        serialize, contentType, lambda::_1));
+
+    return writer.write(encoder.encode(evolve(message)));
+  }
+
+  bool close()
+  {
+    return writer.close();
+  }
+
+  process::Future<Nothing> closed() const
+  {
+    return writer.readerClosed();
+  }
+
+  process::http::Pipe::Writer writer;
+  ContentType contentType;
+  UUID streamId;
+};
 
 
 class Master : public ProtobufProcess<Master>
@@ -552,6 +576,9 @@ protected:
   virtual void exited(const process::UPID& pid);
   void exited(const FrameworkID& frameworkId, const HttpConnection& http);
   void _exited(Framework* framework);
+
+  // Invoked upon noticing a subscriber disconnection.
+  void exited(const UUID& id);
 
   // Invoked when the message is ready to be executed after
   // being throttled.
@@ -865,6 +892,9 @@ private:
       const FrameworkInfo& frameworkInfo,
       bool force,
       const process::Future<bool>& authorized);
+
+  // Subscribes a client to the 'api/vX' endpoint.
+  void subscribe(HttpConnection http);
 
   void teardown(Framework* framework);
 
@@ -1387,6 +1417,7 @@ private:
 
   friend struct Framework;
   friend struct Metrics;
+  friend struct Slave;
 
   // NOTE: Since 'getOffer', 'getInverseOffer' and 'slaves' are
   // protected, we need to make the following functions friends.
@@ -1581,6 +1612,28 @@ private:
     // 'flags.rate_limits'.
     Option<process::Owned<BoundedRateLimiter>> defaultLimiter;
   } frameworks;
+
+  struct Subscribers
+  {
+    // Represents a client subscribed to the 'api/vX' endpoint.
+    //
+    // TODO(anand): Add support for filtering. Some subscribers
+    // might only be interested in a subset of events.
+    struct Subscriber
+    {
+      Subscriber(const HttpConnection& _http)
+        : http(_http) {}
+
+      HttpConnection http;
+    };
+
+    // Sends the event to all subscribers connected to the 'api/vX' endpoint.
+    void send(const mesos::master::Event& event);
+
+    // Active subscribers to the 'api/vX' endpoint keyed by the stream
+    // identifier.
+    hashmap<UUID, Subscriber> subscribed;
+  } subscribers;
 
   hashmap<OfferID, Offer*> offers;
   hashmap<OfferID, process::Timer> offerTimers;
@@ -1803,43 +1856,6 @@ private:
 inline std::ostream& operator<<(
     std::ostream& stream,
     const Framework& framework);
-
-
-// Represents the streaming HTTP connection to a framework.
-struct HttpConnection
-{
-  HttpConnection(const process::http::Pipe::Writer& _writer,
-                 ContentType _contentType,
-                 UUID _streamId)
-    : writer(_writer),
-      contentType(_contentType),
-      streamId(_streamId),
-      encoder(lambda::bind(serialize, contentType, lambda::_1)) {}
-
-  // Converts the message to an Event before sending.
-  template <typename Message>
-  bool send(const Message& message)
-  {
-    // We need to evolve the internal 'message' into a
-    // 'v1::scheduler::Event'.
-    return writer.write(encoder.encode(evolve(message)));
-  }
-
-  bool close()
-  {
-    return writer.close();
-  }
-
-  process::Future<Nothing> closed() const
-  {
-    return writer.readerClosed();
-  }
-
-  process::http::Pipe::Writer writer;
-  ContentType contentType;
-  UUID streamId;
-  ::recordio::Encoder<v1::scheduler::Event> encoder;
-};
 
 
 // This process periodically sends heartbeats to a scheduler on the

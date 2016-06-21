@@ -189,11 +189,15 @@ public:
             NetworkInfo* networkInfo =
               status.mutable_container_status()->add_network_infos();
 
-            // TODO(CD): Deprecated -- Remove after 0.27.0.
-            networkInfo->set_ip_address(container.ipAddress.get());
+            // Copy the NetworkInfo if it is specified in the
+            // ContainerInfo. A Docker container has at most one
+            // NetworkInfo, which is validated in containerizer.
+            if (task.container().network_infos().size() > 0) {
+              networkInfo->CopyFrom(task.container().network_infos(0));
+              networkInfo->clear_ip_addresses();
+            }
 
-            NetworkInfo::IPAddress* ipAddress =
-              networkInfo->add_ip_addresses();
+            NetworkInfo::IPAddress* ipAddress = networkInfo->add_ip_addresses();
             ipAddress->set_ip_address(container.ipAddress.get());
           }
           driver->sendStatusUpdate(status);
