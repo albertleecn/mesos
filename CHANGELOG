@@ -4,8 +4,6 @@ This release contains the following new features:
 
   * Scheduler and Executor v1 HTTP APIs are now considered stable.
 
-  * libelf is a new build dependency on Linux, required for Nvidia GPU support.
-
   * [MESOS-4791] - **Experimental** support for v1 Master and Agent APIs. These
     APIs let operators and services (monitoring, load balancers) send HTTP
     requests to '/api/v1' endpoint on master or agent. These APIs look similar
@@ -160,6 +158,9 @@ Additional API Changes:
   * [MESOS-5637] - Authorized endpoints consistently return `503` (Service
     Unavailable) instead of `500` (Internal Server Error) when the authenticator
     or the authorizer fails to process the request.
+
+  * [MESOS-5657] - Executors should not inherit environment variables from the
+    agent.
 
 3rd Party Upgrades:
   * [MESOS-4805] - Upgraded vendored ry-http-parser-1c3624a to nodejs/http-parser 2.6.1.

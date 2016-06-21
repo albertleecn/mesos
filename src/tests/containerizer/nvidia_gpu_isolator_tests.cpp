@@ -91,8 +91,12 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_VerifyDeviceAccess)
 
   MockScheduler sched;
 
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::GPU_RESOURCES);
+
   MesosSchedulerDriver driver(
-      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
   Future<Nothing> schedRegistered;
   EXPECT_CALL(sched, registered(_, _, _))
@@ -183,8 +187,12 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FractionalResources)
 
   MockScheduler sched;
 
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::GPU_RESOURCES);
+
   MesosSchedulerDriver driver(
-      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
   Future<Nothing> schedRegistered;
   EXPECT_CALL(sched, registered(_, _, _))
@@ -239,6 +247,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_Discovery)
 
   slave::Flags flags = CreateSlaveFlags();
   flags.resources = "cpus:1"; // To override the default with gpus:0.
+  flags.isolation = "gpu/nvidia";
 
   Try<Resources> resources = Containerizer::resources(flags);
 
@@ -258,11 +267,54 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
   Try<unsigned int> gpus = nvml::deviceGetCount();
   ASSERT_SOME(gpus);
 
-  // Setting the GPUs to 0 should not trigger auto-discovery!
+  // Not setting the `gpu/nvidia` isolation flag
+  // should not trigger-autodiscovery!
   slave::Flags flags = CreateSlaveFlags();
-  flags.resources = "gpus:0";
 
   Try<Resources> resources = Containerizer::resources(flags);
+
+  ASSERT_SOME(resources);
+  ASSERT_NONE(resources->gpus());
+
+  // Setting `--nvidia_gpu_devices` without the `gpu/nvidia`
+  // isolation flag should trigger an error.
+  flags = CreateSlaveFlags();
+  flags.nvidia_gpu_devices = vector<unsigned int>({0u});
+  flags.resources = "gpus:1";
+
+  resources = Containerizer::resources(flags);
+
+  ASSERT_ERROR(resources);
+
+  // Setting GPUs without the `gpu/nvidia` isolation
+  // flag should just pass them through without an error.
+  flags = CreateSlaveFlags();
+  flags.resources = "gpus:100";
+
+  resources = Containerizer::resources(flags);
+
+  ASSERT_SOME(resources);
+  ASSERT_SOME(resources->gpus());
+  ASSERT_EQ(100u, resources->gpus().get());
+
+  // Setting the `gpu/nvidia` isolation
+  // flag should trigger autodiscovery.
+  flags = CreateSlaveFlags();
+  flags.resources = "cpus:1"; // To override the default with gpus:0.
+  flags.isolation = "gpu/nvidia";
+
+  resources = Containerizer::resources(flags);
+
+  ASSERT_SOME(resources);
+  ASSERT_SOME(resources->gpus());
+  ASSERT_EQ(gpus.get(), resources->gpus().get());
+
+  // Setting the GPUs to 0 should not trigger auto-discovery!
+  flags = CreateSlaveFlags();
+  flags.resources = "gpus:0";
+  flags.isolation = "gpu/nvidia";
+
+  resources = Containerizer::resources(flags);
 
   ASSERT_SOME(resources);
   ASSERT_NONE(resources->gpus());
@@ -271,6 +323,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
   flags = CreateSlaveFlags();
   flags.nvidia_gpu_devices = vector<unsigned int>({0u});
   flags.resources = "gpus:1";
+  flags.isolation = "gpu/nvidia";
 
   resources = Containerizer::resources(flags);
 
@@ -282,6 +335,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
   flags = CreateSlaveFlags();
   flags.nvidia_gpu_devices = vector<unsigned int>({0u});
   flags.resources = "cpus:1"; // To override the default with gpus:0.
+  flags.isolation = "gpu/nvidia";
 
   resources = Containerizer::resources(flags);
 
@@ -289,6 +343,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
 
   flags = CreateSlaveFlags();
   flags.resources = "gpus:" + stringify(gpus.get());
+  flags.isolation = "gpu/nvidia";
 
   resources = Containerizer::resources(flags);
 
@@ -298,6 +353,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
   flags = CreateSlaveFlags();
   flags.nvidia_gpu_devices = vector<unsigned int>({0u});
   flags.resources = "gpus:2";
+  flags.isolation = "gpu/nvidia";
 
   resources = Containerizer::resources(flags);
 
@@ -306,6 +362,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
   flags = CreateSlaveFlags();
   flags.nvidia_gpu_devices = vector<unsigned int>({0u});
   flags.resources = "gpus:0";
+  flags.isolation = "gpu/nvidia";
 
   resources = Containerizer::resources(flags);
 
@@ -313,8 +370,9 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
 
   // More than available on the machine!
   flags = CreateSlaveFlags();
-  flags.resources = "gpus:" + stringify(2 * gpus.get());
   flags.nvidia_gpu_devices = vector<unsigned int>();
+  flags.resources = "gpus:" + stringify(2 * gpus.get());
+  flags.isolation = "gpu/nvidia";
 
   for (size_t i = 0; i < 2 * gpus.get(); ++i) {
     flags.nvidia_gpu_devices->push_back(i);
@@ -324,10 +382,11 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FlagValidation)
 
   ASSERT_ERROR(resources);
 
-  // Set `nvidia_gpu_devices` to contains duplicates.
+  // Set `nvidia_gpu_devices` to contain duplicates.
   flags = CreateSlaveFlags();
   flags.nvidia_gpu_devices = vector<unsigned int>({0u, 0u});
   flags.resources = "cpus:1;gpus:1";
+  flags.isolation = "gpu/nvidia";
 
   resources = Containerizer::resources(flags);
 
