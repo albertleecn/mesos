@@ -641,7 +641,7 @@ Future<Response> Master::Http::api(
       return getRoles(call, principal, acceptType);
 
     case mesos::master::Call::GET_WEIGHTS:
-      return NotImplemented();
+      return weightsHandler.getWeights(call, principal, acceptType);
 
     case mesos::master::Call::UPDATE_WEIGHTS:
       return NotImplemented();
@@ -1385,7 +1385,8 @@ Future<Response> Master::Http::getMetrics(
           metric->set_value(value);
         }
 
-        return OK(serialize(contentType, response), stringify(contentType));
+        return OK(serialize(contentType, evolve(response)),
+                  stringify(contentType));
       });
 }
 

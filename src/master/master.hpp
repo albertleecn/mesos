@@ -1100,6 +1100,11 @@ private:
         const process::http::Request& request,
         const Option<std::string>& principal) const;
 
+    process::Future<process::http::Response> getWeights(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
     process::Future<process::http::Response> update(
         const process::http::Request& request,
         const Option<std::string>& principal) const;
@@ -1113,10 +1118,12 @@ private:
         const Option<std::string>& principal,
         const std::vector<std::string>& roles) const;
 
-    process::Future<process::http::Response> _get(
-        const process::http::Request& request,
+    process::Future<std::vector<WeightInfo>> _filterWeights(
         const std::vector<WeightInfo>& weightInfos,
         const std::list<bool>& authorized) const;
+
+    process::Future<std::vector<WeightInfo>> _getWeights(
+        const Option<std::string>& principal) const;
 
     process::Future<process::http::Response> _update(
         const std::vector<WeightInfo>& updateWeightInfos) const;
