@@ -571,6 +571,8 @@ Release Notes - Mesos - Version 0.28.3
 
 All Issues:
 ** Bug
+  * [MESOS-5673] - Port mapping isolator may cause segfault if it bind mount root does not exist.
+  * [MESOS-5330] - Agent should backoff before connecting to the master.
   * [MESOS-5543] - /dev/fd is missing in the Mesos containerizer environment.
 
 
@@ -858,6 +860,15 @@ All Issues:
   * [MESOS-4822] - Add support for local image fetching in Appc provisioner.
   * [MESOS-4829] - Remove `grace_period_seconds` field from Shutdown event v1 protobuf.
   * [MESOS-4834] - Add 'file' fetcher plugin.
+
+
+Release Notes - Mesos - Version 0.27.4
+--------------------------------------
+* This is a bug fix release.
+
+All Issues:
+** Bug
+  * [MESOS-5330] - Agent should backoff before connecting to the master.
 
 
 Release Notes - Mesos - Version 0.27.3

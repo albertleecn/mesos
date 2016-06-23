@@ -656,10 +656,10 @@ Future<Response> Master::Http::api(
       return NotImplemented();
 
     case mesos::master::Call::CREATE_VOLUMES:
-      return NotImplemented();
+      return createVolumes(call, principal, acceptType);
 
     case mesos::master::Call::DESTROY_VOLUMES:
-      return NotImplemented();
+      return destroyVolumes(call, principal, acceptType);
 
     case mesos::master::Call::GET_MAINTENANCE_STATUS:
       return getMaintenanceStatus(call, principal, acceptType);
@@ -988,6 +988,42 @@ string Master::Http::CREATE_VOLUMES_HELP()
 }
 
 
+Future<Response> Master::Http::_createVolumes(
+    const SlaveID& slaveId,
+    const RepeatedPtrField<Resource>& volumes,
+    const Option<string>& principal) const
+{
+  Slave* slave = master->slaves.registered.get(slaveId);
+  if (slave == nullptr) {
+    return BadRequest("No agent found with specified ID");
+  }
+
+  // Create an offer operation.
+  Offer::Operation operation;
+  operation.set_type(Offer::Operation::CREATE);
+  operation.mutable_create()->mutable_volumes()->CopyFrom(volumes);
+
+  Option<Error> validate = validation::operation::validate(
+      operation.create(), slave->checkpointedResources, principal);
+
+  if (validate.isSome()) {
+    return BadRequest("Invalid CREATE operation: " + validate.get().message);
+  }
+
+  return master->authorizeCreateVolume(operation.create(), principal)
+    .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
+      if (!authorized) {
+        return Forbidden();
+      }
+
+      // The resources required for this operation are equivalent to the
+      // volumes specified by the user minus any DiskInfo (DiskInfo will
+      // be created when this operation is applied).
+      return _operation(slaveId, removeDiskInfos(volumes), operation);
+    }));
+}
+
+
 Future<Response> Master::Http::createVolumes(
     const Request& request,
     const Option<string>& principal) const
@@ -1021,11 +1057,6 @@ Future<Response> Master::Http::createVolumes(
   SlaveID slaveId;
   slaveId.set_value(value.get());
 
-  Slave* slave = master->slaves.registered.get(slaveId);
-  if (slave == nullptr) {
-    return BadRequest("No agent found with specified ID");
-  }
-
   value = values.get("volumes");
   if (value.isNone()) {
     return BadRequest("Missing 'volumes' query parameter");
@@ -1049,29 +1080,22 @@ Future<Response> Master::Http::createVolumes(
     volumes += volume.get();
   }
 
-  // Create an offer operation.
-  Offer::Operation operation;
-  operation.set_type(Offer::Operation::CREATE);
-  operation.mutable_create()->mutable_volumes()->CopyFrom(volumes);
+  return _createVolumes(slaveId, volumes, principal);
+}
 
-  Option<Error> validate = validation::operation::validate(
-      operation.create(), slave->checkpointedResources, principal);
 
-  if (validate.isSome()) {
-    return BadRequest("Invalid CREATE operation: " + validate.get().message);
-  }
+Future<Response> Master::Http::createVolumes(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType /*contentType*/) const
+{
+  CHECK_EQ(mesos::master::Call::CREATE_VOLUMES, call.type());
+  CHECK(call.has_create_volumes());
 
-  return master->authorizeCreateVolume(operation.create(), principal)
-    .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
-      if (!authorized) {
-        return Forbidden();
-      }
+  SlaveID slaveId = call.create_volumes().agent_id();
+  RepeatedPtrField<Resource> volumes = call.create_volumes().volumes();
 
-      // The resources required for this operation are equivalent to the
-      // volumes specified by the user minus any DiskInfo (DiskInfo will
-      // be created when this operation is applied).
-      return _operation(slaveId, removeDiskInfos(volumes), operation);
-    }));
+  return _createVolumes(slaveId, volumes, principal);
 }
 
 
@@ -1095,6 +1119,54 @@ string Master::Http::DESTROY_VOLUMES_HELP()
         "Please provide \"slaveId\" and \"volumes\" values designating",
         "the volumes to be destroyed."),
     AUTHENTICATION(true));
+}
+
+
+Future<Response> Master::Http::_destroyVolumes(
+    const SlaveID& slaveId,
+    const RepeatedPtrField<Resource>& volumes,
+    const Option<string>& principal) const
+{
+  Slave* slave = master->slaves.registered.get(slaveId);
+  if (slave == nullptr) {
+    return BadRequest("No agent found with specified ID");
+  }
+
+  // Create an offer operation.
+  Offer::Operation operation;
+  operation.set_type(Offer::Operation::DESTROY);
+  operation.mutable_destroy()->mutable_volumes()->CopyFrom(volumes);
+
+  Option<Error> validate = validation::operation::validate(
+      operation.destroy(), slave->checkpointedResources);
+
+  if (validate.isSome()) {
+    return BadRequest("Invalid DESTROY operation: " + validate.get().message);
+  }
+
+  return master->authorizeDestroyVolume(operation.destroy(), principal)
+    .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
+      if (!authorized) {
+        return Forbidden();
+      }
+
+      return _operation(slaveId, volumes, operation);
+    }));
+}
+
+
+Future<Response> Master::Http::destroyVolumes(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType /*contentType*/) const
+{
+  CHECK_EQ(mesos::master::Call::DESTROY_VOLUMES, call.type());
+  CHECK(call.has_destroy_volumes());
+
+  SlaveID slaveId = call.destroy_volumes().agent_id();
+  RepeatedPtrField<Resource> volumes = call.destroy_volumes().volumes();
+
+  return _destroyVolumes(slaveId, volumes, principal);
 }
 
 
@@ -1131,11 +1203,6 @@ Future<Response> Master::Http::destroyVolumes(
   SlaveID slaveId;
   slaveId.set_value(value.get());
 
-  Slave* slave = master->slaves.registered.get(slaveId);
-  if (slave == nullptr) {
-    return BadRequest("No agent found with specified ID");
-  }
-
   value = values.get("volumes");
   if (value.isNone()) {
     return BadRequest("Missing 'volumes' query parameter");
@@ -1159,26 +1226,7 @@ Future<Response> Master::Http::destroyVolumes(
     volumes += volume.get();
   }
 
-  // Create an offer operation.
-  Offer::Operation operation;
-  operation.set_type(Offer::Operation::DESTROY);
-  operation.mutable_destroy()->mutable_volumes()->CopyFrom(volumes);
-
-  Option<Error> validate = validation::operation::validate(
-      operation.destroy(), slave->checkpointedResources);
-
-  if (validate.isSome()) {
-    return BadRequest("Invalid DESTROY operation: " + validate.get().message);
-  }
-
-  return master->authorizeDestroyVolume(operation.destroy(), principal)
-    .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
-      if (!authorized) {
-        return Forbidden();
-      }
-
-      return _operation(slaveId, volumes, operation);
-    }));
+  return _destroyVolumes(slaveId, volumes, principal);
 }
 
 
