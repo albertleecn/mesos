@@ -169,94 +169,6 @@ struct Full : Representation<T>
 };
 
 
-// Implementation of the `ObjectApprover` interface authorizing all objects.
-class AcceptingObjectApprover : public ObjectApprover
-{
-public:
-  virtual Try<bool> approved(
-      const Option<ObjectApprover::Object>& object) const noexcept override
-  {
-    return true;
-  }
-};
-
-
-static bool approveViewFrameworkInfo(
-    const Owned<ObjectApprover>& frameworksApprover,
-    const FrameworkInfo& frameworkInfo)
-{
-  ObjectApprover::Object object;
-  object.framework_info = &frameworkInfo;
-
-  Try<bool> approved = frameworksApprover->approved(object);
-  if (approved.isError()) {
-    LOG(WARNING) << "Error during FrameworkInfo authorization: "
-                 << approved.error();
-    // TODO(joerg84): Consider exposing these errors to the caller.
-    return false;
-  }
-  return approved.get();
-}
-
-
-static bool approveViewTaskInfo(
-    const Owned<ObjectApprover>& tasksApprover,
-    const TaskInfo& taskInfo,
-    const FrameworkInfo& frameworkInfo)
-{
-  ObjectApprover::Object object;
-  object.task_info = &taskInfo;
-  object.framework_info = &frameworkInfo;
-
-  Try<bool> approved = tasksApprover->approved(object);
-  if (approved.isError()) {
-    LOG(WARNING) << "Error during TaskInfo authorization: " << approved.error();
-    // TODO(joerg84): Consider exposing these errors to the caller.
-    return false;
-  }
-  return approved.get();
-}
-
-
-static bool approveViewTask(
-    const Owned<ObjectApprover>& tasksApprover,
-    const Task& task,
-    const FrameworkInfo& frameworkInfo)
-{
-  ObjectApprover::Object object;
-  object.task = &task;
-  object.framework_info = &frameworkInfo;
-
-  Try<bool> approved = tasksApprover->approved(object);
-  if (approved.isError()) {
-    LOG(WARNING) << "Error during Task authorization: " << approved.error();
-     // TODO(joerg84): Consider exposing these errors to the caller.
-    return false;
-  }
-  return approved.get();
-}
-
-
-static bool approveViewExecutorInfo(
-    const Owned<ObjectApprover>& executorsApprover,
-    const ExecutorInfo& executorInfo,
-    const FrameworkInfo& frameworkInfo)
-{
-  ObjectApprover::Object object;
-  object.executor_info = &executorInfo;
-  object.framework_info = &frameworkInfo;
-
-  Try<bool> approved = executorsApprover->approved(object);
-  if (approved.isError()) {
-    LOG(WARNING) << "Error during ExecutorInfo authorization: "
-             << approved.error();
-    // TODO(joerg84): Consider exposing these errors to the caller.
-    return false;
-  }
-  return approved.get();
-}
-
-
 // Forward declaration for `FullFrameworkWriter`.
 static void json(JSON::ObjectWriter* writer, const Summary<Framework>& summary);
 
@@ -1077,6 +989,14 @@ Future<Response> Master::Http::createVolumes(
       return BadRequest(
           "Error in parsing 'volumes' query parameter: " + volume.error());
     }
+
+    // Since the `+=` operator will silently drop invalid resources, we validate
+    // each resource individually.
+    Option<Error> error = Resources::validate(volume.get());
+    if (error.isSome()) {
+      return BadRequest(error.get().message);
+    }
+
     volumes += volume.get();
   }
 
@@ -1223,6 +1143,14 @@ Future<Response> Master::Http::destroyVolumes(
       return BadRequest(
           "Error in parsing 'volumes' query parameter: " + volume.error());
     }
+
+    // Since the `+=` operator will silently drop invalid resources, we validate
+    // each resource individually.
+    Option<Error> error = Resources::validate(volume.get());
+    if (error.isSome()) {
+      return BadRequest(error.get().message);
+    }
+
     volumes += volume.get();
   }
 
@@ -1640,6 +1568,14 @@ Future<Response> Master::Http::reserve(
       return BadRequest(
           "Error in parsing 'resources' query parameter: " + resource.error());
     }
+
+    // Since the `+=` operator will silently drop invalid resources, we validate
+    // each resource individually.
+    Option<Error> error = Resources::validate(resource.get());
+    if (error.isSome()) {
+      return BadRequest(error.get().message);
+    }
+
     resources += resource.get();
   }
 
@@ -3632,6 +3568,14 @@ Future<Response> Master::Http::unreserve(
       return BadRequest(
           "Error in parsing 'resources' query parameter: " + resource.error());
     }
+
+    // Since the `+=` operator will silently drop invalid resources, we validate
+    // each resource individually.
+    Option<Error> error = Resources::validate(resource.get());
+    if (error.isSome()) {
+      return BadRequest(error.get().message);
+    }
+
     resources += resource.get();
   }
 
