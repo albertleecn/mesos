@@ -1919,9 +1919,12 @@ Future<Response> Master::Http::state(
 
   return collect(frameworksApprover, tasksApprover, executorsApprover)
     .then(defer(master->self(),
-        [=](const tuple<Owned<ObjectApprover>,
-                        Owned<ObjectApprover>,
-                        Owned<ObjectApprover>>& approvers) -> Response {
+        [this, request](const tuple<Owned<ObjectApprover>,
+                                    Owned<ObjectApprover>,
+                                    Owned<ObjectApprover>>& approvers)
+          -> Response {
+      // This lambda is consumed before the outer lambda
+      // returns, hence capture by reference is fine here.
       auto state = [this, &approvers](JSON::ObjectWriter* writer) {
         // Get approver from tuple.
         Owned<ObjectApprover> frameworksApprover;
@@ -1994,7 +1997,7 @@ Future<Response> Master::Http::state(
         // Model all of the frameworks.
         writer->field(
             "frameworks",
-            [this, &frameworksApprover, executorsApprover, &tasksApprover](
+            [this, &frameworksApprover, &executorsApprover, &tasksApprover](
                 JSON::ArrayWriter* writer) {
               foreachvalue (
                   Framework* framework,
@@ -2017,7 +2020,7 @@ Future<Response> Master::Http::state(
         // Model all of the completed frameworks.
         writer->field(
             "completed_frameworks",
-            [this, &frameworksApprover, executorsApprover, &tasksApprover](
+            [this, &frameworksApprover, &executorsApprover, &tasksApprover](
                 JSON::ArrayWriter* writer) {
               foreach (
                   const std::shared_ptr<Framework>& framework,
@@ -2264,11 +2267,10 @@ Future<Response> Master::Http::stateSummary(
 
   return frameworksApprover
     .then(defer(master->self(),
-        [=](const Owned<ObjectApprover>& frameworksApprover) -> Response {
+        [this, request](const Owned<ObjectApprover>& frameworksApprover)
+          -> Response {
       auto stateSummary =
           [this, &frameworksApprover](JSON::ObjectWriter* writer) {
-        Owned<ObjectApprover> frameworksApprover_ = frameworksApprover;
-
         writer->field("hostname", master->info().hostname());
 
         if (master->flags.cluster.isSome()) {
@@ -2334,13 +2336,13 @@ Future<Response> Master::Http::stateSummary(
                       [this,
                        &slaveFrameworkMapping,
                        &taskStateSummaries,
-                       &frameworksApprover_](JSON::ArrayWriter* writer) {
+                       &frameworksApprover](JSON::ArrayWriter* writer) {
           foreachpair (const FrameworkID& frameworkId,
                        Framework* framework,
                        master->frameworks.registered) {
             // Skip unauthorized frameworks.
             if (!approveViewFrameworkInfo(
-                frameworksApprover_,
+                frameworksApprover,
                 framework->info)) {
               continue;
             }
@@ -2752,7 +2754,7 @@ Future<Response> Master::Http::tasks(
   string _order = order.isSome() && (order.get() == "asc") ? "asc" : "des";
 
   return _tasks(limit, offset, _order, principal)
-    .then([=](const vector<const Task*>& tasks) -> Response {
+    .then([request](const vector<const Task*>& tasks) -> Response {
       auto tasksWriter = [&tasks](JSON::ObjectWriter* writer) {
         writer->field("tasks", [&tasks](JSON::ArrayWriter* writer) {
           foreach (const Task* task, tasks) {
@@ -2811,7 +2813,6 @@ Future<vector<const Task*>> Master::Http::_tasks(
   // Retrieve Approvers for authorizing frameworks and tasks.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> tasksApprover;
-  Future<Owned<ObjectApprover>> executorsApprover;
   if (master->authorizer.isSome()) {
     authorization::Subject subject;
     if (principal.isSome()) {
@@ -2823,26 +2824,20 @@ Future<vector<const Task*>> Master::Http::_tasks(
 
     tasksApprover = master->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_TASK);
-
-    executorsApprover = master->authorizer.get()->getObjectApprover(
-        subject, authorization::VIEW_EXECUTOR);
   } else {
     frameworksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
     tasksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
-    executorsApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
   }
 
-  return collect(frameworksApprover, tasksApprover, executorsApprover)
+  return collect(frameworksApprover, tasksApprover)
     .then(defer(master->self(),
       [=](const tuple<Owned<ObjectApprover>,
-                      Owned<ObjectApprover>,
                       Owned<ObjectApprover>>& approvers)
         -> vector<const Task*> {
       // Get approver from tuple.
       Owned<ObjectApprover> frameworksApprover;
       Owned<ObjectApprover> tasksApprover;
-      Owned<ObjectApprover> executorsApprover;
-      tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
+      tie(frameworksApprover, tasksApprover) = approvers;
 
       // TODO(nnielsen): Currently, formatting errors in offset and/or limit
       // will silently be ignored. This could be reported to the user instead.
