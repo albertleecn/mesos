@@ -387,7 +387,7 @@ Future<Response> Slave::Http::api(
       return NotImplemented();
 
     case agent::Call::GET_CONTAINERS:
-      return NotImplemented();
+      return getContainers(call, principal, acceptType);
   }
 
   UNREACHABLE();
@@ -547,10 +547,7 @@ string Slave::Http::FLAGS_HELP()
   return HELP(
     TLDR("Exposes the agent's flag configuration."),
     None(),
-    AUTHENTICATION(true),
-    AUTHORIZATION(
-        "The request principal should be authorized to query this endpoint.",
-        "See the authorization documentation for details."));
+    AUTHENTICATION(true));
 }
 
 
@@ -564,21 +561,7 @@ Future<Response> Slave::Http::flags(
     return MethodNotAllowed({"GET"}, request.method);
   }
 
-  Try<string> endpoint = extractEndpoint(request.url);
-  if (endpoint.isError()) {
-    return Failure("Failed to extract endpoint: " + endpoint.error());
-  }
-
-  return authorizeEndpoint(principal, endpoint.get(), request.method)
-    .then(defer(
-        slave->self(),
-        [this, request](bool authorized) -> Future<Response> {
-          if (!authorized) {
-            return Forbidden();
-          }
-
-          return OK(_flags(), request.url.query.get("jsonp"));
-        }));
+  return OK(_flags(), request.url.query.get("jsonp"));
 }
 
 
@@ -1146,7 +1129,57 @@ Future<Response> Slave::Http::containers(
 }
 
 
+Future<Response> Slave::Http::getContainers(
+    const agent::Call& call,
+    const Option<string>& printcipal,
+    ContentType contentType) const
+{
+  CHECK_EQ(agent::Call::GET_CONTAINERS, call.type());
+
+  return __containers()
+      .then([contentType](const Future<JSON::Array>& result)
+          -> Future<Response> {
+        if (!result.isReady()) {
+          LOG(WARNING) << "Could not collect container status and statistics: "
+                       << (result.isFailed()
+                            ? result.failure()
+                            : "Discarded");
+          return result.isFailed()
+            ? InternalServerError(result.failure())
+            : InternalServerError();
+        }
+
+        return OK(
+            serialize(
+                contentType,
+                evolve<v1::agent::Response::GET_CONTAINERS>(result.get())),
+            stringify(contentType));
+      });
+}
+
+
 Future<Response> Slave::Http::_containers(const Request& request) const
+{
+  return __containers()
+      .then([request](const Future<JSON::Array>& result) -> Future<Response> {
+        if (!result.isReady()) {
+          LOG(WARNING) << "Could not collect container status and statistics: "
+                       << (result.isFailed()
+                            ? result.failure()
+                            : "Discarded");
+
+          return result.isFailed()
+            ? InternalServerError(result.failure())
+            : InternalServerError();
+        }
+
+        return process::http::OK(
+            result.get(), request.url.query.get("jsonp"));
+      });
+}
+
+
+Future<JSON::Array> Slave::Http::__containers() const
 {
   Owned<list<JSON::Object>> metadata(new list<JSON::Object>());
   list<Future<ContainerStatus>> statusFutures;
@@ -1171,10 +1204,10 @@ Future<Response> Slave::Http::_containers(const Request& request) const
   }
 
   return await(await(statusFutures), await(statsFutures)).then(
-      [metadata, request](const tuple<
+      [metadata](const tuple<
           Future<list<Future<ContainerStatus>>>,
           Future<list<Future<ResourceStatistics>>>>& t)
-          -> Future<Response> {
+          -> Future<JSON::Array> {
         const list<Future<ContainerStatus>>& status = std::get<0>(t).get();
         const list<Future<ResourceStatistics>>& stats = std::get<1>(t).get();
         CHECK_EQ(status.size(), stats.size());
@@ -1222,13 +1255,7 @@ Future<Response> Slave::Http::_containers(const Request& request) const
           metadataIter++;
         }
 
-        return process::http::OK(result, request.url.query.get("jsonp"));
-      })
-      .repair([](const Future<Response>& future) {
-        LOG(WARNING) << "Could not collect container status and statistics: "
-                     << future.failure();
-
-        return InternalServerError();
+        return result;
       });
 }
 

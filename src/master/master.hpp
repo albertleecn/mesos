@@ -1100,7 +1100,7 @@ private:
         const process::http::Request& request,
         const Option<std::string>& principal) const;
 
-    process::Future<process::http::Response> getWeights(
+    process::Future<process::http::Response> get(
         const mesos::master::Call& call,
         const Option<std::string>& principal,
         ContentType contentType) const;
@@ -1349,22 +1349,12 @@ private:
         Resources required,
         const Offer::Operation& operation) const;
 
-    // Helper routines for endpoint authorization.
-    Try<std::string> extractEndpoint(const process::http::URL& url) const;
-
-    // Authorizes access to an HTTP endpoint. The `method` parameter
-    // determines which ACL action will be used in the authorization.
-    // It is expected that the caller has validated that `method` is
-    // supported by this function. Currently "GET" is supported.
-    //
-    // TODO(nfnt): Prefer types instead of strings
-    // for `endpoint` and `method`, see MESOS-5300.
-    process::Future<bool> authorizeEndpoint(
-        const Option<std::string>& principal,
-        const std::string& endpoint,
-        const std::string& method) const;
-
     // Master API handlers.
+
+    process::Future<process::http::Response> getAgents(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
 
     process::Future<process::http::Response> getFlags(
         const mesos::master::Call& call,

@@ -541,7 +541,7 @@ Future<Response> Master::Http::api(
       return NotImplemented();
 
     case mesos::master::Call::GET_AGENTS:
-      return NotImplemented();
+      return getAgents(call, principal, acceptType);
 
     case mesos::master::Call::GET_FRAMEWORKS:
       return NotImplemented();
@@ -553,7 +553,7 @@ Future<Response> Master::Http::api(
       return getRoles(call, principal, acceptType);
 
     case mesos::master::Call::GET_WEIGHTS:
-      return weightsHandler.getWeights(call, principal, acceptType);
+      return weightsHandler.get(call, principal, acceptType);
 
     case mesos::master::Call::UPDATE_WEIGHTS:
       return NotImplemented();
@@ -1220,11 +1220,7 @@ string Master::Http::FLAGS_HELP()
   return HELP(
     TLDR("Exposes the master's flag configuration."),
     None(),
-    AUTHENTICATION(true),
-    AUTHORIZATION(
-        "Querying this endpoint requires that the current principal",
-        "is authorized to query the path.",
-        "See the authorization documentation for details."));
+    AUTHENTICATION(true));
 }
 
 
@@ -1238,21 +1234,7 @@ Future<Response> Master::Http::flags(
     return MethodNotAllowed({"GET"}, request.method);
   }
 
-  Try<string> endpoint = extractEndpoint(request.url);
-  if (endpoint.isError()) {
-    return Failure("Failed to extract endpoint: " + endpoint.error());
-  }
-
-  return authorizeEndpoint(principal, endpoint.get(), request.method)
-    .then(defer(
-        master->self(),
-        [this, request](bool authorized) -> Future<Response> {
-          if (!authorized) {
-            return Forbidden();
-          }
-
-          return OK(_flags(), request.url.query.get("jsonp"));
-        }));
+  return OK(_flags(), request.url.query.get("jsonp"));
 }
 
 
@@ -1736,6 +1718,52 @@ Future<Response> Master::Http::slaves(
   };
 
   return OK(jsonify(slaves), request.url.query.get("jsonp"));
+}
+
+
+Future<process::http::Response> Master::Http::getAgents(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(mesos::master::Call::GET_AGENTS, call.type());
+
+  mesos::master::Response response;
+  response.set_type(mesos::master::Response::GET_AGENTS);
+
+  foreachvalue (const Slave* slave, master->slaves.registered) {
+    mesos::master::Response::GetAgents::Agent* agent =
+        response.mutable_get_agents()->add_agents();
+
+    agent->mutable_agent_info()->CopyFrom(slave->info);
+
+    agent->set_pid(string(slave->pid));
+    agent->set_active(slave->active);
+    agent->set_version(slave->version);
+
+    agent->mutable_registered_time()->set_nanoseconds(
+        slave->registeredTime.duration().ns());
+
+    if (slave->reregisteredTime.isSome()) {
+      agent->mutable_reregistered_time()->set_nanoseconds(
+          slave->reregisteredTime.get().duration().ns());
+    }
+
+    foreach (const Resource& resource, slave->totalResources) {
+      agent->add_total_resources()->CopyFrom(resource);
+    }
+
+    foreach (const Resource& resource, Resources::sum(slave->usedResources)) {
+      agent->add_allocated_resources()->CopyFrom(resource);
+    }
+
+    foreach (const Resource& resource, slave->offeredResources) {
+      agent->add_offered_resources()->CopyFrom(resource);
+    }
+  }
+
+  return OK(serialize(contentType, evolve(response)),
+            stringify(contentType));
 }
 
 
@@ -3708,58 +3736,6 @@ Future<Response> Master::Http::_operation(
     .repair([](const Future<Response>& result) {
        return Conflict(result.failure());
     });
-}
-
-
-Try<string> Master::Http::extractEndpoint(const process::http::URL& url) const
-{
-  // Paths are of the form "/master/endpoint". We're only interested
-  // in the part after "/master" and tokenize the path accordingly.
-  //
-  // TODO(nfnt): In the long run, absolute paths for
-  // endpoins should be supported, see MESOS-5369.
-  const vector<string> pathComponents = strings::tokenize(url.path, "/", 2);
-
-  if (pathComponents.size() < 2u ||
-      pathComponents[0] != master->self().id) {
-    return Error("Unexpected path '" + url.path + "'");
-  }
-
-  return "/" + pathComponents[1];
-}
-
-
-Future<bool> Master::Http::authorizeEndpoint(
-    const Option<string>& principal,
-    const string& endpoint,
-    const string& method) const
-{
-  if (master->authorizer.isNone()) {
-    return true;
-  }
-
-  authorization::Request request;
-
-  // TODO(nfnt): Add an additional method when POST requests
-  // need to be authorized separately from GET requests.
-  if (method == "GET") {
-    request.set_action(authorization::GET_ENDPOINT_WITH_PATH);
-  } else {
-    return Failure("Unexpected request method '" + method + "'");
-  }
-
-  if (principal.isSome()) {
-    request.mutable_subject()->set_value(principal.get());
-  }
-
-  request.mutable_object()->set_value(endpoint);
-
-  LOG(INFO) << "Authorizing principal '"
-            << (principal.isSome() ? principal.get() : "ANY")
-            << "' to " << method
-            << " the '" << endpoint << "' endpoint";
-
-  return master->authorizer.get()->authorized(request);
 }
 
 } // namespace master {
