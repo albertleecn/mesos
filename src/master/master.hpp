@@ -1305,6 +1305,16 @@ private:
     process::Future<process::http::Response> _stopMaintenance(
         const google::protobuf::RepeatedPtrField<MachineID>& machineIds) const;
 
+    process::Future<process::http::Response> _reserve(
+        const SlaveID& slaveId,
+        const Resources& resources,
+        const Option<std::string>& principal) const;
+
+    process::Future<process::http::Response> _unreserve(
+        const SlaveID& slaveId,
+        const Resources& resources,
+        const Option<std::string>& principal) const;
+
     process::Future<process::http::Response> _createVolumes(
         const SlaveID& slaveId,
         const google::protobuf::RepeatedPtrField<Resource>& volumes,
@@ -1432,6 +1442,16 @@ private:
         ContentType contentType) const;
 
     process::Future<process::http::Response> destroyVolumes(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> reserveResources(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> unreserveResources(
         const mesos::master::Call& call,
         const Option<std::string>& principal,
         ContentType contentType) const;
