@@ -44,36 +44,10 @@ pid_t launchTaskPosix(
     const mesos::v1::CommandInfo& command,
     const Option<string>& user,
     char** argv,
-    Option<char**>& override,
     Option<string>& rootfs,
     Option<string>& sandboxDirectory,
     Option<string>& workingDirectory)
 {
-  // TODO(benh): Clean this up with the new 'Fork' abstraction.
-  // Use pipes to determine which child has successfully changed
-  // session. This is needed as the setsid call can fail from other
-  // processes having the same group id.
-  int _pipes[2];
-
-  Try<Nothing> pipes = os::pipe(_pipes);
-  if (pipes.isError())
-  {
-    cerr << "Failed to create pipe: " << pipes.error() << endl;
-    abort();
-  }
-  // Set the FD_CLOEXEC flags on these pipes.
-  Try<Nothing> cloexec = os::cloexec(_pipes[0]);
-  if (cloexec.isError()) {
-    cerr << "Failed to cloexec(pipe[0]): " << cloexec.error() << endl;
-    abort();
-  }
-
-  cloexec = os::cloexec(_pipes[1]);
-  if (cloexec.isError()) {
-    cerr << "Failed to cloexec(pipe[1]): " << cloexec.error() << endl;
-    abort();
-  }
-
   if (rootfs.isSome()) {
     // The command executor is responsible for chrooting into the
     // root filesystem and changing the user before exec-ing the
@@ -81,78 +55,49 @@ pid_t launchTaskPosix(
 #ifdef __linux__
     Result<string> _user = os::user();
     if (_user.isError()) {
-      cerr << "Failed to get current user: " << _user.error() << endl;
-      abort();
+      ABORT("Failed to get current user: " + _user.error());
     } else if (_user.isNone()) {
-      cerr << "Current username is not found" << endl;
-      abort();
+      ABORT("Current username is not found");
     } else if (_user.get() != "root") {
-      cerr << "The command executor requires root with rootfs" << endl;
-      abort();
+      ABORT("The command executor requires root with rootfs");
     }
 #else
-    cerr << "Not expecting root volume with non-linux platform." << endl;
-    abort();
+    ABORT("Not expecting root volume with non-linux platform");
 #endif // __linux__
   }
 
   // Prepare the command log message.
   string commandString;
-  if (override.isSome()) {
-    char** argv = override.get();
-    // argv is guaranteed to be nullptr terminated and we rely on
-    // that fact to print command to be executed.
-    for (int i = 0; argv[i] != nullptr; i++) {
-      commandString += string(argv[i]) + " ";
-    }
-  } else if (command.shell()) {
-    commandString = string(os::Shell::arg0) + " " +
-      string(os::Shell::arg1) + " '" +
-      command.value() + "'";
+
+  if (command.shell()) {
+    commandString = strings::format(
+        "%s %s '%s'",
+        os::Shell::arg0,
+        os::Shell::arg1,
+        command.value()).get();
   } else {
-    commandString =
-      "[" + command.value() + ", " +
-      strings::join(", ", command.arguments()) + "]";
+    commandString = strings::format(
+        "[%s, %s]",
+        command.value(),
+        strings::join(", ", command.arguments())).get();
   }
 
   pid_t pid;
   if ((pid = fork()) == -1) {
-    cerr << "Failed to fork to run " << commandString << ": "
-         << os::strerror(errno) << endl;
-    abort();
+    ABORT("Failed to fork to run '" + commandString + "'"
+          ": " + os::strerror(errno));
   }
 
   // TODO(jieyu): Make the child process async signal safe.
   if (pid == 0) {
     // In child process, we make cleanup easier by putting process
     // into it's own session.
-    os::close(_pipes[0]);
-
-    // NOTE: We setsid() in a loop because setsid() might fail if another
-    // process has the same process group id as the calling process.
-    while ((pid = setsid()) == -1) {
-      perror("Could not put command in its own session, setsid");
-
-      cout << "Forking another process and retrying" << endl;
-
-      if ((pid = fork()) == -1) {
-        perror("Failed to fork to launch command");
-        abort();
-      }
-
-      if (pid > 0) {
-        // In parent process. It is ok to suicide here, because
-        // we're not watching this process.
-        exit(0);
-      }
+    // NOTE: POSIX guarantees a forked child's pid does not match any
+    // existing process group id so only a single `setsid()` is
+    // required and the session id will be the pid.
+    if (::setsid() == -1) {
+      ABORT("Failed to put child in a new session: " + os::strerror(errno));
     }
-
-    if (write(_pipes[1], &pid, sizeof(pid)) != sizeof(pid)) {
-      perror("Failed to write PID on pipe");
-      abort();
-    }
-
-    os::close(_pipes[1]);
 
     if (rootfs.isSome()) {
       // NOTE: we need to put change user, chdir logics in command
@@ -178,9 +123,8 @@ pid_t launchTaskPosix(
       if (user.isSome()) {
         Result<uid_t> _uid = os::getuid(user.get());
         if (!_uid.isSome()) {
-          cerr << "Failed to get the uid of user '" << user.get() << "': "
-               << (_uid.isError() ? _uid.error() : "not found") << endl;
-          abort();
+          ABORT("Failed to get the uid of user '" + user.get() + "': " +
+                (_uid.isError() ? _uid.error() : "not found"));
         }
 
         // No need to change user/groups if the specified user is
@@ -188,17 +132,15 @@ pid_t launchTaskPosix(
         if (_uid.get() != os::getuid().get()) {
           Result<gid_t> _gid = os::getgid(user.get());
           if (!_gid.isSome()) {
-            cerr << "Failed to get the gid of user '" << user.get() << "': "
-                 << (_gid.isError() ? _gid.error() : "not found") << endl;
-            abort();
+            ABORT("Failed to get the gid of user '" + user.get() + "': " +
+                  (_gid.isError() ? _gid.error() : "not found"));
           }
 
           Try<vector<gid_t>> _gids = os::getgrouplist(user.get());
           if (_gids.isError()) {
-            cerr << "Failed to get the supplementary gids of user '"
-                 << user.get() << "': "
-                 << (_gids.isError() ? _gids.error() : "not found") << endl;
-            abort();
+            ABORT("Failed to get the supplementary gids of "
+                  "user '" + user.get() + "': " +
+                  (_gids.isError() ? _gids.error() : "not found"));
           }
 
           uid = _uid.get();
@@ -209,31 +151,26 @@ pid_t launchTaskPosix(
 
       Try<Nothing> chroot = fs::chroot::enter(rootfs.get());
       if (chroot.isError()) {
-        cerr << "Failed to enter chroot '" << rootfs.get()
-             << "': " << chroot.error() << endl;
-        abort();
+        ABORT("Failed to enter chroot '" + rootfs.get() + "'"
+              ": " + chroot.error());
       }
 
       if (uid.isSome()) {
         Try<Nothing> setgid = os::setgid(gid.get());
         if (setgid.isError()) {
-          cerr << "Failed to set gid to " << gid.get()
-               << ": " << setgid.error() << endl;
-          abort();
+          ABORT("Failed to set gid to " + stringify(gid.get()) +
+                ": " + setgid.error());
         }
 
         Try<Nothing> setgroups = os::setgroups(gids, uid);
         if (setgroups.isError()) {
-          cerr << "Failed to set supplementary gids: "
-               << setgroups.error() << endl;
-          abort();
+          ABORT("Failed to set supplementary gids: " + setgroups.error());
         }
 
         Try<Nothing> setuid = os::setuid(uid.get());
         if (setuid.isError()) {
-          cerr << "Failed to set uid to " << uid.get()
-               << ": " << setuid.error() << endl;
-          abort();
+          ABORT("Failed to set uid to " + stringify(uid.get()) +
+                ": " + setuid.error());
         }
       }
 
@@ -248,50 +185,29 @@ pid_t launchTaskPosix(
 
       Try<Nothing> chdir = os::chdir(cwd);
       if (chdir.isError()) {
-        cerr << "Failed to chdir into current working directory '"
-             << cwd << "': " << chdir.error() << endl;
-        abort();
+        ABORT("Failed to chdir into current working directory "
+              "'" + cwd + "': " + chdir.error());
       }
 #else
-      cerr << "Rootfs is only supported on Linux" << endl;
-      abort();
+      ABORT("Rootfs is only supported on Linux");
 #endif // __linux__
     }
 
     cout << commandString << endl;
 
     // The child has successfully setsid, now run the command.
-    if (override.isNone()) {
-      if (command.shell()) {
-        execlp(
-                os::Shell::name,
-                os::Shell::arg0,
-                os::Shell::arg1,
-                command.value().c_str(),
-                (char*) nullptr);
-      } else {
-        execvp(command.value().c_str(), argv);
-      }
+    if (command.shell()) {
+      execlp(os::Shell::name,
+             os::Shell::arg0,
+             os::Shell::arg1,
+             command.value().c_str(),
+             (char*) nullptr);
     } else {
-      char** argv = override.get();
-      execvp(argv[0], argv);
+      execvp(command.value().c_str(), argv);
     }
 
-    perror("Failed to exec");
-    abort();
+    ABORT("Failed to exec: " + os::strerror(errno));
   }
-
-  // In parent process.
-  os::close(_pipes[1]);
-
-  // Get the child's pid via the pipe.
-  if (read(_pipes[0], &pid, sizeof(pid)) == -1) {
-    cerr << "Failed to get child PID from pipe, read: "
-         << os::strerror(errno) << endl;
-    abort();
-  }
-
-  os::close(_pipes[0]);
 
   return pid;
 }

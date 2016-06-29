@@ -983,6 +983,11 @@ private:
 
     // Returns a list of set quotas.
     process::Future<process::http::Response> status(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> status(
         const process::http::Request& request,
         const Option<std::string>& principal) const;
 
@@ -992,6 +997,10 @@ private:
 
     process::Future<process::http::Response> set(
         const process::http::Request& request,
+        const Option<std::string>& principal) const;
+
+    process::Future<process::http::Response> remove(
+        const mesos::master::Call& call,
         const Option<std::string>& principal) const;
 
     process::Future<process::http::Response> remove(
@@ -1059,10 +1068,8 @@ private:
         const Option<std::string>& principal,
         const mesos::quota::QuotaInfo& quotaInfo) const;
 
-    process::Future<process::http::Response> _status(
-        const process::http::Request& request,
-        const std::vector<mesos::quota::QuotaInfo>& quotaInfos,
-        const std::list<bool>& authorized) const;
+    process::Future<mesos::quota::QuotaStatus> _status(
+        const Option<std::string>& principal) const;
 
     process::Future<process::http::Response> _set(
         const mesos::quota::QuotaRequest& quotaRequest,
@@ -1073,6 +1080,10 @@ private:
         bool forced) const;
 
     process::Future<process::http::Response> _remove(
+        const std::string& role,
+        const Option<std::string>& principal) const;
+
+    process::Future<process::http::Response> __remove(
         const std::string& role) const;
 
     // To perform actions related to quota management, we require access to the
@@ -1109,6 +1120,11 @@ private:
         const process::http::Request& request,
         const Option<std::string>& principal) const;
 
+    process::Future<process::http::Response> update(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
   private:
     process::Future<bool> authorizeGetWeight(
         const Option<std::string>& principal,
@@ -1125,7 +1141,12 @@ private:
     process::Future<std::vector<WeightInfo>> _getWeights(
         const Option<std::string>& principal) const;
 
-    process::Future<process::http::Response> _update(
+    process::Future<process::http::Response>_updateWeights(
+        const Option<std::string>& principal,
+        const google::protobuf::RepeatedPtrField<WeightInfo>& weightInfos)
+            const;
+
+    process::Future<process::http::Response> __updateWeights(
         const std::vector<WeightInfo>& updateWeightInfos) const;
 
     // Rescind all outstanding offers if any of the 'weightInfos' roles has
@@ -1442,6 +1463,11 @@ private:
         ContentType contentType) const;
 
     process::Future<process::http::Response> unreserveResources(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> getFrameworks(
         const mesos::master::Call& call,
         const Option<std::string>& principal,
         ContentType contentType) const;

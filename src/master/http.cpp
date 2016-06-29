@@ -370,27 +370,6 @@ static void json(JSON::ObjectWriter* writer, const Summary<Framework>& summary)
 }
 
 
-static void json(JSON::ObjectWriter* writer, const Full<Framework>& full)
-{
-  // Use the `FullFrameworkWriter` with `AcceptingObjectApprover`.
-
-  Future<Owned<ObjectApprover>> tasksApprover =
-    Owned<ObjectApprover>(new AcceptingObjectApprover());
-  Future<Owned<ObjectApprover>> executorsApprover =
-    Owned<ObjectApprover>(new AcceptingObjectApprover());
-
-  const Framework& framework = full;
-
-  // Note that we know the futures are ready.
-  auto frameworkWriter = FullFrameworkWriter(
-      tasksApprover.get(),
-      executorsApprover.get(),
-      &framework);
-
-  frameworkWriter(writer);
-}
-
-
 void Master::Http::log(const Request& request)
 {
   Option<string> userAgent = request.headers.get("User-Agent");
@@ -544,7 +523,7 @@ Future<Response> Master::Http::api(
       return getAgents(call, principal, acceptType);
 
     case mesos::master::Call::GET_FRAMEWORKS:
-      return NotImplemented();
+      return getFrameworks(call, principal, acceptType);
 
     case mesos::master::Call::GET_TASKS:
       return getTasks(call, principal, acceptType);
@@ -556,7 +535,7 @@ Future<Response> Master::Http::api(
       return weightsHandler.get(call, principal, acceptType);
 
     case mesos::master::Call::UPDATE_WEIGHTS:
-      return NotImplemented();
+      return weightsHandler.update(call, principal, acceptType);
 
     case mesos::master::Call::GET_LEADING_MASTER:
       return getLeadingMaster(call, principal, acceptType);
@@ -589,13 +568,13 @@ Future<Response> Master::Http::api(
       return stopMaintenance(call, principal, acceptType);
 
     case mesos::master::Call::GET_QUOTA:
-      return NotImplemented();
+      return quotaHandler.status(call, principal, acceptType);
 
     case mesos::master::Call::SET_QUOTA:
       return quotaHandler.set(call, principal);
 
     case mesos::master::Call::REMOVE_QUOTA:
-      return NotImplemented();
+      return quotaHandler.remove(call, principal);
 
     case mesos::master::Call::SUBSCRIBE: {
       Pipe pipe;
@@ -1174,44 +1153,284 @@ string Master::Http::FRAMEWORKS_HELP()
 
 Future<Response> Master::Http::frameworks(
     const Request& request,
-    const Option<string>& /*principal*/) const
+    const Option<string>& principal) const
 {
   // When current master is not the leader, redirect to the leading master.
   if (!master->elected()) {
     return redirect(request);
   }
 
-  auto frameworks = [this](JSON::ObjectWriter* writer) {
-    // Model all of the frameworks.
-    writer->field("frameworks", [this](JSON::ArrayWriter* writer) {
-      foreachvalue (Framework* framework, master->frameworks.registered) {
-        writer->element(Full<Framework>(*framework));
-      }
-    });
+  // Retrieve `ObjectApprover`s for authorizing frameworks and tasks and
+  // executors.
+  Future<Owned<ObjectApprover>> frameworksApprover;
+  Future<Owned<ObjectApprover>> tasksApprover;
+  Future<Owned<ObjectApprover>> executorsApprover;
 
-    // Model all of the completed frameworks.
-    writer->field("completed_frameworks", [this](JSON::ArrayWriter* writer) {
+  if (master->authorizer.isSome()) {
+    authorization::Subject subject;
+    if (principal.isSome()) {
+      subject.set_value(principal.get());
+    }
+
+    frameworksApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_FRAMEWORK);
+
+    tasksApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_TASK);
+
+    executorsApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_EXECUTOR);
+  } else {
+    frameworksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+    tasksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+    executorsApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+  }
+
+  return collect(frameworksApprover, tasksApprover, executorsApprover)
+    .then(defer(master->self(),
+        [=](const tuple<Owned<ObjectApprover>,
+                        Owned<ObjectApprover>,
+                        Owned<ObjectApprover>>& approvers) -> Response {
+      auto frameworks = [this, approvers](JSON::ObjectWriter* writer) {
+        // Get approver from tuple.
+        Owned<ObjectApprover> frameworksApprover;
+        Owned<ObjectApprover> tasksApprover;
+        Owned<ObjectApprover> executorsApprover;
+        tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
+
+        // Model all of the frameworks.
+        writer->field(
+            "frameworks",
+            [this, frameworksApprover, executorsApprover, tasksApprover](
+                JSON::ArrayWriter* writer) {
+              foreachvalue (Framework* framework,
+                            master->frameworks.registered) {
+                // Skip unauthorized frameworks.
+                if (!approveViewFrameworkInfo(
+                        frameworksApprover, framework->info)) {
+                  continue;
+                }
+
+                FullFrameworkWriter frameworkWriter(
+                    tasksApprover,
+                    executorsApprover,
+                    framework);
+
+                writer->element(frameworkWriter);
+              }
+            });
+
+        // Model all of the completed frameworks.
+        writer->field(
+            "completed_frameworks",
+            [this, frameworksApprover, executorsApprover, tasksApprover](
+                JSON::ArrayWriter* writer) {
+              foreach (const std::shared_ptr<Framework>& framework,
+                       master->frameworks.completed) {
+                // Skip unauthorized frameworks.
+                if (!approveViewFrameworkInfo(
+                        frameworksApprover, framework->info)) {
+                  continue;
+                }
+
+                FullFrameworkWriter frameworkWriter(
+                    tasksApprover,
+                    executorsApprover,
+                    framework.get());
+
+                writer->element(frameworkWriter);
+              }
+            });
+
+        // Model all currently unregistered frameworks. This can happen
+        // when a framework has yet to re-register after master failover.
+        writer->field("unregistered_frameworks", [this](
+            JSON::ArrayWriter* writer) {
+          // Find unregistered frameworks.
+          foreachvalue (const Slave* slave, master->slaves.registered) {
+            foreachkey (const FrameworkID& frameworkId, slave->tasks) {
+              if (!master->frameworks.registered.contains(frameworkId)) {
+                writer->element(frameworkId.value());
+              }
+            }
+          }
+        });
+      };
+
+      return OK(jsonify(frameworks), request.url.query.get("jsonp"));
+  }));
+}
+
+
+mesos::master::Response::GetFrameworks::Framework model(
+    const Framework& framework,
+    const Owned<ObjectApprover>& tasksApprover,
+    const Owned<ObjectApprover>& executorsApprover)
+{
+  mesos::master::Response::GetFrameworks::Framework _framework;
+
+  _framework.mutable_framework_info()->CopyFrom(framework.info);
+
+  _framework.set_active(framework.active);
+  _framework.set_connected(framework.connected);
+
+  int64_t time = framework.registeredTime.duration().ns();
+  if (time != 0) {
+    _framework.mutable_registered_time()->set_nanoseconds(time);
+  }
+
+  time = framework.unregisteredTime.duration().ns();
+  if (time != 0) {
+    _framework.mutable_unregistered_time()->set_nanoseconds(time);
+  }
+
+  time = framework.reregisteredTime.duration().ns();
+  if (time != 0) {
+    _framework.mutable_reregistered_time()->set_nanoseconds(time);
+  }
+
+  foreachvalue (const TaskInfo& taskInfo, framework.pendingTasks) {
+    // Skip unauthorized tasks.
+    if (!approveViewTaskInfo(tasksApprover, taskInfo, framework.info)) {
+      continue;
+    }
+
+    _framework.mutable_pending_tasks()->Add()->CopyFrom(taskInfo);
+  }
+
+  foreachvalue (const Task* task, framework.tasks) {
+    // Skip unauthorized tasks.
+    if (!approveViewTask(tasksApprover, *task, framework.info)) {
+      continue;
+    }
+
+    _framework.mutable_tasks()->Add()->CopyFrom(*task);
+  }
+
+  foreach (const std::shared_ptr<Task>& task, framework.completedTasks) {
+    // Skip unauthorized tasks.
+    if (!approveViewTask(tasksApprover, *task.get(), framework.info)) {
+      continue;
+    }
+
+    _framework.mutable_completed_tasks()->Add()->CopyFrom(*task.get());
+  }
+
+  foreachpair (const SlaveID& slaveId,
+               const auto& executorsMap,
+               framework.executors) {
+    foreachvalue (const ExecutorInfo& info, executorsMap) {
+      // Skip unauthorized executors.
+      if (!approveViewExecutorInfo(executorsApprover,
+                                   info,
+                                   framework.info)) {
+        continue;
+      }
+
+      mesos::master::Response::GetFrameworks::Executor executor;
+      executor.mutable_info()->CopyFrom(executor);
+      executor.mutable_slave_id()->set_value(slaveId.value());
+
+      _framework.mutable_executors()->Add()->CopyFrom(executor);
+    }
+  }
+
+  foreach (const Offer* offer, framework.offers) {
+    _framework.mutable_offers()->Add()->CopyFrom(*offer);
+  }
+
+  foreach (const Resource& resource, framework.totalUsedResources) {
+    _framework.mutable_allocated_resources()->Add()->CopyFrom(resource);
+  }
+
+  foreach (const Resource& resource, framework.totalOfferedResources) {
+    _framework.mutable_offered_resources()->Add()->CopyFrom(resource);
+  }
+
+  return _framework;
+}
+
+
+Future<Response> Master::Http::getFrameworks(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(mesos::master::Call::GET_FRAMEWORKS, call.type());
+
+  // Retrieve `ObjectApprover`s for authorizing frameworks and tasks.
+  Future<Owned<ObjectApprover>> frameworksApprover;
+  Future<Owned<ObjectApprover>> tasksApprover;
+  Future<Owned<ObjectApprover>> executorsApprover;
+
+  if (master->authorizer.isSome()) {
+    authorization::Subject subject;
+    if (principal.isSome()) {
+      subject.set_value(principal.get());
+    }
+
+    frameworksApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_FRAMEWORK);
+
+    tasksApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_TASK);
+
+    executorsApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_EXECUTOR);
+  } else {
+    frameworksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+    tasksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+    executorsApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+  }
+
+  return collect(frameworksApprover, tasksApprover, executorsApprover)
+    .then(defer(master->self(),
+        [=](const tuple<Owned<ObjectApprover>,
+                        Owned<ObjectApprover>,
+                        Owned<ObjectApprover>>& approvers) -> Response {
+      // Get approver from tuple.
+      Owned<ObjectApprover> frameworksApprover;
+      Owned<ObjectApprover> tasksApprover;
+      Owned<ObjectApprover> executorsApprover;
+      tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
+
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_FRAMEWORKS);
+
+      foreachvalue (const Framework* framework,
+                    master->frameworks.registered) {
+        // Skip unauthorized frameworks.
+        if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
+          continue;
+        }
+
+        response.mutable_get_frameworks()->add_frameworks()->CopyFrom(
+            model(*framework, tasksApprover, executorsApprover));
+      }
+
       foreach (const std::shared_ptr<Framework>& framework,
                master->frameworks.completed) {
-        writer->element(Full<Framework>(*framework));
-      }
-    });
+        // Skip unauthorized frameworks.
+        if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
+          continue;
+        }
 
-    // Model all currently unregistered frameworks. This can happen
-    // when a framework has yet to re-register after master failover.
-    writer->field("unregistered_frameworks", [this](JSON::ArrayWriter* writer) {
-      // Find unregistered frameworks.
+        response.mutable_get_frameworks()->add_completed_frameworks()
+            ->CopyFrom(model(*framework, tasksApprover, executorsApprover));
+      }
+
       foreachvalue (const Slave* slave, master->slaves.registered) {
         foreachkey (const FrameworkID& frameworkId, slave->tasks) {
           if (!master->frameworks.registered.contains(frameworkId)) {
-            writer->element(frameworkId.value());
+            response.mutable_get_frameworks()->add_unregistered_frameworks()
+                ->set_value(frameworkId.value());
           }
         }
       }
-    });
-  };
 
-  return OK(jsonify(frameworks), request.url.query.get("jsonp"));
+      return OK(serialize(contentType, evolve(response)),
+                stringify(contentType));
+    }));
 }
 
 

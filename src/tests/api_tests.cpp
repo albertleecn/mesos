@@ -212,6 +212,52 @@ TEST_P(MasterAPITest, GetFlags)
 }
 
 
+TEST_P(MasterAPITest, GetFrameworks)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  FrameworkInfo framework = DEFAULT_FRAMEWORK_INFO;
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, framework, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  Future<Nothing> registered;
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .WillOnce(FutureSatisfy(&registered));
+
+  driver.start();
+
+  AWAIT_READY(registered);
+
+  v1::master::Call v1Call;
+  v1Call.set_type(v1::master::Call::GET_FRAMEWORKS);
+
+  ContentType contentType = GetParam();
+
+  Future<v1::master::Response> v1Response =
+      post(master.get()->pid, v1Call, contentType);
+
+  AWAIT_READY(v1Response);
+  ASSERT_TRUE(v1Response.get().IsInitialized());
+  ASSERT_EQ(v1::master::Response::GET_FRAMEWORKS, v1Response.get().type());
+
+  v1::master::Response::GetFrameworks frameworks =
+      v1Response.get().get_frameworks();
+
+  ASSERT_EQ(1, frameworks.frameworks_size());
+  ASSERT_EQ("default", frameworks.frameworks(0).framework_info().name());
+  ASSERT_EQ("*", frameworks.frameworks(0).framework_info().role());
+  ASSERT_FALSE(frameworks.frameworks(0).framework_info().checkpoint());
+  ASSERT_TRUE(frameworks.frameworks(0).active());
+  ASSERT_TRUE(frameworks.frameworks(0).connected());
+
+  driver.stop();
+  driver.join();
+}
+
+
 TEST_P(MasterAPITest, GetHealth)
 {
   Try<Owned<cluster::Master>> master = this->StartMaster();
@@ -1169,6 +1215,60 @@ TEST_P(MasterAPITest, Subscribe)
 }
 
 
+// This test verifies if we can retrieve the current quota status through
+// `GET_QUOTA` call, after we set quota resources through `SET_QUOTA` call.
+TEST_P(MasterAPITest, GetQuota)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  v1::Resources quotaResources =
+    v1::Resources::parse("cpus:1;mem:512").get();
+
+  ContentType contentType = GetParam();
+
+  {
+    v1::master::Call v1Call;
+    v1Call.set_type(v1::master::Call::SET_QUOTA);
+
+    v1::quota::QuotaRequest* quotaRequest =
+      v1Call.mutable_set_quota()->mutable_quota_request();
+
+    // Use the force flag for setting quota that cannot be satisfied in
+    // this empty cluster without any agents.
+    quotaRequest->set_force(true);
+    quotaRequest->set_role("role1");
+    quotaRequest->mutable_guarantee()->CopyFrom(quotaResources);
+
+    // Send a quota request for the specified role.
+    Future<Response> response = process::http::post(
+        master.get()->pid,
+        "api/v1",
+        createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+        serialize(contentType, v1Call),
+        stringify(contentType));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  }
+
+  // Verify the quota is set using the `GET_QUOTA` call.
+  {
+    v1::master::Call v1Call;
+    v1Call.set_type(v1::master::Call::GET_QUOTA);
+
+    Future<v1::master::Response> v1Response =
+      post(master.get()->pid, v1Call, contentType);
+
+    AWAIT_READY(v1Response);
+    ASSERT_TRUE(v1Response->IsInitialized());
+    ASSERT_EQ(v1::master::Response::GET_QUOTA, v1Response->type());
+    ASSERT_EQ(1, v1Response->get_quota().status().infos().size());
+    EXPECT_EQ(quotaResources,
+              v1Response->get_quota().status().infos(0).guarantee());
+  }
+}
+
+
 TEST_P(MasterAPITest, SetQuota)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -1200,6 +1300,97 @@ TEST_P(MasterAPITest, SetQuota)
       stringify(contentType));
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+}
+
+
+// This test verifies if we can remove a quota through `REMOVE_QUOTA` call,
+// after we set quota resources through `SET_QUOTA` call.
+TEST_P(MasterAPITest, RemoveQuota)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  v1::Resources quotaResources =
+    v1::Resources::parse("cpus:1;mem:512").get();
+
+  {
+    v1::master::Call v1Call;
+    v1Call.set_type(v1::master::Call::SET_QUOTA);
+
+    v1::quota::QuotaRequest* quotaRequest =
+      v1Call.mutable_set_quota()->mutable_quota_request();
+
+    // Use the force flag for setting quota that cannot be satisfied in
+    // this empty cluster without any agents.
+    quotaRequest->set_force(true);
+    quotaRequest->set_role("role1");
+    quotaRequest->mutable_guarantee()->CopyFrom(quotaResources);
+
+    ContentType contentType = GetParam();
+
+    // Send a quota request for the specified role.
+    Future<Response> response = process::http::post(
+        master.get()->pid,
+        "api/v1",
+        createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+        serialize(contentType, v1Call),
+        stringify(contentType));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  }
+
+  // Verify if the quota is set using `GET_QUOTA` call.
+  {
+    v1::master::Call v1Call;
+    v1Call.set_type(v1::master::Call::GET_QUOTA);
+
+    ContentType contentType = GetParam();
+
+    Future<v1::master::Response> v1Response =
+      post(master.get()->pid, v1Call, contentType);
+
+    AWAIT_READY(v1Response);
+    ASSERT_TRUE(v1Response->IsInitialized());
+    ASSERT_EQ(v1::master::Response::GET_QUOTA, v1Response->type());
+    ASSERT_EQ(1, v1Response->get_quota().status().infos().size());
+    EXPECT_EQ(quotaResources,
+      v1Response->get_quota().status().infos(0).guarantee());
+  }
+
+  // Remove the quota using `REMOVE_QUOTA` call.
+  {
+    v1::master::Call v1Call;
+    v1Call.set_type(v1::master::Call::REMOVE_QUOTA);
+    v1Call.mutable_remove_quota()->set_role("role1");
+
+    ContentType contentType = GetParam();
+
+    // Send a quota request for the specified role.
+    Future<Response> response = process::http::post(
+        master.get()->pid,
+        "api/v1",
+        createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+        serialize(contentType, v1Call),
+        stringify(contentType));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  }
+
+  // Verify if the quota is removed using `GET_QUOTA` call.
+  {
+    v1::master::Call v1Call;
+    v1Call.set_type(v1::master::Call::GET_QUOTA);
+
+    ContentType contentType = GetParam();
+
+    Future<v1::master::Response> v1Response =
+      post(master.get()->pid, v1Call, contentType);
+
+    AWAIT_READY(v1Response);
+    ASSERT_TRUE(v1Response->IsInitialized());
+    ASSERT_EQ(v1::master::Response::GET_QUOTA, v1Response->type());
+    ASSERT_EQ(0, v1Response->get_quota().status().infos().size());
+  }
 }
 
 
@@ -1375,6 +1566,64 @@ TEST_P(MasterAPITest, GetWeights)
   ASSERT_EQ(1, v1Response->get_weights().weight_infos_size());
   ASSERT_EQ("role", v1Response->get_weights().weight_infos().Get(0).role());
   ASSERT_EQ(2.0, v1Response->get_weights().weight_infos().Get(0).weight());
+}
+
+
+TEST_P(MasterAPITest, UpdateWeights)
+{
+  // Start a master with `--weights` flag.
+  master::Flags masterFlags = CreateMasterFlags();
+  masterFlags.weights = "role=2.0";
+  Try<Owned<cluster::Master>> master = StartMaster(masterFlags);
+  ASSERT_SOME(master);
+
+  v1::master::Call getCall, updateCall;
+  getCall.set_type(v1::master::Call::GET_WEIGHTS);
+  updateCall.set_type(v1::master::Call::UPDATE_WEIGHTS);
+
+  ContentType contentType = GetParam();
+
+  Future<v1::master::Response> getResponse =
+    post(master.get()->pid, getCall, contentType);
+
+  AWAIT_READY(getResponse);
+  ASSERT_TRUE(getResponse->IsInitialized());
+  ASSERT_EQ(v1::master::Response::GET_WEIGHTS, getResponse->type());
+  ASSERT_EQ(1, getResponse->get_weights().weight_infos_size());
+  ASSERT_EQ("role", getResponse->get_weights().weight_infos().Get(0).role());
+  ASSERT_EQ(2.0, getResponse->get_weights().weight_infos().Get(0).weight());
+
+  v1::WeightInfo* weightInfo =
+    updateCall.mutable_update_weights()->add_weight_infos();
+  weightInfo->set_role("role");
+  weightInfo->set_weight(4.0);
+
+  process::http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+  headers["Accept"] = stringify(contentType);
+
+  Future<Nothing> updateResponse = process::http::post(
+      master.get()->pid,
+      "api/v1",
+      headers,
+      serialize(contentType, updateCall),
+      stringify(contentType))
+    .then([contentType](const Response& response) -> Future<Nothing> {
+      if (response.status != OK().status) {
+        return Failure("Unexpected response status " + response.status);
+      }
+      return Nothing();
+    });
+
+  AWAIT_READY(updateResponse);
+
+  getResponse = post(master.get()->pid, getCall, contentType);
+
+  AWAIT_READY(getResponse);
+  ASSERT_TRUE(getResponse->IsInitialized());
+  ASSERT_EQ(v1::master::Response::GET_WEIGHTS, getResponse->type());
+  ASSERT_EQ(1, getResponse->get_weights().weight_infos_size());
+  ASSERT_EQ("role", getResponse->get_weights().weight_infos().Get(0).role());
+  ASSERT_EQ(4.0, getResponse->get_weights().weight_infos().Get(0).weight());
 }
 
 
