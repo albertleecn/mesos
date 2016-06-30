@@ -307,7 +307,12 @@ public:
 
   void link(ProcessBase* process,
             const UPID& to,
+            const ProcessBase::RemoteConnection remote,
             const Socket::Kind& kind = Socket::DEFAULT_KIND());
+
+  // Test-only method to fetch the file descriptor behind a
+  // persistent socket.
+  Option<int> get_persistent_socket(const UPID& to);
 
   PID<HttpProxy> proxy(const Socket& socket);
 
@@ -344,22 +349,22 @@ private:
   // This manipulates the data structures below by swapping all data
   // mapped to 'from' to being mapped to 'to'. This is useful for
   // downgrading a socket from SSL to POLL based.
-  void swap_implementing_socket(const Socket& from, Socket* to);
+  void swap_implementing_socket(const Socket& from, const Socket& to);
 
   // Helper function for link().
   void link_connect(
       const Future<Nothing>& future,
-      Socket* socket,
+      Socket socket,
       const UPID& to);
 
   // Helper function for send().
   void send_connect(
       const Future<Nothing>& future,
-      Socket* socket,
+      Socket socket,
       Message* message);
 
   // Collection of all active sockets (both inbound and outbound).
-  map<int, Socket*> sockets;
+  map<int, Socket> sockets;
 
   // Collection of sockets that should be disposed when they are
   // finished being used (e.g., when there is no more data to send on
@@ -420,7 +425,12 @@ public:
   UPID spawn(ProcessBase* process, bool manage);
   void resume(ProcessBase* process);
   void cleanup(ProcessBase* process);
-  void link(ProcessBase* process, const UPID& to);
+
+  void link(
+      ProcessBase* process,
+      const UPID& to,
+      const ProcessBase::RemoteConnection remote);
+
   void terminate(const UPID& pid, bool inject, ProcessBase* sender = nullptr);
   bool wait(const UPID& pid);
 
@@ -665,7 +675,7 @@ void decode_recv(
     const Future<size_t>& length,
     char* data,
     size_t size,
-    Socket* socket,
+    Socket socket,
     DataDecoder* decoder)
 {
   if (length.isDiscarded() || length.isFailed()) {
@@ -673,18 +683,16 @@ void decode_recv(
       VLOG(1) << "Decode failure: " << length.failure();
     }
 
-    socket_manager->close(*socket);
+    socket_manager->close(socket);
     delete[] data;
     delete decoder;
-    delete socket;
     return;
   }
 
   if (length.get() == 0) {
-    socket_manager->close(*socket);
+    socket_manager->close(socket);
     delete[] data;
     delete decoder;
-    delete socket;
     return;
   }
 
@@ -693,24 +701,22 @@ void decode_recv(
 
   if (requests.empty() && decoder->failed()) {
      VLOG(1) << "Decoder error while receiving";
-     socket_manager->close(*socket);
+     socket_manager->close(socket);
      delete[] data;
      delete decoder;
-     delete socket;
      return;
   }
 
   if (!requests.empty()) {
     // Get the peer address to augment the requests.
-    Try<Address> address = socket->peer();
+    Try<Address> address = socket.peer();
 
     if (address.isError()) {
       VLOG(1) << "Failed to get peer address while receiving: "
               << address.error();
-      socket_manager->close(*socket);
+      socket_manager->close(socket);
       delete[] data;
       delete decoder;
-      delete socket;
       return;
     }
 
@@ -720,7 +726,7 @@ void decode_recv(
     }
   }
 
-  socket->recv(data, size)
+  socket.recv(data, size)
     .onAny(lambda::bind(&decode_recv, lambda::_1, data, size, socket, decoder));
 }
 
@@ -784,7 +790,7 @@ void on_accept(const Future<Socket>& socket)
           lambda::_1,
           data,
           size,
-          new Socket(socket.get()),
+          socket.get(),
           decoder));
   }
 
@@ -1383,7 +1389,8 @@ SocketManager::~SocketManager() {}
 void SocketManager::accepted(const Socket& socket)
 {
   synchronized (mutex) {
-    sockets[socket] = new Socket(socket);
+    CHECK(sockets.count(socket) == 0);
+    sockets.emplace(socket, socket);
   }
 }
 
@@ -1392,31 +1399,29 @@ namespace internal {
 
 void ignore_recv_data(
     const Future<size_t>& length,
-    Socket* socket,
+    Socket socket,
     char* data,
     size_t size)
 {
   if (length.isDiscarded() || length.isFailed()) {
-    socket_manager->close(*socket);
+    socket_manager->close(socket);
     delete[] data;
-    delete socket;
     return;
   }
 
   if (length.get() == 0) {
-    socket_manager->close(*socket);
+    socket_manager->close(socket);
     delete[] data;
-    delete socket;
     return;
   }
 
-  socket->recv(data, size)
+  socket.recv(data, size)
     .onAny(lambda::bind(&ignore_recv_data, lambda::_1, socket, data, size));
 }
 
 
 // Forward declaration.
-void send(Encoder* encoder, Socket* socket);
+void send(Encoder* encoder, Socket socket);
 
 
 } // namespace internal {
@@ -1424,7 +1429,7 @@ void send(Encoder* encoder, Socket* socket);
 
 void SocketManager::link_connect(
     const Future<Nothing>& future,
-    Socket* socket,
+    Socket socket,
     const UPID& to)
 {
   if (future.isDiscarded() || future.isFailed()) {
@@ -1439,7 +1444,7 @@ void SocketManager::link_connect(
       future.isFailed() &&
       network::openssl::flags().enabled &&
       network::openssl::flags().support_downgrade &&
-      socket->kind() == Socket::SSL;
+      socket.kind() == Socket::SSL;
 
     Option<Socket> poll_socket = None();
 
@@ -1450,8 +1455,7 @@ void SocketManager::link_connect(
         Try<Socket> create = Socket::create(Socket::POLL);
         if (create.isError()) {
           VLOG(1) << "Failed to link, create socket: " << create.error();
-          socket_manager->close(*socket);
-          delete socket;
+          socket_manager->close(socket);
           return;
         }
 
@@ -1462,35 +1466,32 @@ void SocketManager::link_connect(
         // POLL socket we are about to try to connect. Even if the
         // process has exited, persistent links will stay around, and
         // temporary links will get cleaned up as they would otherwise.
-        swap_implementing_socket(*socket, new Socket(poll_socket.get()));
+        swap_implementing_socket(socket, poll_socket.get());
       }
 
       CHECK_SOME(poll_socket);
-      poll_socket.get().connect(to.address)
+      poll_socket->connect(to.address)
         .onAny(lambda::bind(
             &SocketManager::link_connect,
             this,
             lambda::_1,
-            new Socket(poll_socket.get()),
+            poll_socket.get(),
             to));
 
       // We don't need to 'shutdown()' the socket as it was never
       // connected.
-      delete socket;
       return;
     }
 #endif
 
-    socket_manager->close(*socket);
-    delete socket;
-
+    socket_manager->close(socket);
     return;
   }
 
   size_t size = 80 * 1024;
   char* data = new char[size];
 
-  socket->recv(data, size)
+  socket.recv(data, size)
     .onAny(lambda::bind(
         &internal::ignore_recv_data,
         lambda::_1,
@@ -1509,10 +1510,10 @@ void SocketManager::link_connect(
   // SocketManager::next() the 'outgoing' queue will get removed and
   // any subsequent call to SocketManager::send() will take care of
   // setting it back up and sending.
-  Encoder* encoder = socket_manager->next(*socket);
+  Encoder* encoder = socket_manager->next(socket);
 
   if (encoder != nullptr) {
-    internal::send(encoder, new Socket(*socket));
+    internal::send(encoder, socket);
   }
 }
 
@@ -1520,6 +1521,7 @@ void SocketManager::link_connect(
 void SocketManager::link(
     ProcessBase* process,
     const UPID& to,
+    const ProcessBase::RemoteConnection remote,
     const Socket::Kind& kind)
 {
   // TODO(benh): The semantics we want to support for link are such
@@ -1536,33 +1538,57 @@ void SocketManager::link(
   bool connect = false;
 
   synchronized (mutex) {
-    // Check if the socket address is remote and there isn't a persistent link.
-    if (to.address != __address__  && persists.count(to.address) == 0) {
-      // Okay, no link, let's create a socket.
-      // The kind of socket we create is passed in as an argument.
-      // This allows us to support downgrading the connection type
-      // from SSL to POLL if enabled.
-      Try<Socket> create = Socket::create(kind);
-      if (create.isError()) {
-        VLOG(1) << "Failed to link, create socket: " << create.error();
-        return;
+    // Check if the socket address is remote.
+    if (to.address != __address__) {
+      // Check if there isn't already a persistent link.
+      if (persists.count(to.address) == 0) {
+        // Okay, no link, let's create a socket.
+        // The kind of socket we create is passed in as an argument.
+        // This allows us to support downgrading the connection type
+        // from SSL to POLL if enabled.
+        Try<Socket> create = Socket::create(kind);
+        if (create.isError()) {
+          VLOG(1) << "Failed to link, create socket: " << create.error();
+          return;
+        }
+        socket = create.get();
+        int s = socket.get().get();
+
+        CHECK(sockets.count(s) == 0);
+        sockets.emplace(s, socket.get());
+
+        addresses[s] = to.address;
+
+        persists[to.address] = s;
+
+        // Initialize 'outgoing' to prevent a race with
+        // SocketManager::send() while the socket is not yet connected.
+        // Initializing the 'outgoing' queue prevents
+        // SocketManager::send() from trying to write before it's
+        // connected.
+        outgoing[s];
+
+        connect = true;
+      } else if (remote == ProcessBase::RemoteConnection::RECONNECT) {
+        // There is a persistent link already and the linker wants to
+        // create a new socket anyway.
+        Try<Socket> create = Socket::create(kind);
+        if (create.isError()) {
+          VLOG(1) << "Failed to link, create socket: " << create.error();
+          return;
+        }
+
+        socket = create.get();
+
+        // Update all the data structures that are mapped to the old
+        // socket. They will now point to the new socket we are about
+        // to try to connect. The old socket should no longer have any
+        // references after the swap and should be closed.
+        Socket existing(sockets.at(persists.at(to.address)));
+        swap_implementing_socket(existing, socket.get());
+
+        connect = true;
       }
-      socket = create.get();
-      int s = socket.get().get();
-
-      sockets[s] = new Socket(socket.get());
-      addresses[s] = to.address;
-
-      persists[to.address] = s;
-
-      // Initialize 'outgoing' to prevent a race with
-      // SocketManager::send() while the socket is not yet connected.
-      // Initializing the 'outgoing' queue prevents
-      // SocketManager::send() from trying to write before it's
-      // connected.
-      outgoing[s];
-
-      connect = true;
     }
 
     links.linkers[to].insert(process);
@@ -1574,14 +1600,36 @@ void SocketManager::link(
 
   if (connect) {
     CHECK_SOME(socket);
-    Socket(socket.get()).connect(to.address) // Copy to drop const.
+    socket->connect(to.address)
       .onAny(lambda::bind(
           &SocketManager::link_connect,
           this,
           lambda::_1,
-          new Socket(socket.get()),
+          socket.get(),
           to));
   }
+}
+
+
+// Tests can declare this function and use it to fetch the socket FD's
+// for links managed by the `SocketManager`. Without explicitly
+// declaring this function, it is not visible. This is the preferred
+// behavior as we do not want applications to have easy access to
+// managed FD's.
+Option<int> get_persistent_socket(const UPID& to)
+{
+  return socket_manager->get_persistent_socket(to);
+}
+
+Option<int> SocketManager::get_persistent_socket(const UPID& to)
+{
+  synchronized (mutex) {
+    if (persists.count(to.address) > 0) {
+      return persists.at(to.address);
+    }
+  }
+
+  return None();
 }
 
 
@@ -1597,7 +1645,7 @@ PID<HttpProxy> SocketManager::proxy(const Socket& socket)
       if (proxies.count(socket) > 0) {
         return proxies[socket]->self();
       } else {
-        proxy = new HttpProxy(*sockets[socket]);
+        proxy = new HttpProxy(sockets.at(socket));
         proxies[socket] = proxy;
       }
     }
@@ -1621,18 +1669,18 @@ namespace internal {
 
 void _send(
     const Future<size_t>& result,
-    Socket* socket,
+    Socket socket,
     Encoder* encoder,
     size_t size);
 
 
-void send(Encoder* encoder, Socket* socket)
+void send(Encoder* encoder, Socket socket)
 {
   switch (encoder->kind()) {
     case Encoder::DATA: {
       size_t size;
       const char* data = static_cast<DataEncoder*>(encoder)->next(&size);
-      socket->send(data, size)
+      socket.send(data, size)
         .onAny(lambda::bind(
             &internal::_send,
             lambda::_1,
@@ -1645,7 +1693,7 @@ void send(Encoder* encoder, Socket* socket)
       off_t offset;
       size_t size;
       int fd = static_cast<FileEncoder*>(encoder)->next(&offset, &size);
-      socket->sendfile(fd, offset, size)
+      socket.sendfile(fd, offset, size)
         .onAny(lambda::bind(
             &internal::_send,
             lambda::_1,
@@ -1660,13 +1708,12 @@ void send(Encoder* encoder, Socket* socket)
 
 void _send(
     const Future<size_t>& length,
-    Socket* socket,
+    Socket socket,
     Encoder* encoder,
     size_t size)
 {
   if (length.isDiscarded() || length.isFailed()) {
-    socket_manager->close(*socket);
-    delete socket;
+    socket_manager->close(socket);
     delete encoder;
   } else {
     // Update the encoder with the amount sent.
@@ -1677,11 +1724,9 @@ void _send(
       delete encoder;
 
       // Check for more stuff to send on socket.
-      Encoder* next = socket_manager->next(*socket);
+      Encoder* next = socket_manager->next(socket);
       if (next != nullptr) {
         send(next, socket);
-      } else {
-        delete socket;
       }
     } else {
       send(encoder, socket);
@@ -1720,7 +1765,7 @@ void SocketManager::send(Encoder* encoder, bool persist)
   }
 
   if (encoder != nullptr) {
-    internal::send(encoder, new Socket(encoder->socket()));
+    internal::send(encoder, encoder->socket());
   }
 }
 
@@ -1746,7 +1791,7 @@ void SocketManager::send(
 
 void SocketManager::send_connect(
     const Future<Nothing>& future,
-    Socket* socket,
+    Socket socket,
     Message* message)
 {
   if (future.isDiscarded() || future.isFailed()) {
@@ -1762,7 +1807,7 @@ void SocketManager::send_connect(
       future.isFailed() &&
       network::openssl::flags().enabled &&
       network::openssl::flags().support_downgrade &&
-      socket->kind() == Socket::SSL;
+      socket.kind() == Socket::SSL;
 
     Option<Socket> poll_socket = None();
 
@@ -1773,9 +1818,8 @@ void SocketManager::send_connect(
         Try<Socket> create = Socket::create(Socket::POLL);
         if (create.isError()) {
           VLOG(1) << "Failed to link, create socket: " << create.error();
-          socket_manager->close(*socket);
+          socket_manager->close(socket);
           delete message;
-          delete socket;
           return;
         }
 
@@ -1786,7 +1830,7 @@ void SocketManager::send_connect(
         // POLL socket we are about to try to connect. Even if the
         // process has exited, persistent links will stay around, and
         // temporary links will get cleaned up as they would otherwise.
-        swap_implementing_socket(*socket, new Socket(poll_socket.get()));
+        swap_implementing_socket(socket, poll_socket.get());
       }
 
       CHECK_SOME(poll_socket);
@@ -1795,24 +1839,22 @@ void SocketManager::send_connect(
             &SocketManager::send_connect,
             this,
             lambda::_1,
-            new Socket(poll_socket.get()),
+            poll_socket.get(),
             message));
 
       // We don't need to 'shutdown()' the socket as it was never
       // connected.
-      delete socket;
       return;
     }
 #endif
 
-    socket_manager->close(*socket);
-    delete socket;
+    socket_manager->close(socket);
 
     delete message;
     return;
   }
 
-  Encoder* encoder = new MessageEncoder(*socket, message);
+  Encoder* encoder = new MessageEncoder(socket, message);
 
   // Receive and ignore data from this socket. Note that we don't
   // expect to receive anything other than HTTP '202 Accepted'
@@ -1820,11 +1862,11 @@ void SocketManager::send_connect(
   size_t size = 80 * 1024;
   char* data = new char[size];
 
-  socket->recv(data, size)
+  socket.recv(data, size)
     .onAny(lambda::bind(
         &internal::ignore_recv_data,
         lambda::_1,
-        new Socket(*socket),
+        socket,
         data,
         size));
 
@@ -1848,7 +1890,7 @@ void SocketManager::send(Message* message, const Socket::Kind& kind)
     if (persist || temp) {
       int s = persist ? persists[address] : temps[address];
       CHECK(sockets.count(s) > 0);
-      socket = *sockets[s];
+      socket = sockets.at(s);
 
       // Update whether or not this socket should get disposed after
       // there is no more data to send.
@@ -1879,7 +1921,9 @@ void SocketManager::send(Message* message, const Socket::Kind& kind)
       socket = create.get();
       int s = socket.get();
 
-      sockets[s] = new Socket(socket.get());
+      CHECK(sockets.count(s) == 0);
+      sockets.emplace(s, socket.get());
+
       addresses[s] = address;
       temps[address] = s;
 
@@ -1894,19 +1938,19 @@ void SocketManager::send(Message* message, const Socket::Kind& kind)
 
   if (connect) {
     CHECK_SOME(socket);
-    socket.get().connect(address)
+    socket->connect(address)
       .onAny(lambda::bind(
           &SocketManager::send_connect,
           this,
           lambda::_1,
-          new Socket(socket.get()),
+          socket.get(),
           message));
   } else {
     // If we're not connecting and we haven't added the encoder to
     // the 'outgoing' queue then schedule it to be sent.
     internal::send(
         new MessageEncoder(socket.get(), message),
-        new Socket(socket.get()));
+        socket.get());
   }
 }
 
@@ -1969,16 +2013,14 @@ Encoder* SocketManager::next(int s)
           // Hold on to the Socket and remove it from the 'sockets'
           // map so that in the case where 'shutdown()' ends up
           // calling close the termination logic is not run twice.
-          Socket* socket = iterator->second;
+          Socket socket = iterator->second;
           sockets.erase(iterator);
 
-          Try<Nothing> shutdown = socket->shutdown();
+          Try<Nothing> shutdown = socket.shutdown();
           if (shutdown.isError()) {
-            LOG(ERROR) << "Failed to shutdown socket with fd " << socket->get()
+            LOG(ERROR) << "Failed to shutdown socket with fd " << socket.get()
                        << ": " << shutdown.error();
           }
-
-          delete socket;
         }
       }
     }
@@ -2054,16 +2096,14 @@ void SocketManager::close(int s)
       // Hold on to the Socket and remove it from the 'sockets' map so
       // that in the case where 'shutdown()' ends up calling close the
       // termination logic is not run twice.
-      Socket* socket = iterator->second;
+      Socket socket = iterator->second;
       sockets.erase(iterator);
 
-      Try<Nothing> shutdown = socket->shutdown();
+      Try<Nothing> shutdown = socket.shutdown();
       if (shutdown.isError()) {
-        LOG(ERROR) << "Failed to shutdown socket with fd " << socket->get()
+        LOG(ERROR) << "Failed to shutdown socket with fd " << socket.get()
                    << ": " << shutdown.error();
       }
-
-      delete socket;
     }
   }
 
@@ -2192,19 +2232,19 @@ void SocketManager::exited(ProcessBase* process)
 }
 
 
-void SocketManager::swap_implementing_socket(const Socket& from, Socket* to)
+void SocketManager::swap_implementing_socket(
+    const Socket& from, const Socket& to)
 {
   const int from_fd = from.get();
-  const int to_fd = to->get();
+  const int to_fd = to.get();
 
   synchronized (mutex) {
     // Make sure 'from' and 'to' are valid to swap.
     CHECK(sockets.count(from_fd) > 0);
     CHECK(sockets.count(to_fd) == 0);
 
-    delete sockets[from_fd];
     sockets.erase(from_fd);
-    sockets[to_fd] = to;
+    sockets.emplace(to_fd, to);
 
     // Update the dispose set if this is a temporary link.
     if (dispose.count(from_fd) > 0) {
@@ -2837,17 +2877,20 @@ void ProcessManager::cleanup(ProcessBase* process)
 }
 
 
-void ProcessManager::link(ProcessBase* process, const UPID& to)
+void ProcessManager::link(
+    ProcessBase* process,
+    const UPID& to,
+    const ProcessBase::RemoteConnection remote)
 {
   // Check if the pid is local.
   if (to.address != __address__) {
-    socket_manager->link(process, to);
+    socket_manager->link(process, to, remote);
   } else {
     // Since the pid is local we want to get a reference to it's
     // underlying process so that while we are invoking the link
     // manager we don't miss sending a possible ExitedEvent.
     if (ProcessReference _ = use(to)) {
-      socket_manager->link(process, to);
+      socket_manager->link(process, to, remote);
     } else {
       // Since the pid isn't valid it's process must have already died
       // (or hasn't been spawned yet) so send a process exit message.
@@ -3480,13 +3523,13 @@ void ProcessBase::visit(const TerminateEvent& event)
 }
 
 
-UPID ProcessBase::link(const UPID& to)
+UPID ProcessBase::link(const UPID& to, const RemoteConnection remote)
 {
   if (!to) {
     return to;
   }
 
-  process_manager->link(this, to);
+  process_manager->link(this, to, remote);
 
   return to;
 }
