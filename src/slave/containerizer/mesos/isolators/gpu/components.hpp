@@ -14,15 +14,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __NVIDIA_GPU_HEADERS_HPP__
-#define __NVIDIA_GPU_HEADERS_HPP__
+#ifndef __NVIDIA_GPU_COMPONENTS_HPP__
+#define __NVIDIA_GPU_COMPONENTS_HPP__
 
 #ifdef __linux__
 #include "slave/containerizer/mesos/isolators/gpu/allocator.hpp"
-#include "slave/containerizer/mesos/isolators/gpu/isolator.hpp"
-#include "slave/containerizer/mesos/isolators/gpu/nvml.hpp"
 #endif
 
-#include "slave/containerizer/mesos/isolators/gpu/components.hpp"
+namespace mesos {
+namespace internal {
+namespace slave {
 
-#endif // __NVIDIA_GPU_HEADERS_HPP__
+// Defines the set of Nvidia components needed by containerizers.
+//
+// We provide this level of indirection in order to have single
+// optional argument passed to containerizers and to avoid using
+// OS #ifdefs in the containerizer signatures.
+struct NvidiaComponents
+{
+#ifdef __linux__
+  NvidiaComponents(const NvidiaGpuAllocator& _allocator)
+    : allocator(_allocator) {}
+
+  NvidiaGpuAllocator allocator;
+#endif
+};
+
+} // namespace slave {
+} // namespace internal {
+} // namespace mesos {
+
+#endif // __NVIDIA_GPU_COMPONENTS_HPP__

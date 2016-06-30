@@ -45,10 +45,7 @@
 #include "slave/containerizer/mesos/linux_launcher.hpp"
 #endif // __linux__
 
-#ifdef __linux__
-#include "slave/containerizer/mesos/isolators/gpu/allocator.hpp"
-#include "slave/containerizer/mesos/isolators/gpu/nvml.hpp"
-#endif // __linux__
+#include "slave/containerizer/mesos/isolators/gpu/nvidia.hpp"
 
 using std::map;
 using std::set;
@@ -214,6 +211,30 @@ Try<Containerizer*> Containerizer::create(
     return containerizer.get();
   }
 
+  // Optionally create the Nvidia components.
+  Option<NvidiaComponents> nvidia;
+
+#ifdef __linux__
+  if (nvml::isAvailable()) {
+    Try<Resources> gpus = NvidiaGpuAllocator::resources(flags);
+
+    if (gpus.isError()) {
+      return Error("Failed call to NvidiaGpuAllocator::resources: " +
+                   gpus.error());
+    }
+
+    Try<NvidiaGpuAllocator> allocator =
+      NvidiaGpuAllocator::create(flags, gpus.get());
+
+    if (allocator.isError()) {
+      return Error("Failed to NvidiaGpuAllocator::create: " +
+                   allocator.error());
+    }
+
+    nvidia = NvidiaComponents(allocator.get());
+  }
+#endif
+
   // TODO(benh): We need to store which containerizer or
   // containerizers were being used. See MESOS-1663.
 
@@ -223,7 +244,7 @@ Try<Containerizer*> Containerizer::create(
   foreach (const string& type, strings::split(flags.containerizers, ",")) {
     if (type == "mesos") {
       Try<MesosContainerizer*> containerizer =
-        MesosContainerizer::create(flags, local, fetcher);
+        MesosContainerizer::create(flags, local, fetcher, nvidia);
       if (containerizer.isError()) {
         return Error("Could not create MesosContainerizer: " +
                      containerizer.error());
@@ -232,7 +253,7 @@ Try<Containerizer*> Containerizer::create(
       }
     } else if (type == "docker") {
       Try<DockerContainerizer*> containerizer =
-        DockerContainerizer::create(flags, fetcher);
+        DockerContainerizer::create(flags, fetcher, nvidia);
       if (containerizer.isError()) {
         return Error("Could not create DockerContainerizer: " +
                      containerizer.error());
