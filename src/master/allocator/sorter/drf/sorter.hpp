@@ -73,6 +73,9 @@ public:
 
   virtual ~DRFSorter() {}
 
+  virtual void initialize(
+      const Option<std::set<std::string>>& fairnessExcludeResourceNames);
+
   virtual void add(const std::string& name, double weight = 1);
 
   virtual void update(const std::string& name, double weight);
@@ -131,6 +134,9 @@ private:
 
   // Returns the dominant resource share for the client.
   double calculateShare(const std::string& name);
+
+  // Resources (by name) that will be excluded from fair sharing.
+  Option<std::set<std::string>> fairnessExcludeResourceNames;
 
   // Returns an iterator to the specified client, if
   // it exists in this Sorter.

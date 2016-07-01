@@ -17,6 +17,7 @@
 #ifndef __MASTER_ALLOCATOR_MESOS_HIERARCHICAL_HPP__
 #define __MASTER_ALLOCATOR_MESOS_HIERARCHICAL_HPP__
 
+#include <set>
 #include <string>
 
 #include <mesos/mesos.hpp>
@@ -100,7 +101,9 @@ public:
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
-      const hashmap<std::string, double>& weights);
+      const hashmap<std::string, double>& weights,
+      const Option<std::set<std::string>>&
+        fairnessExcludeResourceNames = None());
 
   void recover(
       const int _expectedAgentCount,
@@ -398,6 +401,9 @@ protected:
   // Slaves to send offers for.
   Option<hashset<std::string>> whitelist;
 
+  // Resources (by name) that will be excluded from a role's fair share.
+  Option<std::set<std::string>> fairnessExcludeResourceNames;
+
   // There are two stages of allocation. During the first stage resources
   // are allocated only to frameworks in roles with quota set. During the
   // second stage remaining resources that would not be required to satisfy
@@ -469,7 +475,7 @@ protected:
 
 // We map the templatized version of the `HierarchicalAllocatorProcess` to one
 // that relies on sorter factories in the internal namespace. This allows us
-// to keep the implemention of the allocator in the implementation file.
+// to keep the implementation of the allocator in the implementation file.
 template <
     typename RoleSorter,
     typename FrameworkSorter,

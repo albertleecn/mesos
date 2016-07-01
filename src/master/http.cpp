@@ -45,6 +45,7 @@
 #include <process/metrics/metrics.hpp>
 
 #include <stout/base64.hpp>
+#include <stout/errorbase.hpp>
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
 #include <stout/hashset.hpp>
@@ -875,7 +876,12 @@ string Master::Http::CREATE_VOLUMES_HELP()
         "",
         "Please provide \"slaveId\" and \"volumes\" values designating",
         "the volumes to be created."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "Using this endpoint to create persistent volumes requires that",
+        "the current principal is authorized to create volumes for the",
+        "specific role.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -1017,7 +1023,12 @@ string Master::Http::DESTROY_VOLUMES_HELP()
         "",
         "Please provide \"slaveId\" and \"volumes\" values designating",
         "the volumes to be destroyed."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "Using this endpoint to destroy persistent volumes requires that",
+        "the current principal is authorized to destroy volumes created",
+        "by the principal who created the volume.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -1147,7 +1158,10 @@ string Master::Http::FRAMEWORKS_HELP()
         "current master is not the leader.",
         "Returns 503 SERVICE_UNAVAILABLE if the leading master cannot be",
         "found."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "This endpoint might be filtered based on the user accessing it.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -1266,9 +1280,7 @@ Future<Response> Master::Http::frameworks(
 
 
 mesos::master::Response::GetFrameworks::Framework model(
-    const Framework& framework,
-    const Owned<ObjectApprover>& tasksApprover,
-    const Owned<ObjectApprover>& executorsApprover)
+    const Framework& framework)
 {
   mesos::master::Response::GetFrameworks::Framework _framework;
 
@@ -1292,54 +1304,12 @@ mesos::master::Response::GetFrameworks::Framework model(
     _framework.mutable_reregistered_time()->set_nanoseconds(time);
   }
 
-  foreachvalue (const TaskInfo& taskInfo, framework.pendingTasks) {
-    // Skip unauthorized tasks.
-    if (!approveViewTaskInfo(tasksApprover, taskInfo, framework.info)) {
-      continue;
-    }
-
-    _framework.mutable_pending_tasks()->Add()->CopyFrom(taskInfo);
-  }
-
-  foreachvalue (const Task* task, framework.tasks) {
-    // Skip unauthorized tasks.
-    if (!approveViewTask(tasksApprover, *task, framework.info)) {
-      continue;
-    }
-
-    _framework.mutable_tasks()->Add()->CopyFrom(*task);
-  }
-
-  foreach (const std::shared_ptr<Task>& task, framework.completedTasks) {
-    // Skip unauthorized tasks.
-    if (!approveViewTask(tasksApprover, *task.get(), framework.info)) {
-      continue;
-    }
-
-    _framework.mutable_completed_tasks()->Add()->CopyFrom(*task.get());
-  }
-
-  foreachpair (const SlaveID& slaveId,
-               const auto& executorsMap,
-               framework.executors) {
-    foreachvalue (const ExecutorInfo& info, executorsMap) {
-      // Skip unauthorized executors.
-      if (!approveViewExecutorInfo(executorsApprover,
-                                   info,
-                                   framework.info)) {
-        continue;
-      }
-
-      mesos::master::Response::GetFrameworks::Executor executor;
-      executor.mutable_info()->CopyFrom(executor);
-      executor.mutable_slave_id()->set_value(slaveId.value());
-
-      _framework.mutable_executors()->Add()->CopyFrom(executor);
-    }
-  }
-
   foreach (const Offer* offer, framework.offers) {
     _framework.mutable_offers()->Add()->CopyFrom(*offer);
+  }
+
+  foreach (const InverseOffer* offer, framework.inverseOffers) {
+    _framework.mutable_inverse_offers()->Add()->CopyFrom(*offer);
   }
 
   foreach (const Resource& resource, framework.totalUsedResources) {
@@ -1361,10 +1331,8 @@ Future<Response> Master::Http::getFrameworks(
 {
   CHECK_EQ(mesos::master::Call::GET_FRAMEWORKS, call.type());
 
-  // Retrieve `ObjectApprover`s for authorizing frameworks and tasks.
+  // Retrieve `ObjectApprover`s for authorizing frameworks.
   Future<Owned<ObjectApprover>> frameworksApprover;
-  Future<Owned<ObjectApprover>> tasksApprover;
-  Future<Owned<ObjectApprover>> executorsApprover;
 
   if (master->authorizer.isSome()) {
     authorization::Subject subject;
@@ -1375,28 +1343,13 @@ Future<Response> Master::Http::getFrameworks(
     frameworksApprover = master->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_FRAMEWORK);
 
-    tasksApprover = master->authorizer.get()->getObjectApprover(
-        subject, authorization::VIEW_TASK);
-
-    executorsApprover = master->authorizer.get()->getObjectApprover(
-        subject, authorization::VIEW_EXECUTOR);
   } else {
     frameworksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
-    tasksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
-    executorsApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
   }
 
-  return collect(frameworksApprover, tasksApprover, executorsApprover)
+  return frameworksApprover
     .then(defer(master->self(),
-        [=](const tuple<Owned<ObjectApprover>,
-                        Owned<ObjectApprover>,
-                        Owned<ObjectApprover>>& approvers) -> Response {
-      // Get approver from tuple.
-      Owned<ObjectApprover> frameworksApprover;
-      Owned<ObjectApprover> tasksApprover;
-      Owned<ObjectApprover> executorsApprover;
-      tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
-
+        [=](const Owned<ObjectApprover>& frameworksApprover) -> Response {
       mesos::master::Response response;
       response.set_type(mesos::master::Response::GET_FRAMEWORKS);
 
@@ -1407,8 +1360,8 @@ Future<Response> Master::Http::getFrameworks(
           continue;
         }
 
-        response.mutable_get_frameworks()->add_frameworks()->CopyFrom(
-            model(*framework, tasksApprover, executorsApprover));
+        response.mutable_get_frameworks()->add_frameworks()
+            ->CopyFrom(model(*framework));
       }
 
       foreach (const std::shared_ptr<Framework>& framework,
@@ -1419,13 +1372,13 @@ Future<Response> Master::Http::getFrameworks(
         }
 
         response.mutable_get_frameworks()->add_completed_frameworks()
-            ->CopyFrom(model(*framework, tasksApprover, executorsApprover));
+            ->CopyFrom(model(*framework));
       }
 
       foreachvalue (const Slave* slave, master->slaves.registered) {
         foreachkey (const FrameworkID& frameworkId, slave->tasks) {
           if (!master->frameworks.registered.contains(frameworkId)) {
-            response.mutable_get_frameworks()->add_unregistered_frameworks()
+            response.mutable_get_frameworks()->add_unsubscribed_frameworks()
                 ->set_value(frameworkId.value());
           }
         }
@@ -1437,12 +1390,36 @@ Future<Response> Master::Http::getFrameworks(
 }
 
 
+class Master::Http::FlagsError : public Error
+{
+public:
+  enum Type
+  {
+    UNAUTHORIZED
+  };
+
+  // TODO(arojas): Provide a proper string representation of the enum.
+  explicit FlagsError(Type _type)
+    : Error(stringify(_type)), type(_type) {}
+
+  FlagsError(Type _type, const std::string& _message)
+    : Error(stringify(_type)), type(_type), message(_message) {}
+
+  const Type type;
+  const std::string message;
+};
+
+
 string Master::Http::FLAGS_HELP()
 {
   return HELP(
     TLDR("Exposes the master's flag configuration."),
     None(),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "Querying this endpoint requires that the current principal",
+        "is authorized to view all flags.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -1456,11 +1433,53 @@ Future<Response> Master::Http::flags(
     return MethodNotAllowed({"GET"}, request.method);
   }
 
-  return OK(_flags(), request.url.query.get("jsonp"));
+  Option<string> jsonp = request.url.query.get("jsonp");
+
+  return _flags(principal)
+      .then([jsonp](const Try<JSON::Object, FlagsError>& flags)
+            -> Future<Response> {
+        if (flags.isError()) {
+          switch (flags.error().type) {
+            case FlagsError::Type::UNAUTHORIZED:
+              return Forbidden();
+          }
+
+          return InternalServerError(flags.error().message);
+        }
+
+        return OK(flags.get(), jsonp);
+      });
 }
 
 
-JSON::Object Master::Http::_flags() const
+Future<Try<JSON::Object, Master::Http::FlagsError>> Master::Http::_flags(
+    const Option<string>& principal) const
+{
+  if (master->authorizer.isNone()) {
+    return __flags();
+  }
+
+  authorization::Request authRequest;
+  authRequest.set_action(authorization::VIEW_FLAGS);
+
+  if (principal.isSome()) {
+    authRequest.mutable_subject()->set_value(principal.get());
+  }
+
+  return master->authorizer.get()->authorized(authRequest)
+      .then(defer(
+          master->self(),
+          [this](bool authorized) -> Future<Try<JSON::Object, FlagsError>> {
+        if (authorized) {
+          return __flags();
+        } else {
+          return FlagsError(FlagsError::Type::UNAUTHORIZED);
+        }
+      }));
+}
+
+
+JSON::Object Master::Http::__flags() const
 {
   JSON::Object object;
 
@@ -1486,9 +1505,23 @@ Future<Response> Master::Http::getFlags(
 {
   CHECK_EQ(mesos::master::Call::GET_FLAGS, call.type());
 
-  return OK(serialize(contentType,
-                      evolve<v1::master::Response::GET_FLAGS>(_flags())),
+  return _flags(principal)
+      .then([contentType](const Try<JSON::Object, FlagsError>& flags)
+            -> Future<Response> {
+        if (flags.isError()) {
+          switch (flags.error().type) {
+            case FlagsError::Type::UNAUTHORIZED:
+              return Forbidden();
+          }
+
+          return InternalServerError(flags.error().message);
+        }
+
+        return OK(
+            serialize(contentType,
+                      evolve<v1::master::Response::GET_FLAGS>(flags.get())),
             stringify(contentType));
+      });
 }
 
 
@@ -1710,7 +1743,12 @@ string Master::Http::RESERVE_HELP()
         "",
         "Please provide \"slaveId\" and \"resources\" values designating",
         "the resources to be reserved."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "Using this endpoint to reserve resources requires that the",
+        "current principal is authorized to reserve resources for the",
+        "specific role.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -2082,6 +2120,8 @@ string Master::Http::STATE_HELP()
         "found.",
         "This endpoint shows information about the frameworks, tasks,",
         "executors and agents running in the cluster as a JSON object.",
+        "The information shown might be filtered based on the user",
+        "accessing the endpoint.",
         "",
         "Example (**Note**: this is not exhaustive):",
         "",
@@ -2152,7 +2192,12 @@ string Master::Http::STATE_HELP()
         "    \"unregistered_frameworks\" : []",
         "}",
         "```"),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "This endpoint might be filtered based on the user accessing it.",
+        "For example a user might only see the subset of frameworks,",
+        "tasks, and executors they are allowed to view.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -2169,6 +2214,7 @@ Future<Response> Master::Http::state(
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> tasksApprover;
   Future<Owned<ObjectApprover>> executorsApprover;
+  Future<Owned<ObjectApprover>> flagsApprover;
 
   if (master->authorizer.isSome()) {
     authorization::Subject subject;
@@ -2184,15 +2230,24 @@ Future<Response> Master::Http::state(
 
     executorsApprover = master->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_EXECUTOR);
+
+    flagsApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_FLAGS);
   } else {
     frameworksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
     tasksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
     executorsApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+    flagsApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
   }
 
-  return collect(frameworksApprover, tasksApprover, executorsApprover)
+  return collect(
+      frameworksApprover,
+      tasksApprover,
+      executorsApprover,
+      flagsApprover)
     .then(defer(master->self(),
         [this, request](const tuple<Owned<ObjectApprover>,
+                                    Owned<ObjectApprover>,
                                     Owned<ObjectApprover>,
                                     Owned<ObjectApprover>>& approvers)
           -> Response {
@@ -2203,7 +2258,11 @@ Future<Response> Master::Http::state(
         Owned<ObjectApprover> frameworksApprover;
         Owned<ObjectApprover> tasksApprover;
         Owned<ObjectApprover> executorsApprover;
-        tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
+        Owned<ObjectApprover> flagsApprover;
+        tie(frameworksApprover,
+            tasksApprover,
+            executorsApprover,
+            flagsApprover) = approvers;
 
         writer->field("version", MESOS_VERSION);
 
@@ -2234,31 +2293,33 @@ Future<Response> Master::Http::state(
         writer->field("activated_slaves", master->_slaves_active());
         writer->field("deactivated_slaves", master->_slaves_inactive());
 
-        if (master->flags.cluster.isSome()) {
-          writer->field("cluster", master->flags.cluster.get());
-        }
-
         if (master->leader.isSome()) {
           writer->field("leader", master->leader.get().pid());
         }
 
-        if (master->flags.log_dir.isSome()) {
-          writer->field("log_dir", master->flags.log_dir.get());
-        }
-
-        if (master->flags.external_log_file.isSome()) {
-          writer->field("external_log_file",
-             master->flags.external_log_file.get());
-        }
-
-        writer->field("flags", [this](JSON::ObjectWriter* writer) {
-          foreachvalue (const flags::Flag& flag, master->flags) {
-            Option<string> value = flag.stringify(master->flags);
-            if (value.isSome()) {
-              writer->field(flag.effective_name().value, value.get());
-            }
+        if (approveViewFlags(flagsApprover)) {
+          if (master->flags.cluster.isSome()) {
+            writer->field("cluster", master->flags.cluster.get());
           }
-        });
+
+          if (master->flags.log_dir.isSome()) {
+            writer->field("log_dir", master->flags.log_dir.get());
+          }
+
+          if (master->flags.external_log_file.isSome()) {
+            writer->field("external_log_file",
+                          master->flags.external_log_file.get());
+          }
+
+          writer->field("flags", [this](JSON::ObjectWriter* writer) {
+              foreachvalue (const flags::Flag& flag, master->flags) {
+                Option<string> value = flag.stringify(master->flags);
+                if (value.isSome()) {
+                  writer->field(flag.effective_name().value, value.get());
+                }
+              }
+            });
+        }
 
         // Model all of the slaves.
         writer->field("slaves", [this](JSON::ArrayWriter* writer) {
@@ -2312,6 +2373,10 @@ Future<Response> Master::Http::state(
             });
 
         // Model all of the orphan tasks.
+        // TODO(vinod): Need to filter these tasks based on authorization! This
+        // is currently not possible because we don't have `FrameworkInfo` for
+        // these tasks. We need to either store `FrameworkInfo` for orphan
+        // tasks or persist FrameworkInfo of all frameworks in the registry.
         writer->field("orphan_tasks", [this](JSON::ArrayWriter* writer) {
           // Find those orphan tasks.
           foreachvalue (const Slave* slave, master->slaves.registered) {
@@ -2330,6 +2395,8 @@ Future<Response> Master::Http::state(
 
         // Model all currently unregistered frameworks. This can happen
         // when a framework has yet to re-register after master failover.
+        // TODO(vinod): Need to filter these frameworks based on authorization!
+        // See the TODO above for "orphan_tasks" for further details.
         writer->field("unregistered_frameworks", [this](
             JSON::ArrayWriter* writer) {
           // Find unregistered frameworks.
@@ -2510,8 +2577,15 @@ string Master::Http::STATESUMMARY_HELP()
         "Returns 503 SERVICE_UNAVAILABLE if the leading master cannot be",
         "found.",
         "This endpoint gives a summary of the state of all tasks and",
-        "registered frameworks in the cluster as a JSON object."),
-    AUTHENTICATION(true));
+        "registered frameworks in the cluster as a JSON object.",
+        "The information shown might be filtered based on the user",
+        "accessing the endpoint."),
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "This endpoint might be filtered based on the user accessing it.",
+        "For example a user might only see the subset of frameworks",
+        "they are allowed to view.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -2855,7 +2929,12 @@ string Master::Http::TEARDOWN_HELP()
         "found.",
         "Please provide a \"frameworkId\" value designating the running",
         "framework to tear down."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "Using this endpoint to teardown frameworks requires that the",
+        "current principal is authorized to teardown frameworks created",
+        "by the principal who created the framework.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -2994,6 +3073,8 @@ string Master::Http::TASKS_HELP()
         "Returns 503 SERVICE_UNAVAILABLE if the leading master cannot be",
         "found.",
         "Lists known tasks.",
+        "The information shown might be filtered based on the user",
+        "accessing the endpoint.",
         "",
         "Query parameters:",
         "",
@@ -3003,7 +3084,12 @@ string Master::Http::TASKS_HELP()
         ">        order=(asc|desc)     Ascending or descending sort order "
         "(default is descending)."
         ""),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "This endpoint might be filtered based on the user accessing it.",
+        "For example a user might only see the subset of tasks they are",
+        "allowed to view.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -3026,63 +3112,6 @@ Future<Response> Master::Http::tasks(
   Option<string> order = request.url.query.get("order");
   string _order = order.isSome() && (order.get() == "asc") ? "asc" : "des";
 
-  return _tasks(limit, offset, _order, principal)
-    .then([request](const vector<const Task*>& tasks) -> Response {
-      auto tasksWriter = [&tasks](JSON::ObjectWriter* writer) {
-        writer->field("tasks", [&tasks](JSON::ArrayWriter* writer) {
-          foreach (const Task* task, tasks) {
-            writer->element(*task);
-          }
-        });
-      };
-
-      return OK(jsonify(tasksWriter), request.url.query.get("jsonp"));
-    });
-}
-
-
-Future<Response> Master::Http::getTasks(
-    const mesos::master::Call& call,
-    const Option<string>& principal,
-    ContentType contentType) const
-{
-  CHECK_EQ(mesos::master::Call::GET_TASKS, call.type());
-
-  // Get list options (limit and offset).
-  Result<int> result = call.get_tasks().limit();
-  CHECK_SOME(result);
-  size_t limit = result.get();
-
-  result = call.get_tasks().offset();
-  size_t offset = result.isSome() ? result.get() : 0;
-
-  Option<string> order = call.get_tasks().order();
-  string _order = order.isSome() && (order.get() == "asc") ? "asc" : "des";
-
-  return _tasks(limit, offset, _order, principal)
-    .then([contentType](const vector<const Task*>& tasks) -> Response {
-      mesos::master::Response response;
-      response.set_type(mesos::master::Response::GET_TASKS);
-
-      mesos::master::Response::GetTasks* getTasks =
-        response.mutable_get_tasks();
-
-      foreach (const Task* task, tasks) {
-        getTasks->add_tasks()->CopyFrom(*task);
-      }
-
-      return OK(serialize(contentType, evolve(response)),
-                stringify(contentType));
-    });
-}
-
-
-Future<vector<const Task*>> Master::Http::_tasks(
-    const size_t limit,
-    const size_t offset,
-    const string& order,
-    const Option<string>& principal) const
-{
   // Retrieve Approvers for authorizing frameworks and tasks.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> tasksApprover;
@@ -3106,14 +3135,11 @@ Future<vector<const Task*>> Master::Http::_tasks(
     .then(defer(master->self(),
       [=](const tuple<Owned<ObjectApprover>,
                       Owned<ObjectApprover>>& approvers)
-        -> vector<const Task*> {
+        -> Future<Response> {
       // Get approver from tuple.
       Owned<ObjectApprover> frameworksApprover;
       Owned<ObjectApprover> tasksApprover;
       tie(frameworksApprover, tasksApprover) = approvers;
-
-      // TODO(nnielsen): Currently, formatting errors in offset and/or limit
-      // will silently be ignored. This could be reported to the user instead.
 
       // Construct framework list with both active and completed frameworks.
       vector<const Framework*> frameworks;
@@ -3125,6 +3151,7 @@ Future<vector<const Task*>> Master::Http::_tasks(
 
         frameworks.push_back(framework);
       }
+
       foreach (const std::shared_ptr<Framework>& framework,
                master->frameworks.completed) {
         // Skip unauthorized frameworks.
@@ -3160,21 +3187,148 @@ Future<vector<const Task*>> Master::Http::_tasks(
       // Sort tasks by task status timestamp. Default order is descending.
       // The earliest timestamp is chosen for comparison when
       // multiple are present.
-      if (order == "asc") {
+      if (_order == "asc") {
         sort(tasks.begin(), tasks.end(), TaskComparator::ascending);
       } else {
         sort(tasks.begin(), tasks.end(), TaskComparator::descending);
       }
 
-      // Collect 'limit' number of tasks starting from 'offset'.
-      vector<const Task*> _tasks;
-      size_t end = std::min(offset + limit, tasks.size());
-      for (size_t i = offset; i < end; i++) {
-        const Task* task = tasks[i];
-        _tasks.push_back(task);
+      auto tasksWriter = [&tasks, limit, offset](JSON::ObjectWriter* writer) {
+        writer->field("tasks",
+                      [&tasks, limit, offset](JSON::ArrayWriter* writer) {
+          // Collect 'limit' number of tasks starting from 'offset'.
+          size_t end = std::min(offset + limit, tasks.size());
+          for (size_t i = offset; i < end; i++) {
+            writer->element(*tasks[i]);
+          }
+        });
+      };
+
+      return OK(jsonify(tasksWriter), request.url.query.get("jsonp"));
+  }));
+}
+
+
+Future<Response> Master::Http::getTasks(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(mesos::master::Call::GET_TASKS, call.type());
+
+  // Retrieve Approvers for authorizing frameworks and tasks.
+  Future<Owned<ObjectApprover>> frameworksApprover;
+  Future<Owned<ObjectApprover>> tasksApprover;
+  if (master->authorizer.isSome()) {
+    authorization::Subject subject;
+    if (principal.isSome()) {
+      subject.set_value(principal.get());
+    }
+
+    frameworksApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_FRAMEWORK);
+
+    tasksApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_TASK);
+  } else {
+    frameworksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+    tasksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+  }
+
+  return collect(frameworksApprover, tasksApprover)
+    .then(defer(master->self(),
+      [=](const tuple<Owned<ObjectApprover>,
+                      Owned<ObjectApprover>>& approvers)
+        -> Future<Response> {
+      // Get approver from tuple.
+      Owned<ObjectApprover> frameworksApprover;
+      Owned<ObjectApprover> tasksApprover;
+      tie(frameworksApprover, tasksApprover) = approvers;
+
+      // Construct framework list with both active and completed frameworks.
+      vector<const Framework*> frameworks;
+      foreachvalue (Framework* framework, master->frameworks.registered) {
+        // Skip unauthorized frameworks.
+        if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
+          continue;
+        }
+
+        frameworks.push_back(framework);
       }
 
-      return _tasks;
+      foreach (const std::shared_ptr<Framework>& framework,
+               master->frameworks.completed) {
+        // Skip unauthorized frameworks.
+        if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
+          continue;
+        }
+
+        frameworks.push_back(framework.get());
+      }
+
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_TASKS);
+
+      mesos::master::Response::GetTasks* getTasks =
+        response.mutable_get_tasks();
+
+      vector<const Task*> tasks;
+      foreach (const Framework* framework, frameworks) {
+        // Pending tasks.
+        foreachvalue (const TaskInfo& taskInfo, framework->pendingTasks) {
+          // Skip unauthorized tasks.
+          if (!approveViewTaskInfo(tasksApprover, taskInfo, framework->info)) {
+            continue;
+          }
+
+          const Task& task =
+            protobuf::createTask(taskInfo, TASK_STAGING, framework->id());
+
+          getTasks->add_pending_tasks()->CopyFrom(task);
+        }
+
+        // Active tasks.
+        foreachvalue (Task* task, framework->tasks) {
+          CHECK_NOTNULL(task);
+          // Skip unauthorized tasks.
+          if (!approveViewTask(tasksApprover, *task, framework->info)) {
+            continue;
+          }
+
+          getTasks->add_tasks()->CopyFrom(*task);
+        }
+
+        // Completed tasks.
+        foreach (const std::shared_ptr<Task>& task, framework->completedTasks) {
+          // Skip unauthorized tasks.
+          if (!approveViewTask(tasksApprover, *task.get(), framework->info)) {
+            continue;
+          }
+
+          getTasks->add_completed_tasks()->CopyFrom(*task);
+        }
+      }
+
+      // Orphan tasks.
+      // TODO(vinod): Need to filter these tasks based on authorization! This
+      // is currently not possible because we don't have `FrameworkInfo` for
+      // these tasks. We need to either store `FrameworkInfo` for orphan
+      // tasks or persist FrameworkInfo of all frameworks in the registry.
+      foreachvalue (const Slave* slave, master->slaves.registered) {
+        typedef hashmap<TaskID, Task*> TaskMap;
+        foreachvalue (const TaskMap& tasks, slave->tasks) {
+          foreachvalue (const Task* task, tasks) {
+            CHECK_NOTNULL(task);
+            if (!master->frameworks.registered.contains(
+                task->framework_id())) {
+              getTasks->add_orphan_tasks()->CopyFrom(*task);
+            }
+          }
+        }
+      }
+
+      return OK(serialize(contentType, evolve(response)),
+                stringify(contentType));
   }));
 }
 
@@ -3773,7 +3927,12 @@ string Master::Http::UNRESERVE_HELP()
         "",
         "Please provide \"slaveId\" and \"resources\" values designating",
         "the resources to be unreserved."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "Using this endpoint to unreserve resources requires that the",
+        "current principal is authorized to unreserve resources created",
+        "by the principal who reserved the resources.",
+        "See the authorization documentation for details."));
 }
 
 

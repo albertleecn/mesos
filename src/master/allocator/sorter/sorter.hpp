@@ -52,6 +52,10 @@ public:
 
   virtual ~Sorter() = default;
 
+  // Initialize the sorter.
+  virtual void initialize(
+      const Option<std::set<std::string>>& fairnessExcludeResourceNames) = 0;
+
   // Adds a client to allocate resources to. A client
   // may be a user or a framework.
   virtual void add(const std::string& client, double weight = 1) = 0;

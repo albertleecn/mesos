@@ -61,6 +61,13 @@ DRFSorter::DRFSorter(
   : metrics(Metrics(allocator, *this, metricsPrefix)) {}
 
 
+void DRFSorter::initialize(
+    const Option<set<string>>& _fairnessExcludeResourceNames)
+{
+  fairnessExcludeResourceNames = _fairnessExcludeResourceNames;
+}
+
+
 void DRFSorter::add(const string& name, double weight)
 {
   CHECK(!contains(name));
@@ -409,6 +416,12 @@ double DRFSorter::calculateShare(const string& name)
   // scalars.
 
   foreach (const string& scalar, total_.scalarQuantities.names()) {
+    // Filter out the resources excluded from fair sharing.
+    if (fairnessExcludeResourceNames.isSome() &&
+        fairnessExcludeResourceNames->count(scalar) > 0) {
+      continue;
+    }
+
     // We collect the scalar accumulated total value from the
     // `Resources` object.
     //

@@ -17,6 +17,8 @@
 #include "master/allocator/mesos/hierarchical.hpp"
 
 #include <algorithm>
+#include <set>
+#include <string>
 #include <vector>
 
 #include <mesos/resources.hpp>
@@ -32,6 +34,7 @@
 #include <stout/stopwatch.hpp>
 #include <stout/stringify.hpp>
 
+using std::set;
 using std::string;
 using std::vector;
 
@@ -124,12 +127,14 @@ void HierarchicalAllocatorProcess::initialize(
         void(const FrameworkID&,
              const hashmap<SlaveID, UnavailableResources>&)>&
       _inverseOfferCallback,
-    const hashmap<string, double>& _weights)
+    const hashmap<string, double>& _weights,
+    const Option<set<std::string>>& _fairnessExcludeResourceNames)
 {
   allocationInterval = _allocationInterval;
   offerCallback = _offerCallback;
   inverseOfferCallback = _inverseOfferCallback;
   weights = _weights;
+  fairnessExcludeResourceNames = _fairnessExcludeResourceNames;
   initialized = true;
   paused = false;
 
@@ -137,7 +142,9 @@ void HierarchicalAllocatorProcess::initialize(
   // non-quota'ed roles, hence a dedicated sorter for quota'ed roles is
   // necessary.
   roleSorter.reset(roleSorterFactory());
+  roleSorter->initialize(fairnessExcludeResourceNames);
   quotaRoleSorter.reset(quotaRoleSorterFactory());
+  quotaRoleSorter->initialize(fairnessExcludeResourceNames);
 
   VLOG(1) << "Initialized hierarchical allocator process";
 
@@ -224,6 +231,7 @@ void HierarchicalAllocatorProcess::addFramework(
     activeRoles[role] = 1;
     roleSorter->add(role, roleWeight(role));
     frameworkSorters[role].reset(frameworkSorterFactory());
+    frameworkSorters[role]->initialize(fairnessExcludeResourceNames);
     metrics.addRole(role);
   } else {
     activeRoles[role]++;
