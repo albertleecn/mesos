@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include <mesos/mesos.hpp>
+
 #include <mesos/v1/executor.hpp>
 #include <mesos/v1/mesos.hpp>
 
@@ -65,8 +67,10 @@
 #include <stout/os/killtree.hpp>
 
 #include "common/http.hpp"
+#include "common/protobuf_utils.hpp"
 #include "common/status_utils.hpp"
 
+#include "internal/devolve.hpp"
 #include "internal/evolve.hpp"
 
 #ifdef __linux__
@@ -74,6 +78,8 @@
 #endif
 
 #include "executor/v0_v1executor.hpp"
+
+#include "health-check/health_checker.hpp"
 
 #include "launcher/executor.hpp"
 
@@ -103,8 +109,12 @@ using process::Subprocess;
 using process::Time;
 using process::Timer;
 
+using mesos::internal::devolve;
 using mesos::internal::evolve;
+using mesos::internal::HealthChecker;
 using mesos::internal::TaskHealthStatus;
+
+using mesos::internal::protobuf::frameworkHasCapability;
 
 using mesos::v1::ExecutorID;
 using mesos::v1::FrameworkID;
@@ -139,7 +149,6 @@ public:
       killedByHealthCheck(false),
       terminated(false),
       pid(-1),
-      healthPid(-1),
       shutdownGracePeriod(_shutdownGracePeriod),
       frameworkInfo(None()),
       taskId(None()),
@@ -416,7 +425,26 @@ protected:
     cout << "Forked command at " << pid << endl;
 
     if (task->has_health_check()) {
-      launchHealthCheck(task.get());
+      Try<Owned<HealthChecker>> _checker = HealthChecker::create(
+          devolve(task->health_check()),
+          self(),
+          devolve(task->task_id()));
+
+      if (_checker.isError()) {
+        // TODO(gilbert): Consider ABORT and return a TASK_FAILED here.
+        cerr << "Failed to create health checker: "
+             << _checker.error() << endl;
+      } else {
+        checker = _checker.get();
+
+        checker->healthCheck()
+          .onAny([](const Future<Nothing>& future) {
+            // Only possible to be a failure.
+            if (future.isFailed()) {
+              cerr << "Healh check failed" << endl;
+            }
+          });
+      }
     }
 
     // Monitor this process.
@@ -539,12 +567,10 @@ private:
       CHECK_SOME(taskId);
       CHECK(taskId.get() == _taskId);
 
-      foreach (const FrameworkInfo::Capability& c,
-               frameworkInfo->capabilities()) {
-        if (c.type() == FrameworkInfo::Capability::TASK_KILLING_STATE) {
-          update(taskId.get(), TASK_KILLING);
-          break;
-        }
+      if (frameworkHasCapability(
+              devolve(frameworkInfo.get()),
+              mesos::FrameworkInfo::Capability::TASK_KILLING_STATE)) {
+        update(taskId.get(), TASK_KILLING);
       }
 
       // Now perform signal escalation to begin killing the task.
@@ -575,17 +601,6 @@ private:
 
       killGracePeriodStart = Clock::now();
       killed = true;
-    }
-
-    // Cleanup health check process.
-    //
-    // TODO(bmahler): Consider doing this after the task has been
-    // reaped, since a framework may be interested in health
-    // information while the task is being killed (consider a
-    // task that takes 30 minutes to be cleanly killed).
-    if (healthPid != -1) {
-      os::killtree(healthPid, SIGKILL);
-      healthPid = -1;
     }
   }
 
@@ -672,45 +687,6 @@ private:
     }
   }
 
-  void launchHealthCheck(const TaskInfo& task)
-  {
-    CHECK(task.has_health_check());
-
-    JSON::Object json = JSON::protobuf(task.health_check());
-
-    // Launch the subprocess using 'exec' style so that quotes can
-    // be properly handled.
-    vector<string> argv(4);
-    argv[0] = "mesos-health-check";
-    argv[1] = "--executor=" + stringify(self());
-    argv[2] = "--health_check_json=" + stringify(json);
-    argv[3] = "--task_id=" + task.task_id().value();
-
-    cout << "Launching health check process: "
-         << path::join(healthCheckDir, "mesos-health-check")
-         << " " << argv[1] << " " << argv[2] << " " << argv[3] << endl;
-
-    Try<Subprocess> healthProcess =
-      process::subprocess(
-        path::join(healthCheckDir, "mesos-health-check"),
-        argv,
-        // Intentionally not sending STDIN to avoid health check
-        // commands that expect STDIN input to block.
-        Subprocess::PATH("/dev/null"),
-        Subprocess::FD(STDOUT_FILENO),
-        Subprocess::FD(STDERR_FILENO));
-
-    if (healthProcess.isError()) {
-      cerr << "Unable to launch health process: " << healthProcess.error();
-      return;
-    }
-
-    healthPid = healthProcess.get().pid();
-
-    cout << "Health check process launched at pid: "
-         << stringify(healthPid) << endl;
-  }
-
   void update(
       const TaskID& taskID,
       const TaskState& state,
@@ -770,7 +746,6 @@ private:
 #ifdef __WINDOWS__
   HANDLE processHandle;
 #endif
-  pid_t healthPid;
   Duration shutdownGracePeriod;
   Option<KillPolicy> killPolicy;
   Option<FrameworkInfo> frameworkInfo;
@@ -786,6 +761,7 @@ private:
   Owned<MesosBase> mesos;
   LinkedHashMap<UUID, Call::Update> updates; // Unacknowledged updates.
   Option<TaskInfo> task; // Unacknowledged task.
+  Owned<HealthChecker> checker;
 };
 
 } // namespace internal {
