@@ -154,6 +154,7 @@ set(LINUX_SRC
   ${LINUX_SRC}
   linux/cgroups.cpp
   linux/fs.cpp
+  linux/ldcache.cpp
   linux/perf.cpp
   linux/systemd.cpp
   slave/containerizer/mesos/linux_launcher.cpp
@@ -170,6 +171,7 @@ set(LINUX_SRC
   slave/containerizer/mesos/isolators/gpu/allocator.cpp
   slave/containerizer/mesos/isolators/gpu/isolator.cpp
   slave/containerizer/mesos/isolators/gpu/nvml.cpp
+  slave/containerizer/mesos/isolators/gpu/volume.cpp
   slave/containerizer/mesos/isolators/namespaces/pid.cpp
   slave/containerizer/mesos/isolators/network/cni/cni.cpp
   slave/containerizer/mesos/provisioner/backends/aufs.cpp

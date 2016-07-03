@@ -33,6 +33,7 @@ ZOOKEEPER_JAR = 3rdparty/zookeeper-$(ZOOKEEPER_VERSION)/zookeeper-$(ZOOKEEPER_VE
 LIBPROCESS = 3rdparty/libprocess
 STOUT = 3rdparty/stout
 BOOST = 3rdparty/boost-$(BOOST_VERSION)
+ELFIO = 3rdparty/elfio-$(ELFIO_VERSION)
 GLOG = 3rdparty/glog-$(GLOG_VERSION)
 GMOCK = 3rdparty/gmock-$(GMOCK_VERSION)
 GTEST = $(GMOCK)/gtest
@@ -128,6 +129,10 @@ if WITH_BUNDLED_BOOST
 # path. This disables compiler warnings inside Boost headers since we
 # can't easily fix them. See MESOS-3799.
 MESOS_CPPFLAGS += -isystem ../$(BOOST)
+endif
+
+if WITH_BUNDLED_ELFIO
+MESOS_CPPFLAGS += -I../$(ELFIO)
 endif
 
 if WITH_BUNDLED_GLOG
@@ -1050,6 +1055,7 @@ MESOS_LINUX_FILES =							\
   slave/containerizer/mesos/isolators/gpu/allocator.cpp			\
   slave/containerizer/mesos/isolators/gpu/isolator.cpp			\
   slave/containerizer/mesos/isolators/gpu/nvml.cpp			\
+  slave/containerizer/mesos/isolators/gpu/volume.cpp			\
   slave/containerizer/mesos/isolators/namespaces/pid.cpp		\
   slave/containerizer/mesos/isolators/network/cni/cni.cpp		\
   slave/containerizer/mesos/provisioner/backends/aufs.cpp		\
@@ -1080,6 +1086,7 @@ MESOS_LINUX_FILES +=							\
   slave/containerizer/mesos/isolators/gpu/isolator.hpp			\
   slave/containerizer/mesos/isolators/gpu/nvidia.hpp			\
   slave/containerizer/mesos/isolators/gpu/nvml.hpp			\
+  slave/containerizer/mesos/isolators/gpu/volume.hpp			\
   slave/containerizer/mesos/isolators/namespaces/pid.hpp		\
   slave/containerizer/mesos/isolators/network/cni/cni.hpp		\
   slave/containerizer/mesos/provisioner/backends/aufs.hpp		\
@@ -2155,6 +2162,7 @@ mesos_tests_DEPENDENCIES =					\
 
 if OS_LINUX
 mesos_tests_SOURCES +=						\
+  tests/ldcache_tests.cpp					\
   tests/containerizer/cgroups_isolator_tests.cpp		\
   tests/containerizer/cgroups_tests.cpp				\
   tests/containerizer/cni_isolator_tests.cpp			\
