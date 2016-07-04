@@ -134,7 +134,7 @@ class CommandExecutor: public ProtobufProcess<CommandExecutor>
 {
 public:
   CommandExecutor(
-      const string& _healthCheckDir,
+      const string& _launcherDir,
       const Option<string>& _rootfs,
       const Option<string>& _sandboxDirectory,
       const Option<string>& _workingDirectory,
@@ -152,7 +152,7 @@ public:
       shutdownGracePeriod(_shutdownGracePeriod),
       frameworkInfo(None()),
       taskId(None()),
-      healthCheckDir(_healthCheckDir),
+      launcherDir(_launcherDir),
       rootfs(_rootfs),
       sandboxDirectory(_sandboxDirectory),
       workingDirectory(_workingDirectory),
@@ -390,18 +390,11 @@ protected:
 
     cout << "Starting task " << task->task_id() << endl;
 
-    // Prepare the argv before fork as it's not async signal safe.
-    char **argv = new char*[command.arguments().size() + 1];
-    for (int i = 0; i < command.arguments().size(); i++) {
-      argv[i] = (char*) command.arguments(i).c_str();
-    }
-    argv[command.arguments().size()] = nullptr;
-
 #ifndef __WINDOWS__
     pid = launchTaskPosix(
         command,
+        launcherDir,
         user,
-        argv,
         rootfs,
         sandboxDirectory,
         workingDirectory);
@@ -411,7 +404,6 @@ protected:
     // open the reap function will work.
     PROCESS_INFORMATION processInformation = launchTaskWindows(
         command,
-        argv,
         rootfs);
 
     pid = processInformation.dwProcessId;
@@ -419,8 +411,6 @@ protected:
     CloseHandle(processInformation.hThread);
     processHandle = processInformation.hProcess;
 #endif
-
-    delete[] argv;
 
     cout << "Forked command at " << pid << endl;
 
@@ -750,7 +740,7 @@ private:
   Option<KillPolicy> killPolicy;
   Option<FrameworkInfo> frameworkInfo;
   Option<TaskID> taskId;
-  string healthCheckDir;
+  string launcherDir;
   Option<string> rootfs;
   Option<string> sandboxDirectory;
   Option<string> workingDirectory;
@@ -798,6 +788,11 @@ public:
         "If specified, this is the overrided command for launching the\n"
         "task (instead of the command from TaskInfo).");
 
+    add(&launcher_dir,
+        "launcher_dir",
+        "Directory path of Mesos binaries.",
+        PKGLIBEXECDIR);
+
     // TODO(nnielsen): Add 'prefix' option to enable replacing
     // 'sh -c' with user specified wrapper.
   }
@@ -807,6 +802,7 @@ public:
   Option<string> working_directory;
   Option<string> user;
   Option<string> task_command;
+  string launcher_dir;
 };
 
 
@@ -837,12 +833,6 @@ int main(int argc, char** argv)
   foreach (const flags::Warning& warning, load->warnings) {
     LOG(WARNING) << warning.message;
   }
-
-  const Option<string> envPath = os::getenv("MESOS_LAUNCHER_DIR");
-
-  string path = envPath.isSome()
-    ? envPath.get()
-    : os::realpath(Path(argv[0]).dirname()).get();
 
   Option<string> value = os::getenv("MESOS_FRAMEWORK_ID");
   if (value.isNone()) {
@@ -879,7 +869,7 @@ int main(int argc, char** argv)
 
   Owned<mesos::v1::internal::CommandExecutor> executor(
       new mesos::v1::internal::CommandExecutor(
-          path,
+          flags.launcher_dir,
           flags.rootfs,
           flags.sandbox_directory,
           flags.working_directory,

@@ -35,7 +35,6 @@ namespace internal {
 
 PROCESS_INFORMATION launchTaskWindows(
     const CommandInfo& command,
-    char** argv,
     Option<string>& rootfs)
 {
   PROCESS_INFORMATION processInfo;
@@ -67,7 +66,10 @@ PROCESS_INFORMATION launchTaskWindows(
   } else {
     // Not a shell command, execute as-is.
     executable = command.value();
-    commandLine = os::stringify_args(argv);
+
+    // TODO(jieyu): Consider allowing os::stringify_args to take
+    // `command.arguments()` directly.
+    commandLine = os::stringify_args(os::raw::Argv(command.arguments()));
   }
 
   cout << commandLine << endl;

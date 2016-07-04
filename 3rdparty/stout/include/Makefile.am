@@ -84,7 +84,7 @@ nobase_include_HEADERS =			\
   stout/os/open.hpp				\
   stout/os/os.hpp				\
   stout/os/osx.hpp				\
-  stout/os/pagesize.hpp			\
+  stout/os/pagesize.hpp				\
   stout/os/permissions.hpp			\
   stout/os/process.hpp				\
   stout/os/pstree.hpp				\
@@ -129,6 +129,7 @@ nobase_include_HEADERS =			\
   stout/os/posix/stat.hpp			\
   stout/os/posix/su.hpp				\
   stout/os/posix/write.hpp			\
+  stout/os/raw/argv.hpp				\
   stout/os/raw/environment.hpp			\
   stout/os/windows/bootid.hpp			\
   stout/os/windows/chroot.hpp			\
@@ -142,7 +143,7 @@ nobase_include_HEADERS =			\
   stout/os/windows/kill.hpp			\
   stout/os/windows/killtree.hpp			\
   stout/os/windows/mkdtemp.hpp			\
-  stout/os/windows/pagesize.hpp		\
+  stout/os/windows/pagesize.hpp			\
   stout/os/windows/read.hpp			\
   stout/os/windows/rename.hpp			\
   stout/os/windows/rm.hpp			\

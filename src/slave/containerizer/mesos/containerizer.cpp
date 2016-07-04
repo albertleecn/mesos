@@ -105,6 +105,7 @@
 #include "slave/containerizer/mesos/isolators/network/port_mapping.hpp"
 #endif
 
+#include "slave/containerizer/mesos/constants.hpp"
 #include "slave/containerizer/mesos/containerizer.hpp"
 #include "slave/containerizer/mesos/launch.hpp"
 #include "slave/containerizer/mesos/provisioner/provisioner.hpp"
@@ -135,11 +136,6 @@ using state::FrameworkState;
 using state::ExecutorState;
 using state::RunState;
 
-#ifndef __WINDOWS__
-const char MESOS_CONTAINERIZER[] = "mesos-containerizer";
-#else
-const char MESOS_CONTAINERIZER[] = "mesos-containerizer.exe";
-#endif // __WINDOWS__
 
 Try<MesosContainerizer*> MesosContainerizer::create(
     const Flags& flags,
@@ -1167,7 +1163,7 @@ Future<bool> MesosContainerizerProcess::__launch(
     environment[variable.name()] = variable.value();
   }
 
-  JSON::Array commandArray;
+  JSON::Array preExecCommands;
 
   // TODO(jieyu): We should use Option here. If no namespace is
   // required, we should pass None() to 'launcher->fork'.
@@ -1180,8 +1176,8 @@ Future<bool> MesosContainerizerProcess::__launch(
 
     // Populate the list of additional commands to be run inside the container
     // context.
-    foreach (const CommandInfo& command, launchInfo->commands()) {
-      commandArray.values.emplace_back(JSON::protobuf(command));
+    foreach (const CommandInfo& command, launchInfo->pre_exec_commands()) {
+      preExecCommands.values.emplace_back(JSON::protobuf(command));
     }
 
     // Process additional environment variables returned by isolators.
@@ -1196,10 +1192,6 @@ Future<bool> MesosContainerizerProcess::__launch(
       namespaces |= launchInfo->namespaces();
     }
   }
-
-  // TODO(jieyu): Use JSON::Array once we have generic parse support.
-  JSON::Object commands;
-  commands.values["commands"] = commandArray;
 
   if (executorLaunchCommand.isNone()) {
     executorLaunchCommand = executorInfo.command();
@@ -1229,20 +1221,22 @@ Future<bool> MesosContainerizerProcess::__launch(
 
     launchFlags.command = JSON::protobuf(executorLaunchCommand.get());
 
-    launchFlags.sandbox = executorRootfs.isSome()
-      ? flags.sandbox_directory
-      : directory;
+    if (executorRootfs.isNone()) {
+      // NOTE: If the executor shares the host filesystem, we should
+      // not allow them to 'cd' into an arbitrary directory because
+      // that'll create security issues.
+      if (workingDirectory.isSome()) {
+        LOG(WARNING) << "Ignore working directory '" << workingDirectory.get()
+                     << "' specified in container launch info for container "
+                     << containerId << " since the executor is using the "
+                     << "host filesystem";
+      }
 
-    // NOTE: If the executor shares the host filesystem, we should not
-    // allow them to 'cd' into an arbitrary directory because that'll
-    // create security issues.
-    if (executorRootfs.isNone() && workingDirectory.isSome()) {
-      LOG(WARNING) << "Ignore working directory '" << workingDirectory.get()
-                   << "' specified in container launch info for container "
-                   << containerId << " since the executor is using the "
-                   << "host filesystem";
+      launchFlags.working_directory = directory;
     } else {
-      launchFlags.working_directory = workingDirectory;
+      launchFlags.working_directory = workingDirectory.isSome()
+        ? workingDirectory
+        : flags.sandbox_directory;
     }
 
 #ifdef __WINDOWS__
@@ -1271,7 +1265,7 @@ Future<bool> MesosContainerizerProcess::__launch(
     launchFlags.pipe_read = os::fd_to_handle(pipes[0]);
     launchFlags.pipe_write = os::fd_to_handle(pipes[1]);
 #endif // __WINDOWS
-    launchFlags.commands = commands;
+    launchFlags.pre_exec_commands = preExecCommands;
 
     VLOG(1) << "Launching '" << MESOS_CONTAINERIZER << "' with flags '"
             << launchFlags << "'";

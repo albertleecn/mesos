@@ -14,51 +14,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __MESOS_CONTAINERIZER_LAUNCH_HPP__
-#define __MESOS_CONTAINERIZER_LAUNCH_HPP__
-
-#include <stout/json.hpp>
-#include <stout/option.hpp>
-#include <stout/subcommand.hpp>
+#ifndef __MESOS_CONTAINERIZER_CONSTANTS_HPP__
+#define __MESOS_CONTAINERIZER_CONSTANTS_HPP__
 
 namespace mesos {
 namespace internal {
 namespace slave {
 
-class MesosContainerizerLaunch : public Subcommand
-{
-public:
-  static const std::string NAME;
-
-  struct Flags : public flags::FlagsBase
-  {
-    Flags();
-
-    Option<JSON::Object> command;
-    Option<std::string> working_directory;
 #ifndef __WINDOWS__
-    Option<std::string> rootfs;
-    Option<std::string> user;
+constexpr char MESOS_CONTAINERIZER[] = "mesos-containerizer";
+#else
+constexpr char MESOS_CONTAINERIZER[] = "mesos-containerizer.exe";
 #endif // __WINDOWS__
-    Option<int> pipe_read;
-    Option<int> pipe_write;
-    Option<JSON::Array> pre_exec_commands;
-#ifdef __linux__
-    bool unshare_namespace_mnt;
-#endif // __linux__
-  };
-
-  MesosContainerizerLaunch() : Subcommand(NAME) {}
-
-  Flags flags;
-
-protected:
-  virtual int execute();
-  virtual flags::FlagsBase* getFlags() { return &flags; }
-};
 
 } // namespace slave {
 } // namespace internal {
 } // namespace mesos {
 
-#endif // __MESOS_CONTAINERIZER_LAUNCH_HPP__
+#endif  // __MESOS_CONTAINERIZER_CONSTANTS_HPP__
