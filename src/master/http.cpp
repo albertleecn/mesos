@@ -14,6 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <iomanip>
 #include <map>
 #include <memory>
@@ -114,6 +115,7 @@ using process::http::URL;
 
 using process::metrics::internal::MetricsProcess;
 
+using std::copy_if;
 using std::list;
 using std::map;
 using std::set;
@@ -398,7 +400,13 @@ string Master::Http::API_HELP()
         "current master is not the leader.",
         "Returns 503 SERVICE_UNAVAILABLE if the leading master cannot be",
         "found."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "The information returned by this endpoint for certain calls",
+        "might be filtered based on the user accessing it.",
+        "For example a user might only see the subset of frameworks,",
+        "tasks, and executors they are allowed to view.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -613,7 +621,11 @@ string Master::Http::SCHEDULER_HELP()
         "current master is not the leader.",
         "Returns 503 SERVICE_UNAVAILABLE if the leading master cannot be",
         "found."),
-    AUTHENTICATION(true));
+    AUTHENTICATION(true),
+    AUTHORIZATION(
+        "The returned frameworks information might be filtered based on the",
+        "users authorization.",
+        "See the authorization documentation for details."));
 }
 
 
@@ -2207,8 +2219,6 @@ Future<Response> Master::Http::weights(
     return redirect(request);
   }
 
-  // TODO(Yongqiao Wang): `/roles` endpoint also shows the weights information,
-  // consider erasing the duplicated information later.
   if (request.method == "GET") {
     return weightsHandler.get(request, principal);
   }
@@ -2906,65 +2916,109 @@ string Master::Http::ROLES_HELP()
 }
 
 
+Future<vector<string>> Master::Http::_roles(
+        const Option<std::string>& principal) const
+{
+  // Retrieve `ObjectApprover`s for authorizing roles.
+  Future<Owned<ObjectApprover>> rolesApprover;
+
+  if (master->authorizer.isSome()) {
+    authorization::Subject subject;
+    if (principal.isSome()) {
+      subject.set_value(principal.get());
+    }
+
+    rolesApprover = master->authorizer.get()->getObjectApprover(
+        subject, authorization::VIEW_ROLE);
+
+  } else {
+    rolesApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
+  }
+
+  return rolesApprover
+    .then(defer(master->self(),
+        [this](const Owned<ObjectApprover>& rolesApprover)
+          -> vector<string> {
+      JSON::Object object;
+
+      // Compute the role names to return results for. When an explicit
+      // role whitelist has been configured, we use that list of names.
+      // When using implicit roles, the right behavior is a bit more
+      // subtle. There are no constraints on possible role names, so we
+      // instead list all the "interesting" roles: the default role ("*"),
+      // all roles with one or more registered frameworks, and all roles
+      // with a non-default weight or quota.
+      //
+      // NOTE: we use a `std::set` to store the role names to ensure a
+      // deterministic output order.
+      set<string> roleList;
+      if (master->roleWhitelist.isSome()) {
+        const hashset<string>& whitelist = master->roleWhitelist.get();
+        roleList.insert(whitelist.begin(), whitelist.end());
+      } else {
+        roleList.insert("*"); // Default role.
+        roleList.insert(
+            master->activeRoles.keys().begin(),
+            master->activeRoles.keys().end());
+        roleList.insert(
+            master->weights.keys().begin(),
+            master->weights.keys().end());
+        roleList.insert(
+            master->quotas.keys().begin(),
+            master->quotas.keys().end());
+      }
+
+      vector<string> filteredRoleList;
+      filteredRoleList.reserve(roleList.size());
+
+      foreach (const string& role, roleList) {
+        if (approveViewRole(rolesApprover, role)) {
+          filteredRoleList.push_back(role);
+        }
+      }
+
+      return filteredRoleList;
+    }));
+}
+
+
 Future<Response> Master::Http::roles(
     const Request& request,
-    const Option<string>& /*principal*/) const
+    const Option<string>& principal) const
 {
   // When current master is not the leader, redirect to the leading master.
   if (!master->elected()) {
     return redirect(request);
   }
 
-  JSON::Object object;
+  return _roles(principal)
+    .then(defer(master->self(),
+        [this, request](const vector<string>& filteredRoles)
+          -> Response {
+      JSON::Object object;
 
-  // Compute the role names to return results for. When an explicit
-  // role whitelist has been configured, we use that list of names.
-  // When using implicit roles, the right behavior is a bit more
-  // subtle. There are no constraints on possible role names, so we
-  // instead list all the "interesting" roles: the default role ("*"),
-  // all roles with one or more registered frameworks, and all roles
-  // with a non-default weight or quota.
-  //
-  // NOTE: we use a `std::set` to store the role names to ensure a
-  // deterministic output order.
-  set<string> roleList;
-  if (master->roleWhitelist.isSome()) {
-    const hashset<string>& whitelist = master->roleWhitelist.get();
-    roleList.insert(whitelist.begin(), whitelist.end());
-  } else {
-    roleList.insert("*"); // Default role.
-    roleList.insert(
-        master->activeRoles.keys().begin(),
-        master->activeRoles.keys().end());
-    roleList.insert(
-        master->weights.keys().begin(),
-        master->weights.keys().end());
-    roleList.insert(
-        master->quotas.keys().begin(),
-        master->quotas.keys().end());
-  }
+      {
+        JSON::Array array;
 
-  {
-    JSON::Array array;
+        foreach (const string& name, filteredRoles) {
+          Option<double> weight = None();
+          if (master->weights.contains(name)) {
+            weight = master->weights[name];
+          }
 
-    foreach (const string& name, roleList) {
-      Option<double> weight = None();
-      if (master->weights.contains(name)) {
-        weight = master->weights[name];
+          Option<Role*> role = None();
+          if (master->activeRoles.contains(name)) {
+            role = master->activeRoles[name];
+          }
+
+          array.values.push_back(model(name, weight, role));
+        }
+
+        object.values["roles"] = std::move(array);
       }
 
-      Option<Role*> role = None();
-      if (master->activeRoles.contains(name)) {
-        role = master->activeRoles[name];
-      }
-
-      array.values.push_back(model(name, weight, role));
-    }
-
-    object.values["roles"] = std::move(array);
-  }
-
-  return OK(object, request.url.query.get("jsonp"));
+      return OK(object, request.url.query.get("jsonp"));
+    }));
 }
 
 
@@ -2979,54 +3033,43 @@ Future<Response> Master::Http::getRoles(
 {
   CHECK_EQ(mesos::master::Call::GET_ROLES, call.type());
 
-  mesos::master::Response response;
-  response.set_type(mesos::master::Response::GET_ROLES);
+  return _roles(principal)
+    .then(defer(master->self(),
+        [this, contentType](const vector<string>& filteredRoles)
+          -> Response {
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_ROLES);
 
-  mesos::master::Response::GetRoles* getRoles = response.mutable_get_roles();
+      mesos::master::Response::GetRoles* getRoles =
+        response.mutable_get_roles();
 
-  set<string> roleList;
-  if (master->roleWhitelist.isSome()) {
-    const hashset<string>& whitelist = master->roleWhitelist.get();
-    roleList.insert(whitelist.begin(), whitelist.end());
-  } else {
-    roleList.insert("*"); // Default role.
-    roleList.insert(
-        master->activeRoles.keys().begin(),
-        master->activeRoles.keys().end());
-    roleList.insert(
-        master->weights.keys().begin(),
-        master->weights.keys().end());
-    roleList.insert(
-        master->quotas.keys().begin(),
-        master->quotas.keys().end());
-  }
+      foreach (const string& name, filteredRoles) {
+           mesos::Role role;
 
-  foreach (const string& name, roleList) {
-    mesos::Role role;
+        if (master->weights.contains(name)) {
+          role.set_weight(master->weights[name]);
+        } else {
+          role.set_weight(1.0);
+        }
 
-    if (master->weights.contains(name)) {
-      role.set_weight(master->weights[name]);
-    } else {
-      role.set_weight(1.0);
-    }
+        if (master->activeRoles.contains(name)) {
+          Role* role_ = master->activeRoles[name];
 
-    if (master->activeRoles.contains(name)) {
-      Role* role_ = master->activeRoles[name];
+          role.mutable_resources()->CopyFrom(role_->resources());
 
-      role.mutable_resources()->CopyFrom(role_->resources());
+          foreachkey (const FrameworkID& frameworkId, role_->frameworks) {
+            role.add_frameworks()->CopyFrom(frameworkId);
+          }
+        }
 
-      foreachkey (const FrameworkID& frameworkId, role_->frameworks) {
-        role.add_frameworks()->CopyFrom(frameworkId);
+        role.set_name(name);
+
+        getRoles->add_roles()->CopyFrom(role);
       }
-    }
 
-    role.set_name(name);
-
-    getRoles->add_roles()->CopyFrom(role);
-  }
-
-  return OK(serialize(contentType, evolve(response)),
-            stringify(contentType));
+      return OK(serialize(contentType, evolve(response)),
+                stringify(contentType));
+    }));
 }
 
 
