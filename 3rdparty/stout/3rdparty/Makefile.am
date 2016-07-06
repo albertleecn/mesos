@@ -32,10 +32,7 @@ include ../../versions.am
 BOOST = boost-$(BOOST_VERSION)
 GLOG = glog-$(GLOG_VERSION)
 GMOCK = gmock-$(GMOCK_VERSION)
-GPERFTOOLS = gperftools-$(GPERFTOOLS_VERSION)
 GTEST = $(GMOCK)/gtest
-HTTP_PARSER = http-parser-$(HTTP_PARSER_VERSION)
-LIBEV = libev-$(LIBEV_VERSION)
 PROTOBUF = protobuf-$(PROTOBUF_VERSION)
 PICOJSON = picojson-$(PICOJSON_VERSION)
 
@@ -43,9 +40,6 @@ EXTRA_DIST =		\
   $(BOOST).tar.gz	\
   $(GLOG).tar.gz	\
   $(GMOCK).tar.gz	\
-  $(GPERFTOOLS).tar.gz	\
-  $(HTTP_PARSER).tar.gz	\
-  $(LIBEV).tar.gz	\
   $(PROTOBUF).tar.gz	\
   $(PICOJSON).tar.gz
 
@@ -53,14 +47,6 @@ EXTRA_DIST =		\
 # compiling with clang (and C++11); see MESOS-860, MESOS-966.
 EXTRA_DIST +=		\
   $(GLOG).patch
-
-# We patch http-parser to avoid a name collision with our `flags` namespace.
-EXTRA_DIST +=		\
-  $(HTTP_PARSER).patch
-
-# We patch libev to keep it from reaping child processes.
-EXTRA_DIST +=		\
-  $(LIBEV).patch
 
 # We include an upstream patch for protobuf in order to avoid
 # signed/unsigned comparisons.
@@ -71,9 +57,6 @@ CLEAN_EXTRACTED =	\
   $(BOOST)		\
   $(GLOG)		\
   $(GMOCK)		\
-  $(GPERFTOOLS)		\
-  $(HTTP_PARSER)	\
-  $(LIBEV)		\
   $(PICOJSON)		\
   $(PROTOBUF)
 
@@ -113,49 +96,9 @@ $(GLOG)-build-stamp: $(GLOG)-stamp
 ALL_LOCAL += $(LIB_GLOG)
 endif
 
-if HAS_GPERFTOOLS
-LIB_GPERFTOOLS = $(GPERFTOOLS)/libprofiler.la
-
-$(LIB_GPERFTOOLS): $(GPERFTOOLS)-build-stamp
-
-$(GPERFTOOLS)-build-stamp: $(GPERFTOOLS)-stamp
-	cd $(GPERFTOOLS) && ./configure  $(CONFIGURE_ARGS) && \
-	  $(MAKE) $(AM_MAKEFLAGS)
-	touch $@
-
-ALL_LOCAL += $(LIB_GPERFTOOLS)
-endif
-
-
-if WITH_BUNDLED_HTTP_PARSER
-# Convenience library for nodejs/http-parser.
-noinst_LTLIBRARIES = libry_http_parser.la
-nodist_libry_http_parser_la_SOURCES = $(HTTP_PARSER)/http_parser.c
-libry_http_parser_la_CPPFLAGS = -I$(HTTP_PARSER) -DHTTP_PARSER_STRICT=0
-
-BUILT_SOURCES += $(nodist_libry_http_parser_la_SOURCES)
-
-$(HTTP_PARSER)/http_parser.c: $(HTTP_PARSER)-stamp
-$(HTTP_PARSER)-build-stamp: libry_http_parser.la
-	touch $@
-
-ALL_LOCAL += $(HTTP_PARSER)-build-stamp
-endif
-
-
-if WITH_BUNDLED_LIBEV
-$(LIBEV)/libev.la: $(LIBEV)-build-stamp
-$(LIBEV)-build-stamp: $(LIBEV)-stamp
-	cd $(LIBEV) && ./configure $(CONFIGURE_ARGS) && \
-          $(MAKE) $(AM_MAKEFLAGS)
-	touch $@
-ALL_LOCAL += $(LIBEV)-build-stamp
-endif
-
 if WITH_BUNDLED_PICOJSON
 ALL_LOCAL += $(PICOJSON)-stamp
 endif
-
 
 if WITH_BUNDLED_PROTOBUF
 $(PROTOBUF)/src/protoc $(PROTOBUF)/src/libprotobuf.la: $(PROTOBUF)-build-stamp

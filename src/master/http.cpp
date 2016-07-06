@@ -523,7 +523,7 @@ Future<Response> Master::Http::api(
       return NotImplemented();
 
     case mesos::master::Call::GET_STATE:
-      return NotImplemented();
+      return getState(call, principal, acceptType);
 
     case mesos::master::Call::GET_STATE_SUMMARY:
       return NotImplemented();
@@ -589,18 +589,33 @@ Future<Response> Master::Http::api(
       return quotaHandler.remove(call, principal);
 
     case mesos::master::Call::SUBSCRIBE: {
-      Pipe pipe;
-      OK ok;
+      return _getState(principal)
+        .then(defer(master->self(),
+            [this, acceptType]
+            (const mesos::master::Response::GetState& getState)
+              -> Future<Response> {
+          // TODO(zhitao): There is a possible race condition here: if an action
+          // like `taskUpdate()` is queued between `_getState()` and this
+          // continuation, neither the event will be sent to the subscriber
+          // (because the connection is not in subscribers yet), nor
+          // the effect of the change would be captured in the snapshot.
+          Pipe pipe;
+          OK ok;
 
-      ok.headers["Content-Type"] = stringify(acceptType);
-      ok.type = Response::PIPE;
-      ok.reader = pipe.reader();
+          ok.headers["Content-Type"] = stringify(acceptType);
+          ok.type = Response::PIPE;
+          ok.reader = pipe.reader();
 
-      HttpConnection http {pipe.writer(), acceptType, UUID::random()};
+          HttpConnection http {pipe.writer(), acceptType, UUID::random()};
+          master->subscribe(http);
 
-      master->subscribe(http);
+          mesos::master::Event event;
+          event.set_type(mesos::master::Event::SUBSCRIBED);
+          event.mutable_subscribed()->mutable_get_state()->CopyFrom(getState);
+          http.send<mesos::master::Event, v1::master::Event>(event);
 
-      return ok;
+          return ok;
+        }));
     }
   }
 
@@ -1346,6 +1361,22 @@ Future<Response> Master::Http::getFrameworks(
 {
   CHECK_EQ(mesos::master::Call::GET_FRAMEWORKS, call.type());
 
+  return _getFrameworks(principal)
+    .then([contentType](
+        const mesos::master::Response::GetFrameworks& getFrameworks)
+          -> Future<Response> {
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_FRAMEWORKS);
+      response.mutable_get_frameworks()->CopyFrom(getFrameworks);
+      return OK(serialize(contentType, evolve(response)),
+                stringify(contentType));
+    });
+}
+
+
+Future<mesos::master::Response::GetFrameworks> Master::Http::_getFrameworks(
+    const Option<string>& principal) const
+{
   // Retrieve `ObjectApprover`s for authorizing frameworks.
   Future<Owned<ObjectApprover>> frameworksApprover;
 
@@ -1364,9 +1395,9 @@ Future<Response> Master::Http::getFrameworks(
 
   return frameworksApprover
     .then(defer(master->self(),
-        [=](const Owned<ObjectApprover>& frameworksApprover) -> Response {
-      mesos::master::Response response;
-      response.set_type(mesos::master::Response::GET_FRAMEWORKS);
+        [=](const Owned<ObjectApprover>& frameworksApprover)
+          -> Future<mesos::master::Response::GetFrameworks> {
+      mesos::master::Response::GetFrameworks getFrameworks;
 
       foreachvalue (const Framework* framework,
                     master->frameworks.registered) {
@@ -1375,8 +1406,7 @@ Future<Response> Master::Http::getFrameworks(
           continue;
         }
 
-        response.mutable_get_frameworks()->add_frameworks()
-            ->CopyFrom(model(*framework));
+        getFrameworks.add_frameworks()->CopyFrom(model(*framework));
       }
 
       foreach (const std::shared_ptr<Framework>& framework,
@@ -1386,21 +1416,19 @@ Future<Response> Master::Http::getFrameworks(
           continue;
         }
 
-        response.mutable_get_frameworks()->add_completed_frameworks()
-            ->CopyFrom(model(*framework));
+        getFrameworks.add_completed_frameworks()->CopyFrom(model(*framework));
       }
 
       foreachvalue (const Slave* slave, master->slaves.registered) {
         foreachkey (const FrameworkID& frameworkId, slave->tasks) {
           if (!master->frameworks.registered.contains(frameworkId)) {
-            response.mutable_get_frameworks()->add_unsubscribed_frameworks()
+            getFrameworks.add_unsubscribed_frameworks()
                 ->set_value(frameworkId.value());
           }
         }
       }
 
-      return OK(serialize(contentType, evolve(response)),
-                stringify(contentType));
+      return getFrameworks;
     }));
 }
 
@@ -1412,6 +1440,23 @@ Future<Response> Master::Http::getExecutors(
 {
   CHECK_EQ(mesos::master::Call::GET_EXECUTORS, call.type());
 
+  return _getExecutors(principal)
+    .then(
+      [contentType](const mesos::master::Response::GetExecutors& getExecutors)
+        -> Future<Response> {
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_EXECUTORS);
+      response.mutable_get_executors()->CopyFrom(getExecutors);
+
+      return OK(serialize(contentType, evolve(response)),
+                stringify(contentType));
+    });
+}
+
+
+Future<mesos::master::Response::GetExecutors> Master::Http::_getExecutors(
+    const Option<std::string>& principal) const
+{
   // Retrieve `ObjectApprover`s for authorizing frameworks and executors.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> executorsApprover;
@@ -1435,7 +1480,7 @@ Future<Response> Master::Http::getExecutors(
     .then(defer(master->self(),
         [=](const tuple<Owned<ObjectApprover>,
                         Owned<ObjectApprover>>& approvers)
-          -> Response {
+          -> Future<mesos::master::Response::GetExecutors> {
       // Get approver from tuple.
       Owned<ObjectApprover> frameworksApprover;
       Owned<ObjectApprover> executorsApprover;
@@ -1462,11 +1507,7 @@ Future<Response> Master::Http::getExecutors(
         frameworks.push_back(framework.get());
       }
 
-      mesos::master::Response response;
-      response.set_type(mesos::master::Response::GET_EXECUTORS);
-
-      mesos::master::Response::GetExecutors* getExecutors =
-        response.mutable_get_executors();
+      mesos::master::Response::GetExecutors getExecutors;
 
       foreach (const Framework* framework, frameworks) {
         foreachpair (const SlaveID& slaveId,
@@ -1481,7 +1522,7 @@ Future<Response> Master::Http::getExecutors(
             }
 
             mesos::master::Response::GetExecutors::Executor* executor =
-              getExecutors->add_executors();
+              getExecutors.add_executors();
 
             executor->mutable_executor_info()->CopyFrom(info);
             executor->mutable_slave_id()->CopyFrom(slaveId);
@@ -1502,7 +1543,7 @@ Future<Response> Master::Http::getExecutors(
           foreachvalue (const ExecutorInfo& info, executors) {
             if (!master->frameworks.registered.contains(frameworkId)) {
               mesos::master::Response::GetExecutors::Executor* executor =
-                getExecutors->add_orphan_executors();
+                getExecutors.add_orphan_executors();
 
               executor->mutable_executor_info()->CopyFrom(info);
               executor->mutable_slave_id()->CopyFrom(slave->id);
@@ -1511,8 +1552,55 @@ Future<Response> Master::Http::getExecutors(
         }
       }
 
+      return getExecutors;
+    }));
+}
+
+
+Future<Response> Master::Http::getState(
+    const mesos::master::Call& call,
+    const Option<string>& principal,
+    ContentType contentType) const
+{
+  CHECK_EQ(mesos::master::Call::GET_STATE, call.type());
+
+  return _getState(principal)
+    .then([contentType](const mesos::master::Response::GetState& getState)
+      -> Future<Response> {
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_STATE);
+      response.mutable_get_state()->CopyFrom(getState);
+
       return OK(serialize(contentType, evolve(response)),
                 stringify(contentType));
+    });
+}
+
+
+Future<mesos::master::Response::GetState> Master::Http::_getState(
+    const Option<string>& principal) const
+{
+  return collect(
+      _getTasks(principal),
+      _getExecutors(principal),
+      _getFrameworks(principal),
+      _getAgents(principal))
+    .then(defer(master->self(),
+      [](const tuple<mesos::master::Response::GetTasks,
+                     mesos::master::Response::GetExecutors,
+                     mesos::master::Response::GetFrameworks,
+                     mesos::master::Response::GetAgents>& results)
+        -> mesos::master::Response::GetState {
+      mesos::master::Response::GetState getState;
+
+      // Use std::get instead of std::tie to avoid
+      // unnecessary copy of large data structs.
+      getState.mutable_get_tasks()->CopyFrom(std::get<0>(results));
+      getState.mutable_get_executors()->CopyFrom(std::get<1>(results));
+      getState.mutable_get_frameworks()->CopyFrom(std::get<2>(results));
+      getState.mutable_get_agents()->CopyFrom(std::get<3>(results));
+
+      return getState;
     }));
 }
 
@@ -2089,12 +2177,25 @@ Future<process::http::Response> Master::Http::getAgents(
 {
   CHECK_EQ(mesos::master::Call::GET_AGENTS, call.type());
 
-  mesos::master::Response response;
-  response.set_type(mesos::master::Response::GET_AGENTS);
+  return _getAgents(principal)
+    .then([contentType](const mesos::master::Response::GetAgents& getAgents)
+      -> Future<Response> {
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_AGENTS);
+      response.mutable_get_agents()->CopyFrom(getAgents);
 
+      return OK(serialize(contentType, evolve(response)),
+                stringify(contentType));
+  });
+}
+
+
+Future<mesos::master::Response::GetAgents> Master::Http::_getAgents(
+    const Option<string>& principal) const
+{
+  mesos::master::Response::GetAgents getAgents;
   foreachvalue (const Slave* slave, master->slaves.registered) {
-    mesos::master::Response::GetAgents::Agent* agent =
-        response.mutable_get_agents()->add_agents();
+    mesos::master::Response::GetAgents::Agent* agent = getAgents.add_agents();
 
     agent->mutable_agent_info()->CopyFrom(slave->info);
 
@@ -2123,8 +2224,7 @@ Future<process::http::Response> Master::Http::getAgents(
     }
   }
 
-  return OK(serialize(contentType, evolve(response)),
-            stringify(contentType));
+  return getAgents;
 }
 
 
@@ -2498,11 +2598,8 @@ Future<Response> Master::Http::state(
             });
 
         // Model all of the orphan tasks.
-        // TODO(vinod): Need to filter these tasks based on authorization! This
-        // is currently not possible because we don't have `FrameworkInfo` for
-        // these tasks. We need to either store `FrameworkInfo` for orphan
-        // tasks or persist FrameworkInfo of all frameworks in the registry.
-        writer->field("orphan_tasks", [this](JSON::ArrayWriter* writer) {
+        writer->field("orphan_tasks", [this, &tasksApprover](
+            JSON::ArrayWriter* writer) {
           // Find those orphan tasks.
           foreachvalue (const Slave* slave, master->slaves.registered) {
             typedef hashmap<TaskID, Task*> TaskMap;
@@ -2511,6 +2608,16 @@ Future<Response> Master::Http::state(
                 CHECK_NOTNULL(task);
                 if (!master->frameworks.registered.contains(
                     task->framework_id())) {
+                  CHECK(master->frameworks.recovered.contains(
+                      task->framework_id()));
+
+                  if (!approveViewTask(
+                      tasksApprover,
+                      *task,
+                      master->frameworks.recovered[task->framework_id()])) {
+                    continue;
+                  }
+
                   writer->element(*task);
                 }
               }
@@ -3374,6 +3481,20 @@ Future<Response> Master::Http::getTasks(
 {
   CHECK_EQ(mesos::master::Call::GET_TASKS, call.type());
 
+  return _getTasks(principal)
+    .then([contentType](const mesos::master::Response::GetTasks& getTasks)
+        -> Future<Response> {
+      mesos::master::Response response;
+      response.set_type(mesos::master::Response::GET_TASKS);
+      response.mutable_get_tasks()->CopyFrom(getTasks);
+      return OK(serialize(contentType, evolve(response)),
+                stringify(contentType));
+  });
+}
+
+
+Future<mesos::master::Response::GetTasks> Master::Http::_getTasks(
+    const Option<string>& principal) const {
   // Retrieve Approvers for authorizing frameworks and tasks.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> tasksApprover;
@@ -3397,7 +3518,7 @@ Future<Response> Master::Http::getTasks(
     .then(defer(master->self(),
       [=](const tuple<Owned<ObjectApprover>,
                       Owned<ObjectApprover>>& approvers)
-        -> Future<Response> {
+        -> Future<mesos::master::Response::GetTasks> {
       // Get approver from tuple.
       Owned<ObjectApprover> frameworksApprover;
       Owned<ObjectApprover> tasksApprover;
@@ -3424,12 +3545,7 @@ Future<Response> Master::Http::getTasks(
         frameworks.push_back(framework.get());
       }
 
-      mesos::master::Response response;
-      response.set_type(mesos::master::Response::GET_TASKS);
-
-      mesos::master::Response::GetTasks* getTasks =
-        response.mutable_get_tasks();
-
+      mesos::master::Response::GetTasks getTasks;
       vector<const Task*> tasks;
       foreach (const Framework* framework, frameworks) {
         // Pending tasks.
@@ -3442,7 +3558,7 @@ Future<Response> Master::Http::getTasks(
           const Task& task =
             protobuf::createTask(taskInfo, TASK_STAGING, framework->id());
 
-          getTasks->add_pending_tasks()->CopyFrom(task);
+          getTasks.add_pending_tasks()->CopyFrom(task);
         }
 
         // Active tasks.
@@ -3453,7 +3569,7 @@ Future<Response> Master::Http::getTasks(
             continue;
           }
 
-          getTasks->add_tasks()->CopyFrom(*task);
+          getTasks.add_tasks()->CopyFrom(*task);
         }
 
         // Completed tasks.
@@ -3463,7 +3579,7 @@ Future<Response> Master::Http::getTasks(
             continue;
           }
 
-          getTasks->add_completed_tasks()->CopyFrom(*task);
+          getTasks.add_completed_tasks()->CopyFrom(*task);
         }
       }
 
@@ -3479,14 +3595,12 @@ Future<Response> Master::Http::getTasks(
             CHECK_NOTNULL(task);
             if (!master->frameworks.registered.contains(
                 task->framework_id())) {
-              getTasks->add_orphan_tasks()->CopyFrom(*task);
+              getTasks.add_orphan_tasks()->CopyFrom(*task);
             }
           }
         }
       }
-
-      return OK(serialize(contentType, evolve(response)),
-                stringify(contentType));
+      return getTasks;
   }));
 }
 

@@ -480,6 +480,7 @@ public:
       const std::vector<Resource>& checkpointedResources,
       const std::vector<ExecutorInfo>& executorInfos,
       const std::vector<Task>& tasks,
+      const std::vector<FrameworkInfo>& frameworks,
       const std::vector<Archive::Framework>& completedFrameworks,
       const std::string& version);
 
@@ -557,6 +558,7 @@ public:
       const std::vector<Resource>& checkpointedResources,
       const std::vector<ExecutorInfo>& executorInfos,
       const std::vector<Task>& tasks,
+      const std::vector<FrameworkInfo>& frameworks,
       const std::vector<Archive::Framework>& completedFrameworks,
       const std::string& version,
       const process::Future<bool>& readmit);
@@ -612,7 +614,8 @@ protected:
 
   void __reregisterSlave(
       Slave* slave,
-      const std::vector<Task>& tasks);
+      const std::vector<Task>& tasks,
+      const std::vector<FrameworkInfo>& frameworks);
 
   // 'authenticate' is the future returned by the authenticator.
   void _authenticate(
@@ -1385,6 +1388,9 @@ private:
         const Option<std::string>& principal,
         ContentType contentType) const;
 
+    process::Future<mesos::master::Response::GetAgents> _getAgents(
+        const Option<std::string>& principal) const;
+
     process::Future<process::http::Response> getFlags(
         const mesos::master::Call& call,
         const Option<std::string>& principal,
@@ -1455,6 +1461,9 @@ private:
         const Option<std::string>& principal,
         ContentType contentType) const;
 
+    process::Future<mesos::master::Response::GetTasks> _getTasks(
+        const Option<std::string>& principal) const;
+
     process::Future<process::http::Response> createVolumes(
         const mesos::master::Call& call,
         const Option<std::string>& principal,
@@ -1480,10 +1489,24 @@ private:
         const Option<std::string>& principal,
         ContentType contentType) const;
 
+    process::Future<mesos::master::Response::GetFrameworks> _getFrameworks(
+        const Option<std::string>& principal) const;
+
     process::Future<process::http::Response> getExecutors(
         const mesos::master::Call& call,
         const Option<std::string>& principal,
         ContentType contentType) const;
+
+    process::Future<mesos::master::Response::GetExecutors> _getExecutors(
+        const Option<std::string>& principal) const;
+
+    process::Future<process::http::Response> getState(
+        const mesos::master::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    process::Future<mesos::master::Response::GetState> _getState(
+        const Option<std::string>& principal) const;
 
     Master* master;
 
@@ -1556,8 +1579,8 @@ private:
     Option<process::Timer> recoveredTimer;
 
     // Slaves that have been recovered from the registrar but have yet
-    // to re-register. We keep a "reregistrationTimer" above to ensure
-    // we remove these slaves if they do not re-register.
+    // to re-register. We use `recoveredTimer` above to ensure we
+    // remove these slaves if they do not re-register.
     hashset<SlaveID> recovered;
 
     // Slaves that are in the process of registering.
@@ -1674,6 +1697,11 @@ private:
       : completed(masterFlags.max_completed_frameworks) {}
 
     hashmap<FrameworkID, Framework*> registered;
+
+    // 'Recovered' contains 'FrameworkInfo's for frameworks which
+    // would otherwise be unknown during recovery after master
+    // failover.
+    hashmap<FrameworkID, FrameworkInfo> recovered;
     boost::circular_buffer<std::shared_ptr<Framework>> completed;
 
     // Principals of frameworks keyed by PID.

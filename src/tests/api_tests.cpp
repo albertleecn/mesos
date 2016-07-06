@@ -425,6 +425,137 @@ TEST_P(MasterAPITest, GetExecutors)
 }
 
 
+TEST_P(MasterAPITest, GetState)
+{
+  v1::master::Call v1Call;
+  v1Call.set_type(v1::master::Call::GET_STATE);
+
+  master::Flags flags = CreateMasterFlags();
+
+  flags.hostname = "localhost";
+  flags.cluster = "test-cluster";
+
+  Try<Owned<cluster::Master>> master = StartMaster(flags);
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+  TestContainerizer containerizer(&exec);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), &containerizer);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  EXPECT_NE(0u, offers.get().size());
+
+  ContentType contentType = GetParam();
+  {
+    // GetState before task launch and check we have one framework, one agent
+    // and zero tasks/executors.
+    Future<v1::master::Response> v1Response =
+      post(master.get()->pid, v1Call, contentType);
+
+    AWAIT_READY(v1Response);
+    ASSERT_TRUE(v1Response->IsInitialized());
+    ASSERT_EQ(v1::master::Response::GET_STATE, v1Response->type());
+
+    const v1::master::Response::GetState& getState = v1Response->get_state();
+    ASSERT_EQ(1u, getState.get_frameworks().frameworks_size());
+    ASSERT_EQ(1u, getState.get_agents().agents_size());
+    ASSERT_EQ(0u, getState.get_tasks().tasks_size());
+    ASSERT_EQ(0u, getState.get_executors().executors_size());
+  }
+
+  TaskInfo task = createTask(offers.get()[0], "", DEFAULT_EXECUTOR_ID);
+
+  Future<ExecutorDriver*> execDriver;
+  EXPECT_CALL(exec, registered(_, _, _, _))
+    .WillOnce(FutureArg<0>(&execDriver));
+
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
+
+  Future<TaskStatus> status;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status));
+
+  driver.launchTasks(offers.get()[0].id(), {task});
+
+  AWAIT_READY(execDriver);
+  AWAIT_READY(status);
+
+  EXPECT_EQ(TASK_RUNNING, status.get().state());
+
+  {
+    // GetState after task launch and check we have a running task.
+    Future<v1::master::Response> v1Response =
+      post(master.get()->pid, v1Call, contentType);
+
+    AWAIT_READY(v1Response);
+    ASSERT_TRUE(v1Response->IsInitialized());
+    ASSERT_EQ(v1::master::Response::GET_STATE, v1Response->type());
+
+    const v1::master::Response::GetState& getState = v1Response->get_state();
+    ASSERT_EQ(1u, getState.get_tasks().tasks_size());
+    ASSERT_EQ(0u, getState.get_tasks().completed_tasks_size());
+  }
+
+  Future<StatusUpdateAcknowledgementMessage> acknowledgement =
+    FUTURE_PROTOBUF(
+        StatusUpdateAcknowledgementMessage(),
+        _,
+        Eq(slave.get()->pid));
+
+  Future<TaskStatus> status2;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status2));
+
+  // Send a terminal update so that the task transitions to completed.
+  TaskStatus status3;
+  status3.mutable_task_id()->CopyFrom(task.task_id());
+  status3.set_state(TASK_FINISHED);
+
+  execDriver.get()->sendStatusUpdate(status3);
+
+  AWAIT_READY(status2);
+  EXPECT_EQ(TASK_FINISHED, status2.get().state());
+
+  AWAIT_READY(acknowledgement);
+
+  {
+    // GetState after task finished and check we have a completed task.
+    Future<v1::master::Response> v1Response =
+      post(master.get()->pid, v1Call, contentType);
+
+    AWAIT_READY(v1Response);
+    ASSERT_TRUE(v1Response->IsInitialized());
+    ASSERT_EQ(v1::master::Response::GET_STATE, v1Response->type());
+
+    const v1::master::Response::GetState& getState = v1Response->get_state();
+    ASSERT_EQ(1u, getState.get_tasks().completed_tasks_size());
+    ASSERT_EQ(0u, getState.get_tasks().tasks_size());
+  }
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
+}
+
+
 TEST_P(MasterAPITest, GetTasksNoRunningTask)
 {
   Try<Owned<cluster::Master>> master = this->StartMaster();
@@ -1197,44 +1328,11 @@ TEST_P(MasterAPITest, StartAndStopMaintenance)
 // endpoint is able to receive `TASK_ADDED`/`TASK_UPDATED` events.
 TEST_P(MasterAPITest, Subscribe)
 {
+  ContentType contentType = GetParam();
+
   Try<Owned<cluster::Master>> master = this->StartMaster();
   ASSERT_SOME(master);
 
-  v1::master::Call v1Call;
-  v1Call.set_type(v1::master::Call::SUBSCRIBE);
-
-  process::http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
-
-  ContentType contentType = GetParam();
-  headers["Accept"] = stringify(contentType);
-
-  Future<Response> response = process::http::streaming::post(
-      master.get()->pid,
-      "api/v1",
-      headers,
-      serialize(contentType, v1Call),
-      stringify(contentType));
-
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
-  AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
-  ASSERT_EQ(Response::PIPE, response.get().type);
-  ASSERT_SOME(response->reader);
-
-  Pipe::Reader reader = response->reader.get();
-
-  auto deserializer =
-    lambda::bind(deserialize<v1::master::Event>, contentType, lambda::_1);
-
-  Reader<v1::master::Event> decoder(
-      Decoder<v1::master::Event>(deserializer), reader);
-
-  Future<Result<v1::master::Event>> event = decoder.read();
-
-  EXPECT_TRUE(event.isPending());
-
-  // Launch a task using the scheduler. This should result in a `TASK_ADDED`
-  // event when the task is launched followed by a `TASK_UPDATED` event after
-  // the task transitions to running state.
   auto scheduler = std::make_shared<MockV1HTTPScheduler>();
   auto executor = std::make_shared<MockV1HTTPExecutor>();
 
@@ -1276,10 +1374,57 @@ TEST_P(MasterAPITest, Subscribe)
 
   AWAIT_READY(subscribed);
 
+  // Launch a task using the scheduler. This should result in a `TASK_ADDED`
+  // event when the task is launched followed by a `TASK_UPDATED` event after
+  // the task transitions to running state.
   v1::FrameworkID frameworkId(subscribed->framework_id());
 
   AWAIT_READY(offers);
   EXPECT_NE(0, offers->offers().size());
+
+  // Create event stream after seeing first offer but before first task is
+  // launched. We should see one framework, one agent and zero task/executor.
+  v1::master::Call v1Call;
+  v1Call.set_type(v1::master::Call::SUBSCRIBE);
+
+  process::http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+
+  headers["Accept"] = stringify(contentType);
+
+  Future<Response> response = process::http::streaming::post(
+      master.get()->pid,
+      "api/v1",
+      headers,
+      serialize(contentType, v1Call),
+      stringify(contentType));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
+  ASSERT_EQ(Response::PIPE, response.get().type);
+  ASSERT_SOME(response->reader);
+
+  Pipe::Reader reader = response->reader.get();
+
+  auto deserializer =
+    lambda::bind(deserialize<v1::master::Event>, contentType, lambda::_1);
+
+  Reader<v1::master::Event> decoder(
+      Decoder<v1::master::Event>(deserializer), reader);
+
+  Future<Result<v1::master::Event>> event = decoder.read();
+  AWAIT_READY(event);
+
+  EXPECT_EQ(v1::master::Event::SUBSCRIBED, event.get().get().type());
+  const v1::master::Response::GetState& getState =
+      event.get().get().subscribed().get_state();
+
+  EXPECT_EQ(1u, getState.get_frameworks().frameworks_size());
+  EXPECT_EQ(1u, getState.get_agents().agents_size());
+  EXPECT_EQ(0u, getState.get_tasks().tasks_size());
+  EXPECT_EQ(0u, getState.get_executors().executors_size());
+
+  event = decoder.read();
+  EXPECT_TRUE(event.isPending());
 
   const v1::Offer& offer = offers->offers(0);
 

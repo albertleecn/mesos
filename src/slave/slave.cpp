@@ -1408,10 +1408,11 @@ void Slave::doReliableRegistration(Duration maxBackoff)
     message.mutable_slave()->CopyFrom(info);
 
     foreachvalue (Framework* framework, frameworks) {
+      message.add_frameworks()->CopyFrom(framework->info);
+
       // TODO(bmahler): We need to send the executors for these
       // pending tasks, and we need to send exited events if they
       // cannot be launched: MESOS-1715 MESOS-1720.
-
       typedef hashmap<TaskID, TaskInfo> TaskMap;
       foreachvalue (const TaskMap& tasks, framework->pending) {
         foreachvalue (const TaskInfo& task, tasks) {
@@ -5221,6 +5222,12 @@ Future<ResourceUsage> Slave::usage()
 
   foreachvalue (const Framework* framework, frameworks) {
     foreachvalue (const Executor* executor, framework->executors) {
+      // No need to get statistics and status if we know that the
+      // executor has already terminated.
+      if (executor->state == Executor::TERMINATED) {
+        continue;
+      }
+
       ResourceUsage::Executor* entry = usage->add_executors();
       entry->mutable_executor_info()->CopyFrom(executor->info);
       entry->mutable_allocated()->CopyFrom(executor->resources);
