@@ -39,6 +39,14 @@
   jira_user: dyatlov
   reviewboard_user: dyatlov
 
+- name: Anindya Sinha
+  affiliations:
+    - {organization: Apple}
+  emails:
+    - anindya_sinha@apple.com
+  jira_user: anindya.sinha
+  reviewboard_user: anisinha
+
 - name: Artem Harutyunyan
   affiliations:
     - {organization: Mesosphere}
@@ -131,6 +139,14 @@
     - gyliu513@gmail.com
   jira_user: gyliu
   reviewboard_user: gyliu
+
+- name: Ian Downes
+  affiliations:
+    - {organization: Twitter}
+  emails:
+    - idownes@twitter.com
+  jira_user: idownes
+  reviewboard_user: idownes
 
 - name: Isabel Jimenez
   affiliations:

@@ -885,15 +885,17 @@ Future<bool> MesosContainerizerProcess::_launch(
   // and its dependencies finish before '_launch' starts since onAny
   // is not guaranteed to be executed in order.
   if (!containers_.contains(containerId)) {
-    return Failure("Container has been destroyed");
+    return Failure("Container destroyed during provisioning");
   }
 
   // Make sure containerizer is not in DESTROYING state, to avoid
   // a possible race that containerizer is destroying the container
   // while it is provisioning the image from volumes.
   if (containers_[containerId]->state == DESTROYING) {
-    return Failure("Container is currently being destroyed");
+    return Failure("Container is being destroyed during provisioning");
   }
+
+  CHECK_EQ(containers_[containerId]->state, PROVISIONING);
 
   // We will provision the images specified in ContainerInfo::volumes
   // as well. We will mutate ContainerInfo::volumes to include the
@@ -986,15 +988,17 @@ Future<list<Option<ContainerLaunchInfo>>> MesosContainerizerProcess::prepare(
   // 'prepare' starts since onAny is not guaranteed to be executed
   // in order.
   if (!containers_.contains(containerId)) {
-    return Failure("Container has been destroyed");
+    return Failure("Container destroyed during provisioning");
   }
 
   // Make sure containerizer is not in DESTROYING state, to avoid
   // a possible race that containerizer is destroying the container
   // while it is preparing isolators for the container.
   if (containers_[containerId]->state == DESTROYING) {
-    return Failure("Container is currently being destroyed");
+    return Failure("Container is being destroyed during provisioning");
   }
+
+  CHECK_EQ(containers_[containerId]->state, PROVISIONING);
 
   containers_[containerId]->state = PREPARING;
 
@@ -1049,8 +1053,16 @@ Future<Nothing> MesosContainerizerProcess::fetch(
     const SlaveID& slaveId)
 {
   if (!containers_.contains(containerId)) {
-    return Failure("Container is already destroyed");
+    return Failure("Container destroyed during isolating");
   }
+
+  if (containers_[containerId]->state == DESTROYING) {
+    return Failure("Container is being destroyed during isolating");
+  }
+
+  CHECK_EQ(containers_[containerId]->state, ISOLATING);
+
+  containers_[containerId]->state = FETCHING;
 
   return fetcher->fetch(
       containerId,
@@ -1081,12 +1093,14 @@ Future<bool> MesosContainerizerProcess::__launch(
     const list<Option<ContainerLaunchInfo>>& launchInfos)
 {
   if (!containers_.contains(containerId)) {
-    return Failure("Container has been destroyed");
+    return Failure("Container destroyed during preparing");
   }
 
   if (containers_[containerId]->state == DESTROYING) {
-    return Failure("Container is currently being destroyed");
+    return Failure("Container is being destroyed during preparing");
   }
+
+  CHECK_EQ(containers_[containerId]->state, PREPARING);
 
   // Prepare environment variables for the executor.
   map<string, string> environment = executorEnvironment(
@@ -1341,7 +1355,15 @@ Future<bool> MesosContainerizerProcess::isolate(
     const ContainerID& containerId,
     pid_t _pid)
 {
-  CHECK(containers_.contains(containerId));
+  if (!containers_.contains(containerId)) {
+    return Failure("Container destroyed during preparing");
+  }
+
+  if (containers_[containerId]->state == DESTROYING) {
+    return Failure("Container is being destroyed during preparing");
+  }
+
+  CHECK_EQ(containers_[containerId]->state, PREPARING);
 
   containers_[containerId]->state = ISOLATING;
 
@@ -1375,10 +1397,15 @@ Future<bool> MesosContainerizerProcess::exec(
 {
   // The container may be destroyed before we exec the executor so
   // return failure here.
-  if (!containers_.contains(containerId) ||
-      containers_[containerId]->state == DESTROYING) {
-    return Failure("Container destroyed during launch");
+  if (!containers_.contains(containerId)) {
+    return Failure("Container destroyed during fetching");
   }
+
+  if (containers_[containerId]->state == DESTROYING) {
+    return Failure("Container is being destroyed during fetching");
+  }
+
+  CHECK_EQ(containers_[containerId]->state, FETCHING);
 
   // Now that we've contained the child we can signal it to continue
   // by writing to the pipe.
@@ -1402,7 +1429,10 @@ Future<containerizer::Termination> MesosContainerizerProcess::wait(
     const ContainerID& containerId)
 {
   if (!containers_.contains(containerId)) {
-    return Failure("Unknown container: " + stringify(containerId));
+    // See the comments in destroy() for race conditions which lead
+    // to "unknown containers".
+    return Failure("Unknown container (could have already been destroyed): " +
+                   stringify(containerId));
   }
 
   return containers_[containerId]->promise.future();
@@ -1566,14 +1596,26 @@ void MesosContainerizerProcess::destroy(
     const ContainerID& containerId)
 {
   if (!containers_.contains(containerId)) {
-    LOG(WARNING) << "Ignoring destroy of unknown container: " << containerId;
+    // This can happen due to the race between destroys initiated by
+    // the launch failure, the terminated executor and the agent so
+    // the same container is destroyed multiple times in reaction to
+    // one failure. e.g., a stuck fetcher results in:
+    // - The agent invoking destroy(), which kills the fetcher and
+    //   the executor.
+    // - The agent invoking destroy() again for the failed launch
+    //   (due to the fetcher getting killed).
+    // - The containerizer invoking destroy() for the reaped executor.
+    //
+    // The guard here and `if (container->state == DESTROYING)` below
+    // make sure redundant destroys short-circuit.
+    VLOG(1) << "Ignoring destroy of unknown container: " << containerId;
     return;
   }
 
   Container* container = containers_[containerId].get();
 
   if (container->state == DESTROYING) {
-    // Destroy has already been initiated.
+    VLOG(1) << "Destroy has already been initiated for '" << containerId << "'";
     return;
   }
 
@@ -1620,10 +1662,6 @@ void MesosContainerizerProcess::destroy(
     return;
   }
 
-  if (container->state == FETCHING) {
-    fetcher->kill(containerId);
-  }
-
   if (container->state == ISOLATING) {
     VLOG(1) << "Waiting for the isolators to complete for container '"
             << containerId << "'";
@@ -1638,6 +1676,11 @@ void MesosContainerizerProcess::destroy(
     return;
   }
 
+  // Either RUNNING or FETCHING at this point.
+  if (container->state == FETCHING) {
+    fetcher->kill(containerId);
+  }
+
   container->state = DESTROYING;
   _destroy(containerId);
 }
@@ -1646,6 +1689,8 @@ void MesosContainerizerProcess::destroy(
 void MesosContainerizerProcess::_destroy(
     const ContainerID& containerId)
 {
+  CHECK(containers_.contains(containerId));
+
   // Kill all processes then continue destruction.
   launcher->destroy(containerId)
     .onAny(defer(self(), &Self::__destroy, containerId, lambda::_1));
@@ -1694,6 +1739,8 @@ void MesosContainerizerProcess::___destroy(
     const Future<Option<int>>& status,
     const Option<string>& message)
 {
+  CHECK(containers_.contains(containerId));
+
   cleanupIsolators(containerId)
     .onAny(defer(self(),
                  &Self::____destroy,
