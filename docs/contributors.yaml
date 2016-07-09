@@ -99,6 +99,14 @@
   jira_user: bernd-mesos
   reviewboard_user: bernd-mesos
 
+- name: Dario Rexin
+  affiliations:
+    - {organization: Apple}
+  emails:
+    - drexin@apple.com
+  jira_user: drexin
+  reviewboard_user: dario.rexin
+
 - name: Diana Arroyo
   affiliations:
     - {organization: IBM}
@@ -435,3 +443,9 @@
     - charles.allen@metamarkets.com
   jira_user: drcrallen
   reviewboard_user: drcrallen
+
+- name: Tuan-Anh Hoang-Vu
+  emails:
+    - hvtuananh@gmail.com
+  jira_user: tuananh
+  reviewboard_user: tuananh
