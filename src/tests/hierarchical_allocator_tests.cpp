@@ -243,35 +243,6 @@ protected:
     return weightInfo;
   }
 
-  void handleAllocationsAndRecoverResources(
-      Resources& totalAllocatedResources,
-      hashmap<FrameworkID, Allocation>& frameworkAllocations,
-      int allocationsCount,
-      bool recoverResources)
-  {
-    for (int i = 0; i < allocationsCount; i++) {
-      Future<Allocation> allocation = allocations.get();
-      AWAIT_READY(allocation);
-
-      frameworkAllocations[allocation.get().frameworkId] = allocation.get();
-      totalAllocatedResources += Resources::sum(allocation.get().resources);
-
-      if (recoverResources) {
-        // Recover the allocated resources so they can be offered again
-        // next time.
-        foreachpair (const SlaveID& slaveId,
-                     const Resources& resources,
-                     allocation.get().resources) {
-          allocator->recoverResources(
-              allocation.get().frameworkId,
-              slaveId,
-              resources,
-              None());
-        }
-      }
-    }
-  }
-
 protected:
   master::Flags flags;
 
@@ -815,7 +786,6 @@ TEST_F(HierarchicalAllocatorTest, SmallOfferFilterTimeout)
 
   // Trigger a batch allocation.
   Clock::advance(flags.allocation_interval);
-  Clock::settle();
 
   // Since the filter is removed, resources are offered to `framework2`.
   allocation = allocations.get();
@@ -1616,7 +1586,6 @@ TEST_F(HierarchicalAllocatorTest, QuotaProvidesGuarantee)
   // Ensure the offer filter times out (2x the allocation interval)
   // and the next batch allocation occurs.
   Clock::advance(flags.allocation_interval);
-  Clock::settle();
 
   // Previously declined resources should be offered to the quota'ed role.
   AWAIT_READY(allocation);
@@ -1696,7 +1665,6 @@ TEST_F(HierarchicalAllocatorTest, RemoveQuota)
 
   // Trigger the next batch allocation.
   Clock::advance(flags.allocation_interval);
-  Clock::settle();
 
   Future<Allocation> allocation = allocations.get();
   AWAIT_READY(allocation);
@@ -1827,7 +1795,6 @@ TEST_F(HierarchicalAllocatorTest, MultipleFrameworksInRoleWithQuota)
 
   // Trigger the next batch allocation.
   Clock::advance(flags.allocation_interval);
-  Clock::settle();
 
   allocation = allocations.get();
   AWAIT_READY(allocation);
@@ -2093,7 +2060,6 @@ TEST_F(HierarchicalAllocatorTest, QuotaAgainstStarvation)
 
   // Trigger the next batch allocation.
   Clock::advance(flags.allocation_interval);
-  Clock::settle();
 
   allocation = allocations.get();
   AWAIT_READY(allocation);
@@ -2389,6 +2355,108 @@ TEST_F(HierarchicalAllocatorTest, ReservationWithinQuota)
 }
 
 
+// This test checks that when setting aside unallocated resources to
+// ensure that a quota guarantee can be met, we don't use resources
+// that have been reserved for a different role.
+//
+// We setup a scenario with 8 CPUs, where role X has quota for 4 CPUs
+// and role Y has 4 CPUs reserved. All offers are declined; the 4
+// unreserved CPUs should not be offered to role Y.
+TEST_F(HierarchicalAllocatorTest, QuotaSetAsideReservedResources)
+{
+  Clock::pause();
+
+  const string QUOTA_ROLE{"quota-role"};
+  const string NO_QUOTA_ROLE{"no-quota-role"};
+
+  initialize();
+
+  // Create two agents.
+  SlaveInfo agent1 = createSlaveInfo("cpus:4;mem:512;disk:0");
+  allocator->addSlave(agent1.id(), agent1, None(), agent1.resources(), {});
+
+  SlaveInfo agent2 = createSlaveInfo("cpus:4;mem:512;disk:0");
+  allocator->addSlave(agent2.id(), agent2, None(), agent2.resources(), {});
+
+  // Reserve 4 CPUs and 512MB of memory on `agent2` for non-quota'ed role.
+  Resources unreserved = Resources::parse("cpus:4;mem:512").get();
+  Resources dynamicallyReserved =
+    unreserved.flatten(NO_QUOTA_ROLE, createReservationInfo("ops"));
+
+  Offer::Operation reserve = RESERVE(dynamicallyReserved);
+
+  Future<Nothing> updateAgent2 =
+    allocator->updateAvailable(agent2.id(), {reserve});
+
+  AWAIT_EXPECT_READY(updateAgent2);
+
+  // Create `framework1` and set quota for its role.
+  FrameworkInfo framework1 = createFrameworkInfo(QUOTA_ROLE);
+  allocator->addFramework(framework1.id(), framework1, {});
+
+  const Quota quota = createQuota(QUOTA_ROLE, "cpus:4");
+  allocator->setQuota(QUOTA_ROLE, quota);
+
+  // `framework1` will be offered resources at `agent1` because the
+  // resources at `agent2` are reserved for a different role.
+  Future<Allocation> allocation = allocations.get();
+  AWAIT_READY(allocation);
+  EXPECT_EQ(framework1.id(), allocation.get().frameworkId);
+  EXPECT_EQ(agent1.resources(), Resources::sum(allocation.get().resources));
+
+  // `framework1` declines the resources on `agent1` for the duration
+  // of the test.
+  Filters longFilter;
+  longFilter.set_refuse_seconds(flags.allocation_interval.secs() * 10);
+
+  allocator->recoverResources(
+      framework1.id(),
+      agent1.id(),
+      agent1.resources(),
+      longFilter);
+
+  // Trigger a batch allocation for good measure, but don't expect any
+  // allocations.
+  Clock::advance(flags.allocation_interval);
+  Clock::settle();
+
+  allocation = allocations.get();
+  EXPECT_TRUE(allocation.isPending());
+
+  // Create `framework2` in a non-quota'ed role.
+  FrameworkInfo framework2 = createFrameworkInfo(NO_QUOTA_ROLE);
+  allocator->addFramework(framework2.id(), framework2, {});
+
+  // `framework2` will be offered the reserved resources at `agent2`
+  // because those resources are reserved for its role.
+  AWAIT_READY(allocation);
+  EXPECT_EQ(framework2.id(), allocation.get().frameworkId);
+  EXPECT_EQ(dynamicallyReserved, Resources::sum(allocation.get().resources));
+
+  // `framework2` declines the resources on `agent2` for the duration
+  // of the test.
+  allocator->recoverResources(
+      framework2.id(),
+      agent2.id(),
+      dynamicallyReserved,
+      longFilter);
+
+  // No more resource offers should be made until the filters expire:
+  // `framework1` should not be offered the resources at `agent2`
+  // (because they are reserved for a different role), and
+  // `framework2` should not be offered the resources at `agent1`
+  // (because this would risk violating quota guarantees).
+
+  // Trigger a batch allocation for good measure, but don't expect any
+  // allocations.
+  Clock::advance(flags.allocation_interval);
+  Clock::settle();
+
+  allocation = allocations.get();
+  EXPECT_TRUE(allocation.isPending());
+}
+
+
 // This test checks that if a framework suppresses offers, disconnects and
 // reconnects again, it will start receiving resource offers again.
 TEST_F(HierarchicalAllocatorTest, DeactivateAndReactivateFramework)
@@ -2439,7 +2507,6 @@ TEST_F(HierarchicalAllocatorTest, DeactivateAndReactivateFramework)
 
   // Framework will be offered all of agent's resources again
   // after getting activated.
-  Clock::settle();
   AWAIT_READY(allocation);
   EXPECT_EQ(framework.id(), allocation.get().frameworkId);
   EXPECT_EQ(agent.resources(), Resources::sum(allocation.get().resources));
@@ -2474,7 +2541,7 @@ TEST_F(HierarchicalAllocatorTest, SuppressAndReviveOffers)
   // framework's redundant REVIVE calls.
   allocator->reviveOffers(framework.id());
 
-  // Nothing is allocated because of no additinal resources.
+  // Nothing is allocated because of no additional resources.
   allocation = allocations.get();
   EXPECT_TRUE(allocation.isPending());
 
@@ -2488,7 +2555,6 @@ TEST_F(HierarchicalAllocatorTest, SuppressAndReviveOffers)
 
   // Advance the clock and trigger a background allocation cycle.
   Clock::advance(flags.allocation_interval);
-
   Clock::settle();
 
   // Still pending because the framework has suppressed offers.
@@ -2499,7 +2565,6 @@ TEST_F(HierarchicalAllocatorTest, SuppressAndReviveOffers)
 
   // Framework will be offered all of agent's resources again after
   // reviving offers.
-  Clock::settle();
   AWAIT_READY(allocation);
   EXPECT_EQ(framework.id(), allocation.get().frameworkId);
   EXPECT_EQ(agent.resources(), Resources::sum(allocation.get().resources));
@@ -2951,6 +3016,34 @@ TEST_F(HierarchicalAllocatorTest, UpdateWeight)
   const string FOURFOLD_RESOURCES = "cpus:8;mem:4096";
   const string TOTAL_RESOURCES = "cpus:12;mem:6144";
 
+  auto awaitAllocationsAndRecoverResources = [this](
+      Resources& totalAllocatedResources,
+      hashmap<FrameworkID, Allocation>& frameworkAllocations,
+      int allocationsCount,
+      bool recoverResources) {
+    for (int i = 0; i < allocationsCount; i++) {
+      Future<Allocation> allocation = allocations.get();
+      AWAIT_READY(allocation);
+
+      frameworkAllocations[allocation.get().frameworkId] = allocation.get();
+      totalAllocatedResources += Resources::sum(allocation.get().resources);
+
+      if (recoverResources) {
+        // Recover the allocated resources so they can be offered
+        // again next time.
+        foreachpair (const SlaveID& slaveId,
+                     const Resources& resources,
+                     allocation.get().resources) {
+          allocator->recoverResources(
+              allocation.get().frameworkId,
+              slaveId,
+              resources,
+              None());
+        }
+      }
+    }
+  };
+
   // Register six agents with the same resources (cpus:2;mem:1024).
   vector<SlaveInfo> agents;
   for (unsigned i = 0; i < 6; i++) {
@@ -3002,7 +3095,6 @@ TEST_F(HierarchicalAllocatorTest, UpdateWeight)
   {
     // Advance the clock and trigger a batch allocation.
     Clock::advance(flags.allocation_interval);
-    Clock::settle();
 
     // role1 share = 0.5 (cpus=6, mem=3072)
     //   framework1 share = 1
@@ -3013,7 +3105,7 @@ TEST_F(HierarchicalAllocatorTest, UpdateWeight)
     // since each framework's role has a weight of 1.0 by default.
     hashmap<FrameworkID, Allocation> frameworkAllocations;
     Resources totalAllocatedResources;
-    handleAllocationsAndRecoverResources(totalAllocatedResources,
+    awaitAllocationsAndRecoverResources(totalAllocatedResources,
         frameworkAllocations, 2, true);
 
     // Framework1 should get one allocation with three agents.
@@ -3041,7 +3133,6 @@ TEST_F(HierarchicalAllocatorTest, UpdateWeight)
 
     // 'updateWeights' will trigger the allocation immediately, so it does not
     // need to manually advance the clock here.
-    Clock::settle();
 
     // role1 share = 0.33 (cpus=4, mem=2048)
     //   framework1 share = 1
@@ -3052,7 +3143,7 @@ TEST_F(HierarchicalAllocatorTest, UpdateWeight)
     // resources are offered with a ratio of 1:2 between both frameworks.
     hashmap<FrameworkID, Allocation> frameworkAllocations;
     Resources totalAllocatedResources;
-    handleAllocationsAndRecoverResources(totalAllocatedResources,
+    awaitAllocationsAndRecoverResources(totalAllocatedResources,
         frameworkAllocations, 2, true);
 
     // Framework1 should get one allocation with two agents.
@@ -3088,7 +3179,6 @@ TEST_F(HierarchicalAllocatorTest, UpdateWeight)
 
     // 'addFramework' will trigger the allocation immediately, so it does not
     // need to manually advance the clock here.
-    Clock::settle();
 
     // role1 share = 0.166 (cpus=2, mem=1024)
     //   framework1 share = 1
@@ -3102,7 +3192,7 @@ TEST_F(HierarchicalAllocatorTest, UpdateWeight)
     // will get the proper resource ratio of 1:2:3.
     hashmap<FrameworkID, Allocation> frameworkAllocations;
     Resources totalAllocatedResources;
-    handleAllocationsAndRecoverResources(totalAllocatedResources,
+    awaitAllocationsAndRecoverResources(totalAllocatedResources,
         frameworkAllocations, 3, false);
 
     // Framework1 should get one allocation with one agent.
@@ -3169,9 +3259,6 @@ TEST_F(HierarchicalAllocatorTest, ReviveOffers)
   EXPECT_TRUE(allocation.isPending());
 
   allocator->reviveOffers(framework.id());
-
-  // Wait for the `reviveOffers` operation to be processed.
-  Clock::settle();
 
   // Framework will be offered all of agent's resources again
   // after reviving offers.

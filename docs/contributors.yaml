@@ -20,6 +20,7 @@
   emails:
     - alexr@apache.org
     - alex@mesosphere.io
+    - rukletsov@gmail.com
   jira_user: alexr
   reviewboard_user: alexr
 
@@ -148,6 +149,12 @@
   jira_user: gyliu
   reviewboard_user: gyliu
 
+- name: Haosdent Huang
+  emails:
+    - haosdent@gmail.com
+  jira_user: haosdent
+  reviewboard_user: haosdent
+
 - name: Ian Downes
   affiliations:
     - {organization: Twitter}
@@ -163,6 +170,15 @@
     - contact@isabeljimenez.com
   jira_user: ijimenez
   reviewboard_user: ijimenez
+
+- name: Jacob Janco
+  affiliations:
+    - {organization: Apple}
+  emails:
+    - jjanco.dev@gmail.com
+    - jjanco@apple.com
+  jira_user: jjanco
+  reviewboard_user: jjanco
 
 - name: Jan Schlicht
   affiliations:
@@ -272,6 +288,14 @@
   jira_user: magedm
   reviewboard_user: magedm
 
+- name: Megha Sharma
+  affiliations:
+    - {organization: Apple}
+  emails:
+    - msharma3@apple.com
+  jira_user: megha.sharma
+  reviewboard_user: megha.sharma
+
 - name: Michael Lunoe
   affiliations:
     - {organization: Mesosphere}
@@ -338,6 +362,12 @@
     - yqwyq@cn.ibm.com
   jira_user: gradywang
   reviewboard_user: JamesYongQiaoWang
+
+- name: Yong Tang
+  emails:
+    - yong.tang.github@outlook.com
+  jira_user: yongtang
+  reviewboard_user: yongtang
 
 - name: zhou xing
   affiliations:
@@ -407,7 +437,7 @@
     - guilherme.sft@gmail.com
   jira_user: jvanz
   reviewboard_user: jvanz
-  
+
 - name: Xiao Deshi
   affiliations:
     - {organization: Dataman}
