@@ -267,7 +267,6 @@ message FrameworkInfo {
 
       // Receive offers with revocable resources. See 'Resource'
       // message for details.
-      // TODO(vinod): This is currently a no-op.
       REVOCABLE_RESOURCES = 1;
 
       // Receive the TASK_KILLING TaskState when a task is being
@@ -288,6 +287,10 @@ message FrameworkInfo {
       // TODO(bmahler): As we add revocation we can relax the
       // restriction here. See MESOS-5634 for more information.
       GPU_RESOURCES = 3;
+
+      // Receive offers with resources that are shared.
+      // TODO(anindya_sinha): This is currently a no-op.
+      SHARED_RESOURCES = 4;
     }
 
     // Enum fields should be optional, see: MESOS-4997.
@@ -781,6 +784,15 @@ message Resource {
   // guarantees. Note that if this is set, 'disk' or 'reservation'
   // cannot be set.
   optional RevocableInfo revocable = 9;
+
+  // Allow the resource to be shared across tasks.
+  message SharedInfo {}
+
+  // If this is set, the resources are shared, i.e. multiple tasks
+  // can be launched using this resource and all of them shall refer
+  // to the same physical resource on the cluster. Note that only
+  // persistent volumes can be shared currently.
+  optional SharedInfo shared = 10;
 }
 
 /**
