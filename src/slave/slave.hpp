@@ -549,6 +549,43 @@ private:
         const Option<std::string>& principal,
         ContentType contentType) const;
 
+    process::Future<process::http::Response> getFrameworks(
+        const mesos::agent::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    mesos::agent::Response::GetFrameworks _getFrameworks(
+        const process::Owned<ObjectApprover>& frameworksApprover) const;
+
+    process::Future<process::http::Response> getExecutors(
+        const mesos::agent::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    mesos::agent::Response::GetExecutors _getExecutors(
+        const process::Owned<ObjectApprover>& frameworksApprover,
+        const process::Owned<ObjectApprover>& executorsApprover) const;
+
+    process::Future<process::http::Response> getTasks(
+        const mesos::agent::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    mesos::agent::Response::GetTasks _getTasks(
+        const process::Owned<ObjectApprover>& frameworksApprover,
+        const process::Owned<ObjectApprover>& tasksApprover,
+        const process::Owned<ObjectApprover>& executorsApprover) const;
+
+    process::Future<process::http::Response> getState(
+        const mesos::agent::Call& call,
+        const Option<std::string>& principal,
+        ContentType contentType) const;
+
+    mesos::agent::Response::GetState _getState(
+        const process::Owned<ObjectApprover>& frameworksApprover,
+        const process::Owned<ObjectApprover>& taskApprover,
+        const process::Owned<ObjectApprover>& executorsApprover) const;
+
     Slave* slave;
 
     // Used to rate limit the statistics endpoint.

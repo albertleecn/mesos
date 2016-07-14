@@ -255,8 +255,8 @@ public:
   Route(const string& name,
         const Option<string>& help,
         const lambda::function<Future<Response>(const Request&)>& handler)
+    : process(name, help, handler)
   {
-    process = new RouteProcess(name, help, handler);
     spawn(process);
   }
 
@@ -293,7 +293,7 @@ private:
     const lambda::function<Future<Response>(const Request&)> handler;
   };
 
-  RouteProcess* process;
+  RouteProcess process;
 };
 
 
@@ -499,6 +499,9 @@ static AuthenticatorManager* authenticator_manager = nullptr;
 // Authorization callbacks for HTTP endpoints.
 static AuthorizationCallbacks* authorization_callbacks = nullptr;
 
+// Global route that returns process information.
+static Route* processes_route = nullptr;
+
 // Filter. Synchronized support for using the filterer needs to be
 // recursive in case a filterer wants to do anything fancy (which is
 // possible and likely given that filters will get used for testing).
@@ -506,7 +509,7 @@ static Filter* filterer = nullptr;
 static std::recursive_mutex* filterer_mutex = new std::recursive_mutex();
 
 // Global garbage collector.
-PID<GarbageCollector> gc;
+GarbageCollector* gc = nullptr;
 
 // Global help.
 PID<Help> help;
@@ -1034,7 +1037,8 @@ bool initialize(
   //   |--authentication_manager
 
   // Create global garbage collector process.
-  gc = spawn(new GarbageCollector());
+  gc = new GarbageCollector();
+  spawn(gc);
 
   // Create global help process.
   help = spawn(new Help(delegate), true);
@@ -1061,7 +1065,7 @@ bool initialize(
   lambda::function<Future<Response>(const Request&)> __processes__ =
     lambda::bind(&ProcessManager::__processes__, process_manager, lambda::_1);
 
-  new Route("/__processes__", None(), __processes__);
+  processes_route = new Route("/__processes__", None(), __processes__);
 
   VLOG(1) << "libprocess is initialized on " << address() << " with "
           << num_worker_threads << " worker threads";
@@ -1088,8 +1092,14 @@ void finalize()
   // does not handle the case where the process_manager is deleted
   // while authentication was in progress!!
 
+  delete processes_route;
+  processes_route = nullptr;
+
   delete process_manager;
   process_manager = nullptr;
+
+  // TODO(neilc): We currently don't cleanup or deallocate the
+  // socket_manager (MESOS-3910).
 
   // The clock must be cleaned up after the `process_manager` as processes
   // may otherwise add timers after cleaning up.
@@ -2292,22 +2302,44 @@ ProcessManager::ProcessManager(const Option<string>& _delegate)
 
 ProcessManager::~ProcessManager()
 {
-  ProcessBase* process = nullptr;
-  // Terminate the first process in the queue. Events are deleted
-  // and the process is erased in ProcessManager::cleanup(). Don't
-  // hold the lock or process the whole map as terminating one process
-  // might trigger other terminations. Deal with them one at a time.
-  do {
+  CHECK(gc != nullptr);
+
+  // Terminate one process at a time. Events are deleted and the process
+  // is erased from `processes` in ProcessManager::cleanup(). Don't hold
+  // the lock or process the whole map as terminating one process might
+  // trigger other terminations.
+  //
+  // We skip the GC process here and instead terminate it below. This
+  // ensures that the GC process is running whenever we terminate any
+  // GC-managed process, which is necessary to ensure GC is performed.
+  while (true) {
+    ProcessBase* process = nullptr;
+
     synchronized (processes_mutex) {
-      process = !processes.empty() ? processes.begin()->second : nullptr;
+      foreachvalue (ProcessBase* candidate, processes) {
+        if (candidate == gc) {
+          continue;
+        }
+        process = candidate;
+        break;
+      }
     }
-    if (process != nullptr) {
-      // Terminate this process but do not inject the message,
-      // i.e. allow it to finish its work first.
-      process::terminate(process, false);
-      process::wait(process);
+
+    if (process == nullptr) {
+      break;
     }
-  } while (process != nullptr);
+
+    // Terminate this process but do not inject the message,
+    // i.e. allow it to finish its work first.
+    process::terminate(process, false);
+    process::wait(process);
+  }
+
+  process::terminate(gc, false);
+  process::wait(gc);
+
+  delete gc;
+  gc = nullptr;
 
   // Send signal to all processing threads to stop running.
   joining_threads.store(true);
@@ -2651,7 +2683,7 @@ UPID ProcessManager::spawn(ProcessBase* process, bool manage)
 
   // Use the garbage collector if requested.
   if (manage) {
-    dispatch(gc, &GarbageCollector::manage<ProcessBase>, process);
+    dispatch(gc->self(), &GarbageCollector::manage<ProcessBase>, process);
   }
 
   // We save the PID before enqueueing the process to avoid the race

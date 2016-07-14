@@ -33,7 +33,7 @@ message Call {
    // included in the corresponding `Call::Foo` message. Similarly, if a call
    // receives a synchronous response it will be returned as a `Response`
    // message of type `Response::FOO`.
-   enum Type {
+  enum Type {
     UNKNOWN = 0;
 
     GET_HEALTH = 1;         // Retrieves the agent's health status.
@@ -50,6 +50,9 @@ message Call {
     GET_STATE = 9;
 
     GET_CONTAINERS = 10;
+    GET_FRAMEWORKS = 11;    // Retrieves the information about known frameworks.
+    GET_EXECUTORS = 12;     // Retrieves the information about known executors.
+    GET_TASKS = 13;         // Retrieves the information about known tasks.
   }
 
   // Provides a snapshot of the current metrics tracked by the agent.
@@ -120,6 +123,9 @@ message Response {
     GET_STATE = 8;
 
     GET_CONTAINERS = 9;
+    GET_FRAMEWORKS = 10;           // See 'GetFrameworks' below.
+    GET_EXECUTORS = 11;            // See 'GetExecutors' below.
+    GET_TASKS = 12;                // See 'GetTasks' below.
   }
 
   // `healthy` would be true if the agent is healthy. Delayed responses are also
@@ -161,8 +167,12 @@ message Response {
     required bytes data = 2;
   }
 
+  // Contains full state of the agent i.e. information about the tasks,
+  // frameworks and executors running in the cluster.
   message GetState {
-    // TODO(vinod): Fill in the fields.
+    optional GetTasks get_tasks = 1;
+    optional GetExecutors get_executors = 2;
+    optional GetFrameworks get_frameworks = 3;
   }
 
   // Information about containers running on this agent. It contains
@@ -181,6 +191,49 @@ message Response {
     repeated Container containers = 1;
   }
 
+  // Information about all the frameworks known to the agent at the current
+  // time.
+  message GetFrameworks {
+    message Framework {
+      required FrameworkInfo framework_info = 1;
+    }
+
+    repeated Framework frameworks = 1;
+    repeated Framework completed_frameworks = 2;
+  }
+
+  // Lists information about all the executors known to the agent at the
+  // current time.
+  message GetExecutors {
+    message Executor {
+      required ExecutorInfo executor_info = 1;
+    }
+
+    repeated Executor executors = 1;
+    repeated Executor completed_executors = 2;
+  }
+
+  // Lists information about all the tasks known to the agent at the current
+  // time.
+  message GetTasks {
+    // Tasks that are pending in the agent's queue before an executor is
+    // launched.
+    repeated Task pending_tasks = 1;
+
+    // Tasks that are enqueued for a launched executor that has not yet
+    // registered.
+    repeated Task queued_tasks = 2;
+
+    // Tasks that are running.
+    repeated Task launched_tasks = 3;
+
+    // Tasks that are terminated but pending updates.
+    repeated Task terminated_tasks = 4;
+
+    // Tasks that are terminated and updates acked.
+    repeated Task completed_tasks = 5;
+  }
+
   optional Type type = 1;
 
   optional GetHealth get_health = 2;
@@ -192,4 +245,7 @@ message Response {
   optional ReadFile read_file = 8;
   optional GetState get_state = 9;
   optional GetContainers get_containers = 10;
+  optional GetFrameworks get_frameworks = 11;
+  optional GetExecutors get_executors = 12;
+  optional GetTasks get_tasks = 13;
 }

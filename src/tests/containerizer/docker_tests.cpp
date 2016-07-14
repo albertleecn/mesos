@@ -466,9 +466,9 @@ TEST_F(DockerTest, ROOT_DOCKER_CancelPull)
 }
 
 
-// This test verifies mounting in a relative path when running a
+// This test verifies mounting in a relative host path when running a
 // docker container works.
-TEST_F(DockerTest, ROOT_DOCKER_MountRelative)
+TEST_F(DockerTest, ROOT_DOCKER_MountRelativeHostPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -501,9 +501,9 @@ TEST_F(DockerTest, ROOT_DOCKER_MountRelative)
   Future<Option<int>> run = docker->run(
       containerInfo,
       commandInfo,
-      NAME_PREFIX + "-mount-relative-test",
+      NAME_PREFIX + "-mount-relative-host-path-test",
       directory.get(),
-      directory.get());
+      "/mnt/mesos/sandbox");
 
   AWAIT_READY(run);
   ASSERT_SOME(run.get());
@@ -512,9 +512,9 @@ TEST_F(DockerTest, ROOT_DOCKER_MountRelative)
 }
 
 
-// This test verifies mounting in an absolute path when running a
+// This test verifies mounting in an absolute host path when running a
 // docker container works.
-TEST_F(DockerTest, ROOT_DOCKER_MountAbsolute)
+TEST_F(DockerTest, ROOT_DOCKER_MountAbsoluteHostPath)
 {
   Owned<Docker> docker = Docker::create(
       tests::flags.docker,
@@ -547,14 +547,104 @@ TEST_F(DockerTest, ROOT_DOCKER_MountAbsolute)
   Future<Option<int>> run = docker->run(
       containerInfo,
       commandInfo,
-      NAME_PREFIX + "-mount-absolute-test",
+      NAME_PREFIX + "-mount-absolute-host-path-test",
       directory.get(),
-      directory.get());
+      "/mnt/mesos/sandbox");
 
   AWAIT_READY(run);
   ASSERT_SOME(run.get());
   EXPECT_TRUE(WIFEXITED(run->get())) << run->get();
   EXPECT_EQ(0, WEXITSTATUS(run->get())) << run->get();
+}
+
+
+// This test verifies mounting in an absolute host path to
+// a relative container path when running a docker container
+// works.
+TEST_F(DockerTest, ROOT_DOCKER_MountRelativeContainerPath)
+{
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  const string testFile = path::join(directory.get(), "test_file");
+  EXPECT_SOME(os::write(testFile, "data"));
+
+  Volume* volume = containerInfo.add_volumes();
+  volume->set_host_path(testFile);
+  volume->set_container_path("tmp/test_file");
+  volume->set_mode(Volume::RO);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  CommandInfo commandInfo;
+  commandInfo.set_shell(true);
+  commandInfo.set_value("ls /mnt/mesos/sandbox/tmp/test_file");
+
+  Future<Option<int>> run = docker->run(
+      containerInfo,
+      commandInfo,
+      NAME_PREFIX + "-mount-relative-container-path-test",
+      directory.get(),
+      "/mnt/mesos/sandbox");
+
+  AWAIT_READY(run);
+  ASSERT_SOME(run.get());
+  EXPECT_TRUE(WIFEXITED(run->get())) << run->get();
+  EXPECT_EQ(0, WEXITSTATUS(run->get())) << run->get();
+}
+
+
+// This test verifies a docker container mounting relative host
+// path to a relative container path fails.
+TEST_F(DockerTest, ROOT_DOCKER_MountRelativeHostPathRelativeContainerPath)
+{
+  Owned<Docker> docker = Docker::create(
+      tests::flags.docker,
+      tests::flags.docker_socket,
+      false).get();
+
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  Volume* volume = containerInfo.add_volumes();
+  volume->set_host_path("test_file");
+  volume->set_container_path("tmp/test_file");
+  volume->set_mode(Volume::RO);
+
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  CommandInfo commandInfo;
+  commandInfo.set_shell(true);
+  commandInfo.set_value("ls /mnt/mesos/sandbox/tmp/test_file");
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  const string testFile = path::join(directory.get(), "test_file");
+  EXPECT_SOME(os::write(testFile, "data"));
+
+  Future<Option<int>> run = docker->run(
+      containerInfo,
+      commandInfo,
+      NAME_PREFIX + "-mount-relative-host-path/container-path-test",
+      directory.get(),
+      "/mnt/mesos/sandbox");
+
+  ASSERT_TRUE(run.isFailed());
 }
 
 
