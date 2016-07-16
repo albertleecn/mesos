@@ -3280,7 +3280,7 @@ INSTANTIATE_TEST_CASE_P(
     HierarchicalAllocator_BENCHMARK_Test,
     ::testing::Combine(
       ::testing::Values(1000U, 5000U, 10000U, 20000U, 30000U, 50000U),
-      ::testing::Values(1U, 50U, 100U, 200U, 500U, 1000U))
+      ::testing::Values(1U, 50U, 100U, 200U, 500U, 1000U, 3000U, 6000U))
     );
 
 
@@ -3292,7 +3292,10 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, AddAndUpdateSlave)
   size_t frameworkCount = std::tr1::get<1>(GetParam());
 
   vector<SlaveInfo> slaves;
+  slaves.reserve(slaveCount);
+
   vector<FrameworkInfo> frameworks;
+  frameworks.reserve(frameworkCount);
 
   for (unsigned i = 0; i < slaveCount; i++) {
     slaves.push_back(createSlaveInfo(
@@ -3383,10 +3386,11 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, AddAndUpdateSlave)
 // This benchmark simulates a number of frameworks that have a fixed amount of
 // work to do. Once they have reached their targets, they start declining all
 // subsequent offers.
-TEST_F(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
+TEST_P(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
 {
-  unsigned frameworkCount = 200;
-  unsigned slaveCount = 2000;
+  size_t slaveCount = std::tr1::get<0>(GetParam());
+  size_t frameworkCount = std::tr1::get<1>(GetParam());
+
   master::Flags flags;
 
   // Choose an interval longer than the time we expect a single cycle to take so
@@ -3396,10 +3400,6 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
   // Pause the clock because we want to manually drive the allocations.
   Clock::pause();
 
-  // Number of allocations. This is used to determine the termination
-  // condition.
-  atomic<size_t> offerCount(0);
-
   struct OfferedResources {
     FrameworkID   frameworkId;
     SlaveID       slaveId;
@@ -3408,7 +3408,7 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
 
   vector<OfferedResources> offers;
 
-  auto offerCallback = [&offerCount, &offers](
+  auto offerCallback = [&offers](
       const FrameworkID& frameworkId,
       const hashmap<SlaveID, Resources>& resources_)
   {
@@ -3416,17 +3416,15 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
       offers.push_back(
           OfferedResources{frameworkId, resources.first, resources.second});
     }
-
-    offerCount++;
   };
-
-  vector<SlaveInfo> slaves;
-  vector<FrameworkInfo> frameworks;
 
   cout << "Using " << slaveCount << " agents and "
        << frameworkCount << " frameworks" << endl;
 
+  vector<SlaveInfo> slaves;
   slaves.reserve(slaveCount);
+
+  vector<FrameworkInfo> frameworks;
   frameworks.reserve(frameworkCount);
 
   initialize(flags, offerCallback);
@@ -3440,7 +3438,6 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
       "cpus:16;mem:2014;disk:1024;").get();
 
   Resources ports = makePortRanges(makeRange(31000, 32000), 16);
-
   resources += ports;
 
   for (unsigned i = 0; i < slaveCount; i++) {
@@ -3459,7 +3456,7 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
   Clock::settle();
 
   // Loop enough times for all the frameworks to get offered all the resources.
-  for (unsigned count = 0; count < frameworkCount * 2; count++) {
+  for (unsigned i = 0; i < frameworkCount * 2; i++) {
     // Permanently decline any offered resources.
     foreach (auto offer, offers) {
       Filters filters;
@@ -3472,22 +3469,19 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
     // Wait for the declined offers.
     Clock::settle();
     offers.clear();
-    offerCount = 0;
 
-    {
-      Stopwatch watch;
+    Stopwatch watch;
 
-      watch.start();
+    watch.start();
 
-      // Advance the clock and trigger a background allocation cycle.
-      Clock::advance(flags.allocation_interval);
-      Clock::settle();
+    // Advance the clock and trigger a background allocation cycle.
+    Clock::advance(flags.allocation_interval);
+    Clock::settle();
 
-      cout << "round " << count
-           << " allocate took " << watch.elapsed()
-           << " to make " << offerCount.load() << " offers"
-           << endl;
-    }
+    cout << "round " << i
+         << " allocate() took " << watch.elapsed()
+         << " to make " << offers.size() << " offers"
+         << endl;
   }
 
   Clock::resume();
@@ -3523,10 +3517,11 @@ static Labels makeLabels(bool first, size_t labelId)
 
 
 // TODO(neilc): Refactor to reduce code duplication with `DeclineOffers` test.
-TEST_F(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
+TEST_P(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
 {
-  unsigned frameworkCount = 200;
-  unsigned slaveCount = 2000;
+  size_t slaveCount = std::tr1::get<0>(GetParam());
+  size_t frameworkCount = std::tr1::get<1>(GetParam());
+
   master::Flags flags;
 
   // Choose an interval longer than the time we expect a single cycle to take so
@@ -3536,10 +3531,6 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
   // Pause the clock because we want to manually drive the allocations.
   Clock::pause();
 
-  // Number of allocations. This is used to determine the termination
-  // condition.
-  atomic<size_t> offerCount(0);
-
   struct OfferedResources {
     FrameworkID   frameworkId;
     SlaveID       slaveId;
@@ -3548,7 +3539,7 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
 
   vector<OfferedResources> offers;
 
-  auto offerCallback = [&offerCount, &offers](
+  auto offerCallback = [&offers](
       const FrameworkID& frameworkId,
       const hashmap<SlaveID, Resources>& resources_)
   {
@@ -3556,17 +3547,15 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
       offers.push_back(
           OfferedResources{frameworkId, resources.first, resources.second});
     }
-
-    offerCount++;
   };
-
-  vector<SlaveInfo> slaves;
-  vector<FrameworkInfo> frameworks;
 
   cout << "Using " << slaveCount << " agents and "
        << frameworkCount << " frameworks" << endl;
 
+  vector<SlaveInfo> slaves;
   slaves.reserve(slaveCount);
+
+  vector<FrameworkInfo> frameworks;
   frameworks.reserve(frameworkCount);
 
   initialize(flags, offerCallback);
@@ -3619,7 +3608,7 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
   Clock::settle();
 
   // Loop enough times for all the frameworks to get offered all the resources.
-  for (unsigned count = 0; count < frameworkCount * 2; count++) {
+  for (unsigned i = 0; i < frameworkCount * 2; i++) {
     // Permanently decline any offered resources.
     foreach (auto offer, offers) {
       Filters filters;
@@ -3632,22 +3621,19 @@ TEST_F(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
     // Wait for the declined offers.
     Clock::settle();
     offers.clear();
-    offerCount = 0;
 
-    {
-      Stopwatch watch;
+    Stopwatch watch;
 
-      watch.start();
+    watch.start();
 
-      // Advance the clock and trigger a background allocation cycle.
-      Clock::advance(flags.allocation_interval);
-      Clock::settle();
+    // Advance the clock and trigger a background allocation cycle.
+    Clock::advance(flags.allocation_interval);
+    Clock::settle();
 
-      cout << "round " << count
-           << " allocate took " << watch.elapsed()
-           << " to make " << offerCount.load() << " offers"
-           << endl;
-    }
+    cout << "round " << i
+         << " allocate() took " << watch.elapsed()
+         << " to make " << offers.size() << " offers"
+         << endl;
   }
 
   Clock::resume();

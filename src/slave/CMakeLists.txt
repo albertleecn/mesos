@@ -21,6 +21,9 @@ set(AGENT_EXECUTABLE_SRC
   main.cpp
   )
 
+add_subdirectory(qos_controllers)
+add_subdirectory(resource_estimators)
+
 # INCLUDE DIRECTIVES FOR AGENT EXECUTABLE (generates, e.g., -I/path/to/thing
 # on Linux).
 ############################################################################

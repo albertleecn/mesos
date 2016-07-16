@@ -14,23 +14,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Builds nodejs/http-parser project.
-#########################################
-# NOTE: at build time, this file will be copied into the directory of the
-# http-parser project. This will allow any CMake-based build system consuming
-# the process library to trivially build this dependency and link to it.
-cmake_minimum_required(VERSION 2.8)
-
-project(http-parser)
-
-include_directories(.)
-
-set(HTTP_PARSER_SRC
-  ${HTTP_PARSER_SRC}
-  http_parser.c
-  http_parser.h
+# THE RESOURCE_ESTIMATOR SOURCE.
+################################
+set(RESOURCE_ESTIMATOR_SRC
+  ${RESOURCE_ESTIMATOR_SRC}
+  fixed.cpp
   )
 
-add_definitions(-D HTTP_PARSER_STRICT=0)
-add_definitions(-fPIC)
-add_library(http_parser STATIC ${HTTP_PARSER_SRC})
+# THE AGENT EXECUTABLE.
+#######################
+add_library(${RESOURCE_ESTIMATOR_TARGET} SHARED ${RESOURCE_ESTIMATOR_SRC})
+
+# ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
+######################################################
+target_link_libraries(${RESOURCE_ESTIMATOR_TARGET} ${AGENT_LIBS} ${MESOS_TARGET})
+
+# ADD BINARY DEPENDENCIES (tells CMake what to compile/build first).
+####################################################################
+add_dependencies(${RESOURCE_ESTIMATOR_TARGET} ${MESOS_TARGET})
