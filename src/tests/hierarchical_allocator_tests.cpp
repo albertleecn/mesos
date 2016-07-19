@@ -3313,14 +3313,12 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, AddAndUpdateSlave)
 
   Clock::pause();
 
-  // Number of allocations. This is used to determine
-  // the termination condition.
-  atomic<size_t> finished(0);
+  atomic<size_t> offerCallbacks(0);
 
-  auto offerCallback = [&finished](
+  auto offerCallback = [&offerCallbacks](
       const FrameworkID& frameworkId,
       const hashmap<SlaveID, Resources>& resources) {
-    finished++;
+    offerCallbacks++;
   };
 
   initialize(master::Flags(), offerCallback);
@@ -3332,14 +3330,19 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, AddAndUpdateSlave)
     allocator->addFramework(framework.id(), framework, {});
   }
 
+  // Wait for all the `addFramework` operations to be processed.
+  Clock::settle();
+
+  watch.stop();
+
   cout << "Added " << frameworkCount << " frameworks"
        << " in " << watch.elapsed() << endl;
-
-  watch.start();
 
   const Resources slaveResources = Resources::parse(
       "cpus:1;mem:128;disk:1024;"
       "ports:[31126-31510,31512-31623,31810-31852,31854-31964]").get();
+
+  watch.start();
 
   // Add the slaves, use round-robin to choose which framework
   // to allocate a slice of the slave's resources to.
@@ -3357,9 +3360,11 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, AddAndUpdateSlave)
   }
 
   // Wait for all the `addSlave` operations to be processed.
-  while (finished.load() != slaveCount) {
-    os::sleep(Milliseconds(10));
-  }
+  Clock::settle();
+
+  watch.stop();
+
+  ASSERT_EQ(slaveCount, offerCallbacks.load());
 
   cout << "Added " << slaveCount << " agents"
        << " in " << watch.elapsed() << endl;
@@ -3375,9 +3380,11 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, AddAndUpdateSlave)
   }
 
   // Wait for all the `updateSlave` operations to be processed.
-  while (finished.load() != 2 * slaveCount) {
-    os::sleep(Milliseconds(10));
-  }
+  Clock::settle();
+
+  watch.stop();
+
+  ASSERT_EQ(slaveCount * 2, offerCallbacks.load());
 
   cout << "Updated " << slaveCount << " agents in " << watch.elapsed() << endl;
 }
@@ -3429,16 +3436,29 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
 
   initialize(flags, offerCallback);
 
+  Stopwatch watch;
+  watch.start();
+
   for (unsigned i = 0; i < frameworkCount; i++) {
     frameworks.push_back(createFrameworkInfo("*"));
     allocator->addFramework(frameworks[i].id(), frameworks[i], {});
   }
 
+  // Wait for all the `addFramework` operations to be processed.
+  Clock::settle();
+
+  watch.stop();
+
+  cout << "Added " << frameworkCount << " frameworks in "
+       << watch.elapsed() << endl;
+
   Resources resources = Resources::parse(
-      "cpus:16;mem:2014;disk:1024;").get();
+      "cpus:16;mem:2014;disk:1024").get();
 
   Resources ports = makePortRanges(makeRange(31000, 32000), 16);
   resources += ports;
+
+  watch.start();
 
   for (unsigned i = 0; i < slaveCount; i++) {
     slaves.push_back(createSlaveInfo(
@@ -3455,6 +3475,11 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
   // Wait for all the `addSlave` operations to be processed.
   Clock::settle();
 
+  watch.stop();
+
+  cout << "Added " << slaveCount << " agents in "
+       << watch.elapsed() << endl;
+
   // Loop enough times for all the frameworks to get offered all the resources.
   for (unsigned i = 0; i < frameworkCount * 2; i++) {
     // Permanently decline any offered resources.
@@ -3470,13 +3495,13 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, DeclineOffers)
     Clock::settle();
     offers.clear();
 
-    Stopwatch watch;
-
     watch.start();
 
     // Advance the clock and trigger a background allocation cycle.
     Clock::advance(flags.allocation_interval);
     Clock::settle();
+
+    watch.stop();
 
     cout << "round " << i
          << " allocate() took " << watch.elapsed()
@@ -3560,10 +3585,21 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
 
   initialize(flags, offerCallback);
 
+  Stopwatch watch;
+  watch.start();
+
   for (unsigned i = 0; i < frameworkCount; i++) {
     frameworks.push_back(createFrameworkInfo("role1"));
     allocator->addFramework(frameworks[i].id(), frameworks[i], {});
   }
+
+  // Wait for all the `addFramework` operations to be processed.
+  Clock::settle();
+
+  watch.stop();
+
+  cout << "Added " << frameworkCount << " frameworks in "
+       << watch.elapsed() << endl;
 
   // Create the used resources at each slave. We use three blocks of
   // resources: unreserved mem/disk/ports, and two different labeled
@@ -3572,10 +3608,12 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
   // worst-case for the equality operator. We also ensure that the
   // labels at any two nodes are distinct, which means they can't be
   // aggregated easily by the master/allocator.
-  Resources resources = Resources::parse("mem:2014;disk:1024;").get();
+  Resources resources = Resources::parse("mem:2014;disk:1024").get();
 
   Resources ports = makePortRanges(makeRange(31000, 32000), 16);
   resources += ports;
+
+  watch.start();
 
   for (unsigned i = 0; i < slaveCount; i++) {
     slaves.push_back(createSlaveInfo(
@@ -3607,6 +3645,11 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
   // Wait for all the `addSlave` operations to be processed.
   Clock::settle();
 
+  watch.stop();
+
+  cout << "Added " << slaveCount << " agents in "
+       << watch.elapsed() << endl;
+
   // Loop enough times for all the frameworks to get offered all the resources.
   for (unsigned i = 0; i < frameworkCount * 2; i++) {
     // Permanently decline any offered resources.
@@ -3622,13 +3665,13 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, ResourceLabels)
     Clock::settle();
     offers.clear();
 
-    Stopwatch watch;
-
     watch.start();
 
     // Advance the clock and trigger a background allocation cycle.
     Clock::advance(flags.allocation_interval);
     Clock::settle();
+
+    watch.stop();
 
     cout << "round " << i
          << " allocate() took " << watch.elapsed()
@@ -3653,15 +3696,38 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, Metrics)
 
   initialize();
 
+  Stopwatch watch;
+  watch.start();
+
   for (size_t i = 0; i < frameworkCount; i++) {
     string role = stringify(i);
     allocator->setQuota(role, createQuota(role, "cpus:1;mem:512;disk:256"));
   }
 
+  // Wait for all the `setQuota` operations to be processed.
+  Clock::settle();
+
+  watch.stop();
+
+  cout << "Set quota for " << frameworkCount << " roles in "
+       << watch.elapsed() << endl;
+
+  watch.start();
+
   for (size_t i = 0; i < frameworkCount; i++) {
     FrameworkInfo framework = createFrameworkInfo(stringify(i));
     allocator->addFramework(framework.id(), framework, {});
   }
+
+  // Wait for all the `addFramework` operations to be processed.
+  Clock::settle();
+
+  watch.stop();
+
+  cout << "Added " << frameworkCount << " frameworks in "
+       << watch.elapsed() << endl;
+
+  watch.start();
 
   for (size_t i = 0; i < slaveCount; i++) {
     SlaveInfo slave = createSlaveInfo("cpus:16;mem:2048;disk:1024");
@@ -3671,7 +3737,10 @@ TEST_P(HierarchicalAllocator_BENCHMARK_Test, Metrics)
   // Wait for all the `addSlave` operations to complete.
   Clock::settle();
 
-  Stopwatch watch;
+  watch.stop();
+
+  cout << "Added " << slaveCount << " agents in "
+       << watch.elapsed() << endl;
 
   // TODO(bmahler): Avoid timing the JSON parsing here.
   // Ideally we also avoid timing the HTTP layer.

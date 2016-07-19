@@ -24,6 +24,7 @@
 
 #include <stout/adaptor.hpp>
 #include <stout/os.hpp>
+#include <stout/path.hpp>
 #include <stout/net.hpp>
 
 #include "linux/fs.hpp"
@@ -658,8 +659,17 @@ Future<Nothing> NetworkCniIsolatorProcess::isolate(
     NetworkCniIsolatorSetup setup;
     setup.flags.pid = pid;
     setup.flags.rootfs = infos[containerId]->rootfs;
-    setup.flags.etc_hosts_path = "/etc/hosts";
-    setup.flags.etc_hostname_path = "/etc/hostname";
+
+    // NOTE: On some Linux distributions, `/etc/hostname` and
+    // `/etc/hosts` might not exist.
+    if (os::exists("/etc/hosts")) {
+      setup.flags.etc_hosts_path = "/etc/hosts";
+    }
+
+    if (os::exists("/etc/hostname")) {
+      setup.flags.etc_hostname_path = "/etc/hostname";
+    }
+
     setup.flags.etc_resolv_conf = "/etc/resolv.conf";
 
     return __isolate(setup);
@@ -1446,20 +1456,28 @@ int NetworkCniIsolatorSetup::execute()
     return EXIT_FAILURE;
   }
 
+  // Initialize the host path and container path for the set of files
+  // that need to be setup in the container file system.
+  hashmap<string, string> files;
+
   if (flags.etc_hosts_path.isNone()) {
-    cerr << "Path to 'hosts' not specified" <<endl;
-    return EXIT_FAILURE;
+    // This is the case where host network is used, container has an
+    // image, and `/etc/hosts` does not exist in the system.
   } else if (!os::exists(flags.etc_hosts_path.get())) {
     cerr << "Unable to find '" << flags.etc_hosts_path.get() << "'" << endl;
     return EXIT_FAILURE;
+  } else {
+    files["/etc/hosts"] = flags.etc_hosts_path.get();
   }
 
   if (flags.etc_hostname_path.isNone()) {
-    cerr << "Path to 'hostname' not specified" << endl;
-    return EXIT_FAILURE;
+    // This is the case where host network is used, container has an
+    // image, and `/etc/hostname` does not exist in the system.
   } else if (!os::exists(flags.etc_hostname_path.get())) {
     cerr << "Unable to find '" << flags.etc_hostname_path.get() << "'" << endl;
     return EXIT_FAILURE;
+  } else {
+    files["/etc/hostname"] = flags.etc_hostname_path.get();
   }
 
   if (flags.etc_resolv_conf.isNone()) {
@@ -1468,6 +1486,8 @@ int NetworkCniIsolatorSetup::execute()
   } else if (!os::exists(flags.etc_resolv_conf.get())) {
     cerr << "Unable to find '" << flags.etc_resolv_conf.get() << "'" << endl;
     return EXIT_FAILURE;
+  } else {
+    files["/etc/resolv.conf"] = flags.etc_resolv_conf.get();
   }
 
   // Enter the mount namespace.
@@ -1501,13 +1521,6 @@ int NetworkCniIsolatorSetup::execute()
     return EXIT_FAILURE;
   }
 
-  // Initialize the host path and container path for the set of files
-  // that need to be setup in the container file system.
-  hashmap<string, string> files;
-  files["/etc/hosts"] = flags.etc_hosts_path.get();
-  files["/etc/hostname"] = flags.etc_hostname_path.get();
-  files["/etc/resolv.conf"] = flags.etc_resolv_conf.get();
-
   foreachpair (const string& file, const string& source, files) {
     // Do the bind mount in the host filesystem since no process in
     // the new network namespace should be seeing the original network
@@ -1515,38 +1528,66 @@ int NetworkCniIsolatorSetup::execute()
     // command executor since command executor will be launched with
     // rootfs of host filesystem and will later pivot to the rootfs of
     // the container filesystem, when launching the task.
-    if (!os::exists(file)) {
-      // Make an exception for `/etc/hostname`, because it may not
-      // exist on every system but hostname is still accessible by
-      // `getHostname()`.
-      if (file != "/etc/hostname") {
-        // NOTE: We just fail if the mount point does not exist on the
-        // host filesystem because we don't want to pollute the host
-        // filesystem.
-        cerr << "Mount point '" << file << "' does not exist "
-             << "on the host filesystem" << endl;
-        return EXIT_FAILURE;
-      }
-    } else {
-      mount = fs::mount(
-          source,
-          file,
-          None(),
-          MS_BIND,
-          nullptr);
+    //
+    // NOTE: We only need to do this if non host network is used.
+    // Currently, we use `flags.hostname` to distinguish if a host
+    // network is being used or not.
+    if (flags.hostname.isSome()) {
+      if (!os::exists(file)) {
+        // Make an exception for `/etc/hostname` and `/etc/hosts`,
+        // because it may not exist on every system.
+        if (file != "/etc/hostname" && file != "/etc/hosts") {
+          // NOTE: We just fail if the mount point does not exist on
+          // the host filesystem because we don't want to pollute the
+          // host filesystem.
+          cerr << "Mount point '" << file << "' does not exist "
+               << "on the host filesystem" << endl;
+          return EXIT_FAILURE;
+        }
+      } else {
+        mount = fs::mount(
+            source,
+            file,
+            None(),
+            MS_BIND,
+            nullptr);
 
-      if (mount.isError()) {
-        cerr << "Failed to bind mount from '" << source << "' to '"
-             << file << "': " << mount.error() << endl;
-        return EXIT_FAILURE;
+        if (mount.isError()) {
+          cerr << "Failed to bind mount from '" << source << "' to '"
+               << file << "': " << mount.error() << endl;
+          return EXIT_FAILURE;
+        }
       }
     }
 
     // Do the bind mount in the container filesystem.
     if (flags.rootfs.isSome()) {
       const string target = path::join(flags.rootfs.get(), file);
+
       if (!os::exists(target)) {
+        // Create the parent directory of the mount point.
+        Try<Nothing> mkdir = os::mkdir(Path(target).dirname());
+        if (mkdir.isError()) {
+          cerr << "Failed to create directory '" << Path(target).dirname()
+               << "' for the mount point: " << mkdir.error() << endl;
+          return EXIT_FAILURE;
+        }
+
         // Create the mount point in the container filesystem.
+        Try<Nothing> touch = os::touch(target);
+        if (touch.isError()) {
+          cerr << "Failed to create the mount point '" << target
+               << "' in the container filesystem" << endl;
+          return EXIT_FAILURE;
+        }
+      } else if (os::stat::islink(target)) {
+        Try<Nothing> remove = os::rm(target);
+        if (remove.isError()) {
+          cerr << "Failed to remove '" << target << "' "
+               << "as it's a symbolic link" << endl;
+          return EXIT_FAILURE;
+        }
+
         Try<Nothing> touch = os::touch(target);
         if (touch.isError()) {
           cerr << "Failed to create the mount point '" << target
