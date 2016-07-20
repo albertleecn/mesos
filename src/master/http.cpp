@@ -525,9 +525,6 @@ Future<Response> Master::Http::api(
     case mesos::master::Call::GET_STATE:
       return getState(call, principal, acceptType);
 
-    case mesos::master::Call::GET_STATE_SUMMARY:
-      return NotImplemented();
-
     case mesos::master::Call::GET_AGENTS:
       return getAgents(call, principal, acceptType);
 
@@ -549,8 +546,8 @@ Future<Response> Master::Http::api(
     case mesos::master::Call::UPDATE_WEIGHTS:
       return weightsHandler.update(call, principal, acceptType);
 
-    case mesos::master::Call::GET_LEADING_MASTER:
-      return getLeadingMaster(call, principal, acceptType);
+    case mesos::master::Call::GET_MASTER:
+      return getMaster(call, principal, acceptType);
 
     case mesos::master::Call::RESERVE_RESOURCES:
       return reserveResources(call, principal, acceptType);
@@ -1958,21 +1955,21 @@ Future<Response> Master::Http::setLoggingLevel(
 }
 
 
-Future<Response> Master::Http::getLeadingMaster(
+Future<Response> Master::Http::getMaster(
     const mesos::master::Call& call,
     const Option<string>& principal,
     ContentType contentType) const
 {
-  CHECK_EQ(mesos::master::Call::GET_LEADING_MASTER, call.type());
+  CHECK_EQ(mesos::master::Call::GET_MASTER, call.type());
 
   mesos::master::Response response;
-  response.set_type(mesos::master::Response::GET_LEADING_MASTER);
+  response.set_type(mesos::master::Response::GET_MASTER);
 
   // It is guaranteed that this master has been elected as the leader.
   CHECK(master->elected());
 
-  response.mutable_get_leading_master()->mutable_master_info()->CopyFrom(
-    master->info());
+  response.mutable_get_master()->mutable_master_info()->CopyFrom(
+      master->info());
 
   return OK(serialize(contentType, evolve(response)),
             stringify(contentType));

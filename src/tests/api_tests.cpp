@@ -92,6 +92,14 @@ class MasterAPITest
     public WithParamInterface<ContentType>
 {
 public:
+  virtual master::Flags CreateMasterFlags()
+  {
+    // Set a low allocation interval to speed up tests.
+    master::Flags flags = MesosTest::CreateMasterFlags();
+    flags.allocation_interval = Milliseconds(50);
+    return flags;
+  }
+
   // Helper function to post a request to "/api/v1" master endpoint and return
   // the response.
   Future<v1::master::Response> post(
@@ -900,13 +908,13 @@ TEST_P(MasterAPITest, GetRoles)
 }
 
 
-TEST_P(MasterAPITest, GetLeadingMaster)
+TEST_P(MasterAPITest, GetMaster)
 {
   Try<Owned<cluster::Master>> master = this->StartMaster();
   ASSERT_SOME(master);
 
   v1::master::Call v1Call;
-  v1Call.set_type(v1::master::Call::GET_LEADING_MASTER);
+  v1Call.set_type(v1::master::Call::GET_MASTER);
 
   ContentType contentType = GetParam();
 
@@ -915,9 +923,9 @@ TEST_P(MasterAPITest, GetLeadingMaster)
 
   AWAIT_READY(v1Response);
   ASSERT_TRUE(v1Response->IsInitialized());
-  ASSERT_EQ(v1::master::Response::GET_LEADING_MASTER, v1Response->type());
+  ASSERT_EQ(v1::master::Response::GET_MASTER, v1Response->type());
   ASSERT_EQ(master.get()->getMasterInfo().ip(),
-            v1Response->get_leading_master().master_info().ip());
+            v1Response->get_master().master_info().ip());
 }
 
 
@@ -1039,32 +1047,6 @@ TEST_P(MasterAPITest, UnreserveResources)
       frameworkInfo.role(),
       createReservationInfo(DEFAULT_CREDENTIAL.principal()));
 
-  MockScheduler sched;
-  MesosSchedulerDriver driver(
-      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
-
-  Future<vector<Offer>> offers;
-
-  EXPECT_CALL(sched, registered(&driver, _, _));
-
-  EXPECT_CALL(sched, resourceOffers(&driver, _))
-    .WillOnce(FutureArg<1>(&offers));
-
-  driver.start();
-
-  AWAIT_READY(offers);
-
-  ASSERT_EQ(1u, offers->size());
-  Offer offer = offers.get()[0];
-
-  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
-
-  EXPECT_CALL(sched, resourceOffers(&driver, _))
-    .WillOnce(FutureArg<1>(&offers));
-
-  // Expect an offer to be rescinded!
-  EXPECT_CALL(sched, offerRescinded(_, _));
-
   v1::master::Call v1Call;
   v1Call.set_type(v1::master::Call::RESERVE_RESOURCES);
 
@@ -1089,10 +1071,23 @@ TEST_P(MasterAPITest, UnreserveResources)
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(Accepted().status, reserveResponse);
 
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  Future<vector<Offer>> offers;
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  driver.start();
+
   AWAIT_READY(offers);
 
   ASSERT_EQ(1u, offers->size());
-  offer = offers.get()[0];
+  Offer offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(dynamicallyReserved));
 
@@ -1102,7 +1097,6 @@ TEST_P(MasterAPITest, UnreserveResources)
   // Expect an offer to be rescinded!
   EXPECT_CALL(sched, offerRescinded(_, _));
 
-  // Unreserve the resources.
   v1Call.set_type(v1::master::Call::UNRESERVE_RESOURCES);
 
   v1::master::Call::UnreserveResources* unreserveResources =
@@ -1129,6 +1123,7 @@ TEST_P(MasterAPITest, UnreserveResources)
   ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
+  // Verifies if the resources are unreserved.
   EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
 
   driver.stop();
