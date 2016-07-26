@@ -30,10 +30,7 @@
 
 #include <mesos/type_utils.hpp>
 
-#include <mesos/authentication/http/basic_authenticator_factory.hpp>
-
 #include <mesos/module/authenticatee.hpp>
-#include <mesos/module/http_authenticator.hpp>
 
 #include <process/async.hpp>
 #include <process/check.hpp>
@@ -132,10 +129,6 @@ namespace internal {
 namespace slave {
 
 using namespace state;
-
-namespace authentication = process::http::authentication;
-
-using mesos::http::authentication::BasicAuthenticatorFactory;
 
 Slave::Slave(const std::string& id,
              const slave::Flags& _flags,
@@ -345,109 +338,41 @@ void Slave::initialize()
     }
   }
 
-  vector<string> httpAuthenticatorNames =
-    strings::split(flags.http_authenticators, ",");
-
-  // If the `http_authenticators` flag is not specified, the default value will
-  // be filled in. Passing an empty string into the `http_authenticators` flag
-  // is considered an error.
-  if (httpAuthenticatorNames.empty()) {
-    EXIT(EXIT_FAILURE) << "No HTTP authenticator specified";
-  }
-  if (httpAuthenticatorNames.size() > 1) {
-    EXIT(EXIT_FAILURE) << "Multiple HTTP authenticators not supported";
-  }
-  if (httpAuthenticatorNames[0] != DEFAULT_HTTP_AUTHENTICATOR &&
-      !modules::ModuleManager::contains<authentication::Authenticator>(
-          httpAuthenticatorNames[0])) {
-    EXIT(EXIT_FAILURE)
-      << "HTTP authenticator '" << httpAuthenticatorNames[0] << "'"
-      << " not found. Check the spelling (compare to '"
-      << DEFAULT_HTTP_AUTHENTICATOR << "') or verify that the"
-      << " authenticator was loaded successfully (see --modules)";
-  }
-
-  if (flags.authenticate_http) {
-    authentication::Authenticator* httpAuthenticator = nullptr;
-
-    if (httpAuthenticatorNames[0] == DEFAULT_HTTP_AUTHENTICATOR) {
-      // Load credentials for HTTP authentication.
-      Credentials httpCredentials;
-      if (flags.http_credentials.isSome()) {
-        Result<Credentials> credentials =
-          credentials::read(flags.http_credentials.get());
-        if (credentials.isError()) {
-          EXIT(EXIT_FAILURE)
-            << credentials.error() << " (see --http_credentials flag)";
-        } else if (credentials.isNone()) {
-          EXIT(EXIT_FAILURE)
-            << "Credentials file must contain at least one credential"
-            << " (see --http_credentials flag)";
-        }
-
-        httpCredentials = credentials.get();
-      } else {
-        EXIT(EXIT_FAILURE)
-          << "No credentials provided for the default '"
-          << DEFAULT_HTTP_AUTHENTICATOR << "' HTTP authenticator";
-      }
-
-      LOG(INFO) << "Using default '" << DEFAULT_HTTP_AUTHENTICATOR
-                << "' HTTP authenticator";
-
-      Try<authentication::Authenticator*> authenticator =
-        BasicAuthenticatorFactory::create(
-            DEFAULT_HTTP_AUTHENTICATION_REALM,
-            httpCredentials);
-      if (authenticator.isError()) {
-        EXIT(EXIT_FAILURE)
-          << "Could not create HTTP authenticator module '"
-          << httpAuthenticatorNames[0] << "': " << authenticator.error();
-      }
-
-      httpAuthenticator = authenticator.get();
-    } else {
-      if (flags.http_credentials.isSome()) {
-        EXIT(EXIT_FAILURE)
-          << "The '--http_credentials' flag is only used by the default"
-          << " basic HTTP authenticator, but a custom authenticator"
-          << " module was specified via '--http_authenticators'";
-      }
-
-      Try<authentication::Authenticator*> module =
-        modules::ModuleManager::create<authentication::Authenticator>(
-            httpAuthenticatorNames[0]);
-      if (module.isError()) {
-        EXIT(EXIT_FAILURE)
-          << "Could not create HTTP authenticator module '"
-          << httpAuthenticatorNames[0] << "': " << module.error();
-      }
-
-      LOG(INFO) << "Using '" << httpAuthenticatorNames[0]
-                << "' HTTP authenticator";
-
-      httpAuthenticator = module.get();
+  Option<Credentials> httpCredentials;
+  if (flags.http_credentials.isSome()) {
+    Result<Credentials> credentials =
+      credentials::read(flags.http_credentials.get());
+    if (credentials.isError()) {
+       EXIT(EXIT_FAILURE)
+         << credentials.error() << " (see --http_credentials flag)";
+    } else if (credentials.isNone()) {
+       EXIT(EXIT_FAILURE)
+         << "Credentials file must contain at least one credential"
+         << " (see --http_credentials flag)";
     }
+    httpCredentials = credentials.get();
+  }
 
-    if (httpAuthenticator == nullptr) {
-      EXIT(EXIT_FAILURE)
-        << "An error occurred while initializing the '"
-        << httpAuthenticatorNames[0] << "' HTTP authenticator";
+  if (flags.authenticate_http_readonly) {
+    Try<Nothing> result = initializeHttpAuthenticators(
+        READONLY_HTTP_AUTHENTICATION_REALM,
+        strings::split(flags.http_authenticators, ","),
+        httpCredentials);
+
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE) << result.error();
     }
+  }
 
-    // Ownership of the `httpAuthenticator` is passed to libprocess.
-    process::http::authentication::setAuthenticator(
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
-        Owned<authentication::Authenticator>(httpAuthenticator));
-  } else if (flags.http_credentials.isSome()) {
-    EXIT(EXIT_FAILURE)
-      << "The '--http_credentials' flag was provided, but HTTP"
-      << " authentication was not enabled via '--authenticate_http'";
-  } else if (httpAuthenticatorNames[0] != DEFAULT_HTTP_AUTHENTICATOR) {
-    EXIT(EXIT_FAILURE)
-      << "A custom HTTP authenticator was specified with the"
-      << " '--http_authenticators' flag, but HTTP authentication was not"
-      << " enabled via '--authenticate_http'";
+  if (flags.authenticate_http_readwrite) {
+    Try<Nothing> result = initializeHttpAuthenticators(
+        READWRITE_HTTP_AUTHENTICATION_REALM,
+        strings::split(flags.http_authenticators, ","),
+        httpCredentials);
+
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE) << result.error();
+    }
   }
 
   if ((flags.gc_disk_headroom < 0) || (flags.gc_disk_headroom > 1)) {
@@ -708,7 +633,7 @@ void Slave::initialize()
         // TODO(benh): Is this authentication realm sufficient or do
         // we need some kind of hybrid if we expect both executors
         // and operators/tooling to use this endpoint?
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::API_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -726,7 +651,7 @@ void Slave::initialize()
   // TODO(ijimenez): Remove this endpoint at the end of the
   // deprecation cycle on 0.26.
   route("/state.json",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::STATE_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -734,7 +659,7 @@ void Slave::initialize()
           return http.state(request, principal);
         });
   route("/state",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::STATE_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -742,7 +667,7 @@ void Slave::initialize()
           return http.state(request, principal);
         });
   route("/flags",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::FLAGS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -755,7 +680,7 @@ void Slave::initialize()
           return http.health(request);
         });
   route("/monitor/statistics",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::STATISTICS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -764,14 +689,14 @@ void Slave::initialize()
   // TODO(ijimenez): Remove this endpoint at the end of the
   // deprecation cycle on 0.26.
   route("/monitor/statistics.json",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::STATISTICS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
           return http.statistics(request, principal);
         });
   route("/containers",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::CONTAINERS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -835,6 +760,7 @@ void Slave::initialize()
     .then(defer(self(), &Slave::_recover))
     .onAny(defer(self(), &Slave::__recover, lambda::_1));
 }
+
 
 void Slave::finalize()
 {
@@ -1429,7 +1355,7 @@ void Slave::doReliableRegistration(Duration maxBackoff)
 
       // TODO(bmahler): We need to send the executors for these
       // pending tasks, and we need to send exited events if they
-      // cannot be launched: MESOS-1715 MESOS-1720.
+      // cannot be launched, see MESOS-1715, MESOS-1720, MESOS-1800.
       typedef hashmap<TaskID, TaskInfo> TaskMap;
       foreachvalue (const TaskMap& tasks, framework->pending) {
         foreachvalue (const TaskInfo& task, tasks) {

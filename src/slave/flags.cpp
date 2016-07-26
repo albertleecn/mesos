@@ -25,6 +25,7 @@
 
 #include <mesos/type_utils.hpp>
 
+#include "common/http.hpp"
 #include "common/parse.hpp"
 
 #include "slave/constants.hpp"
@@ -786,11 +787,18 @@ mesos::internal::slave::Flags::Flags()
       "Currently there is no support for multiple HTTP authenticators.",
       DEFAULT_HTTP_AUTHENTICATOR);
 
-  add(&Flags::authenticate_http,
-      "authenticate_http",
-      "If `true`, only authenticated requests for HTTP endpoints supporting\n"
-      "authentication are allowed. If `false`, unauthenticated requests to\n"
-      "HTTP endpoints are also allowed.",
+  add(&Flags::authenticate_http_readwrite,
+      "authenticate_http_readwrite",
+      "If `true`, only authenticated requests for read-write HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
+      false);
+
+  add(&Flags::authenticate_http_readonly,
+      "authenticate_http_readonly",
+      "If `true`, only authenticated requests for read-only HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
       false);
 
   add(&Flags::http_credentials,

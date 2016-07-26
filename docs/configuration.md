@@ -69,12 +69,22 @@ access Mesos master/agent.
 </tr>
 <tr>
   <td>
-    --[no-]authenticate_http
+    --[no-]authenticate_http_readonly
   </td>
   <td>
-If <code>true</code>, only authenticated requests for HTTP endpoints supporting
-authentication are allowed. If <code>false</code>, unauthenticated requests to
-HTTP endpoints are also allowed. (default: false)
+If <code>true</code>, only authenticated requests for read-only HTTP endpoints
+supporting authentication are allowed. If <code>false</code>, unauthenticated
+requests to such HTTP endpoints are also allowed.
+  </td>
+</tr>
+<tr>
+  <td>
+    --[no-]authenticate_http_readwrite
+  </td>
+  <td>
+If <code>true</code>, only authenticated requests for read-write HTTP endpoints
+supporting authentication are allowed. If <code>false</code>, unauthenticated
+requests to such HTTP endpoints are also allowed.
   </td>
 </tr>
 <tr>
@@ -788,20 +798,6 @@ after which the operation is considered a failure. (default: 1mins)
   <td>
 Duration of time to wait in order to store data in the registry
 after which the operation is considered a failure. (default: 20secs)
-  </td>
-</tr>
-<tr>
-  <td>
-    --[no-]registry_strict
-  </td>
-  <td>
-Whether the master will take actions based on the persistent
-information stored in the Registry. Setting this to false means
-that the Registrar will never reject the admission, readmission,
-or removal of a agent. Consequently, <code>false</code> can be used to
-bootstrap the persistent state on a running cluster.
-<b>NOTE</b>: This flag is *experimental* and should not be used in
-production yet. (default: false)
   </td>
 </tr>
 <tr>

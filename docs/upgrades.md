@@ -54,6 +54,7 @@ We categorize the changes as follows:
       <li>R <a href="#1-0-x-executor-environment-variables">Executor environment variables inheritance</a></li>
       <li>R <a href="#1-0-x-deprecated-fields-in-container-config">Deprecated fields in ContainerConfig</a></li>
       <li>C <a href="#1-0-x-persistent-volume-ownership">Persistent volume ownership</a></li>
+      <li>C <a href="#1-0-x-fetcher-user">Fetcher assumes same user as task</a></li>
     </ul>
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Flags-->
@@ -63,6 +64,8 @@ We categorize the changes as follows:
       <li>C <a href="#1-0-x-slave">Slave to Agent rename</a></li>
       <li>R <a href="#1-0-x-workdir">work_dir default value</a></li>
       <li>D <a href="#1-0-x-deprecated-ssl-env-variables">SSL environment variables</a></li>
+      <li>ACD <a href="#1-0-x-http-authentication-flags">HTTP authentication</a></li>
+      <li>R <a href="#1-0-x-registry-strict">registry_strict</a></li>
     </ul>
   </td>
   <td style="word-wrap: break-word; overflow-wrap: break-word;"><!--Framework API-->
@@ -218,6 +221,10 @@ We categorize the changes as follows:
 
 * Mesos 1.0 removes the default value for the agent's `work_dir` command-line flag. This flag is now required; the agent will exit immediately if it is not provided.
 
+<a name="1-0-x-registry-strict"></a>
+
+* Mesos 1.0 disables support for the master's `registry_strict` command-line flag. If this flag is specified, the master will exit immediately. Note that this flag was previously marked as experimental and not recommended for production use.
+
 <a name="1-0-x-credentials-file"></a>
 
 * Mesos 1.0 deprecates the use of plain text credential files in favor of JSON-formatted credential files.
@@ -271,6 +278,14 @@ We categorize the changes as follows:
 <a name="1-0-x-allocator"></a>
 
 * Namespace and header file of `Allocator` has been moved to be consistent with other packages.
+
+<a name="1-0-x-fetcher-user"></a>
+
+* When a task is run as a particular user, the fetcher now fetches files as that user also. Note, this means that filesystem permissions for that user will be enforced when fetching local files.
+
+<a name="1-0-x-http-authentication-flags"></a>
+
+* The `--authenticate_http` flag has been deprecated in favor of `--authenticate_http_readwrite`. Setting `--authenticate_http_readwrite` will now enable authentication for all endpoints which previously had authentication support. These happen to be the endpoints which allow modifiication of the cluster state, or "read-write" endpoints. Note that `/logging/toggle`, `/profiler/start`, `/profiler/stop`, `/maintenance/schedule`, `/machine/up`, and `/machine/down` previously did not have authentication support, but in 1.0 if either `--authenticate_http` or `--authenticate_http_readwrite` is set, those endpoints will now require authentication. A new flag has also been introduced, `--authenticate_http_readonly`, which enables authentication for endpoints which support authentication and do not allow modification of the state of the cluster, like `/state` or `/flags`.
 
 <a name="1-0-x-endpoint-authorization"></a>
 

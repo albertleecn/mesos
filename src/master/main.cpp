@@ -275,7 +275,10 @@ int main(int argc, char** argv)
   // `false`, then it has already been called, which means that the
   // authentication realm for libprocess-level HTTP endpoints was not set to the
   // correct value for the master.
-  if (!process::initialize("master", DEFAULT_HTTP_AUTHENTICATION_REALM)) {
+  if (!process::initialize(
+          "master",
+          READWRITE_HTTP_AUTHENTICATION_REALM,
+          READONLY_HTTP_AUTHENTICATION_REALM)) {
     EXIT(EXIT_FAILURE) << "The call to `process::initialize()` in the master's "
                        << "`main()` was not the function's first invocation";
   }
@@ -370,11 +373,6 @@ int main(int argc, char** argv)
   Log* log = nullptr;
 
   if (flags.registry == "in_memory") {
-    if (flags.registry_strict) {
-      EXIT(EXIT_FAILURE)
-        << "Cannot use '--registry_strict' when using in-memory storage"
-        << " based registry";
-    }
     storage = new InMemoryStorage();
   } else if (flags.registry == "replicated_log" ||
              flags.registry == "log_storage") {
@@ -435,7 +433,7 @@ int main(int argc, char** argv)
   mesos::state::protobuf::State* state =
     new mesos::state::protobuf::State(storage);
   Registrar* registrar =
-    new Registrar(flags, state, DEFAULT_HTTP_AUTHENTICATION_REALM);
+    new Registrar(flags, state, READONLY_HTTP_AUTHENTICATION_REALM);
 
   MasterContender* contender;
   MasterDetector* detector;
@@ -504,7 +502,7 @@ int main(int argc, char** argv)
         createAuthorizationCallbacks(authorizer_.get()));
   }
 
-  Files files(DEFAULT_HTTP_AUTHENTICATION_REALM, authorizer_);
+  Files files(READONLY_HTTP_AUTHENTICATION_REALM, authorizer_);
 
   Option<shared_ptr<RateLimiter>> slaveRemovalLimiter = None();
   if (flags.agent_removal_rate_limit.isSome()) {

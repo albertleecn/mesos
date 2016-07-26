@@ -19,6 +19,7 @@
 
 #include <stout/flags.hpp>
 
+#include "common/http.hpp"
 #include "common/parse.hpp"
 #include "master/constants.hpp"
 #include "master/flags.hpp"
@@ -83,7 +84,8 @@ mesos::internal::master::Flags::Flags()
       "ZooKeeper session timeout.",
       ZOOKEEPER_SESSION_TIMEOUT);
 
-  // TODO(bmahler): Set the default to true in 0.20.0.
+  // TODO(neilc): This flag is deprecated in 1.0 and will be removed 6
+  // months later.
   add(&Flags::registry_strict,
       "registry_strict",
       "Whether the master will take actions based on the persistent\n"
@@ -91,9 +93,17 @@ mesos::internal::master::Flags::Flags()
       "that the Registrar will never reject the admission, readmission,\n"
       "or removal of an agent. Consequently, `false` can be used to\n"
       "bootstrap the persistent state on a running cluster.\n"
-      "NOTE: This flag is *experimental* and should not be used in\n"
-      "production yet.",
-      false);
+      "NOTE: This flag is *disabled* and will be removed in a future\n"
+      "version of Mesos.",
+      false,
+      [](bool value) -> Option<Error> {
+        if (value) {
+          return Error("Support for '--registry_strict' has been "
+                       "disabled and will be removed in a future "
+                       "version of Mesos");
+        }
+        return None();
+      });
 
   add(&Flags::registry_fetch_timeout,
       "registry_fetch_timeout",
@@ -222,11 +232,21 @@ mesos::internal::master::Flags::Flags()
       "If `false`, unauthenticated agents are also allowed to register.",
       false);
 
-  add(&Flags::authenticate_http,
-      "authenticate_http",
-      "If `true`, only authenticated requests for HTTP endpoints supporting\n"
-      "authentication are allowed. If `false`, unauthenticated requests to\n"
-      "HTTP endpoints are also allowed.\n",
+  // TODO(zhitao): Remove deprecated `--authenticate_http` flag name after
+  // the deprecation cycle which started with Mesos 1.0.
+  add(&Flags::authenticate_http_readwrite,
+      "authenticate_http_readwrite",
+      flags::DeprecatedName("authenticate_http"),
+      "If `true`, only authenticated requests for read-write HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
+      false);
+
+  add(&Flags::authenticate_http_readonly,
+      "authenticate_http_readonly",
+      "If `true`, only authenticated requests for read-only HTTP endpoints\n"
+      "supporting authentication are allowed. If `false`, unauthenticated\n"
+      "requests to such HTTP endpoints are also allowed.",
       false);
 
   add(&Flags::authenticate_http_frameworks,

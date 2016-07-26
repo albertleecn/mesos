@@ -192,11 +192,6 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
     }
 
     if (flags.registry == "in_memory") {
-      if (flags.registry_strict) {
-        EXIT(EXIT_FAILURE)
-          << "Cannot use '--registry_strict' when using in-memory storage"
-          << " based registry";
-      }
       storage = new mesos::state::InMemoryStorage();
     } else if (flags.registry == "replicated_log") {
       // For local runs, we use a temporary work directory.
@@ -226,7 +221,7 @@ PID<Master> launch(const Flags& flags, Allocator* _allocator)
 
     state = new mesos::state::protobuf::State(storage);
     registrar =
-      new Registrar(flags, state, master::DEFAULT_HTTP_AUTHENTICATION_REALM);
+      new Registrar(flags, state, master::READONLY_HTTP_AUTHENTICATION_REALM);
 
     contender = new StandaloneMasterContender();
     detector = new StandaloneMasterDetector();

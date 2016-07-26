@@ -29,8 +29,6 @@
 
 #include <mesos/authentication/authenticator.hpp>
 
-#include <mesos/authentication/http/basic_authenticator_factory.hpp>
-
 #include <mesos/authorizer/authorizer.hpp>
 
 #include <mesos/allocator/allocator.hpp>
@@ -38,7 +36,6 @@
 #include <mesos/master/detector.hpp>
 
 #include <mesos/module/authenticator.hpp>
-#include <mesos/module/http_authenticator.hpp>
 
 #include <mesos/scheduler/scheduler.hpp>
 
@@ -122,15 +119,11 @@ namespace mesos {
 namespace internal {
 namespace master {
 
-namespace authentication = process::http::authentication;
-
 using mesos::allocator::Allocator;
 
 using mesos::master::contender::MasterContender;
 
 using mesos::master::detector::MasterDetector;
-
-using mesos::http::authentication::BasicAuthenticatorFactory;
 
 static bool isValidFailoverTimeout(const FrameworkInfo& frameworkinfo);
 
@@ -541,75 +534,26 @@ void Master::initialize()
   }
 #endif // HAS_AUTHENTICATION
 
-  // TODO(arojas): Consider creating a factory function for the instantiation
-  // of the HTTP authenticator the same way the allocator does.
-  vector<string> httpAuthenticatorNames =
-    strings::split(flags.http_authenticators, ",");
+  if (flags.authenticate_http_readonly) {
+    Try<Nothing> result = initializeHttpAuthenticators(
+        READONLY_HTTP_AUTHENTICATION_REALM,
+        strings::split(flags.http_authenticators, ","),
+        credentials);
 
-  // At least the default authenticator is always specified.
-  // Passing an empty string into the `http_authenticators`
-  // flag is considered an error.
-  if (httpAuthenticatorNames.empty()) {
-    EXIT(EXIT_FAILURE) << "No HTTP authenticator specified";
-  }
-  if (httpAuthenticatorNames.size() > 1) {
-    EXIT(EXIT_FAILURE) << "Multiple HTTP authenticators not supported";
-  }
-  if (httpAuthenticatorNames[0] != DEFAULT_HTTP_AUTHENTICATOR &&
-      !modules::ModuleManager::contains<authentication::Authenticator>(
-          httpAuthenticatorNames[0])) {
-    EXIT(EXIT_FAILURE)
-      << "HTTP authenticator '" << httpAuthenticatorNames[0] << "' not"
-      << " found. Check the spelling (compare to '"
-      << DEFAULT_HTTP_AUTHENTICATOR << "') or verify that the"
-      << " authenticator was loaded successfully (see --modules)";
-  }
-
-  Option<authentication::Authenticator*> httpAuthenticator;
-
-  if (flags.authenticate_http) {
-    if (httpAuthenticatorNames[0] == DEFAULT_HTTP_AUTHENTICATOR) {
-      if (credentials.isNone()) {
-        EXIT(EXIT_FAILURE)
-          << "No credentials provided for the default '"
-          << DEFAULT_HTTP_AUTHENTICATOR << "' HTTP authenticator";
-      }
-
-      LOG(INFO) << "Using default '" << DEFAULT_HTTP_AUTHENTICATOR
-                << "' HTTP authenticator";
-
-      Try<authentication::Authenticator*> authenticator =
-        BasicAuthenticatorFactory::create(
-            DEFAULT_HTTP_AUTHENTICATION_REALM,
-            credentials.get());
-      if (authenticator.isError()) {
-        EXIT(EXIT_FAILURE)
-          << "Could not create HTTP authenticator module '"
-          << httpAuthenticatorNames[0] << "': " << authenticator.error();
-      }
-
-      httpAuthenticator = authenticator.get();
-    } else {
-      Try<authentication::Authenticator*> module =
-        modules::ModuleManager::create<authentication::Authenticator>(
-            httpAuthenticatorNames[0]);
-      if (module.isError()) {
-        EXIT(EXIT_FAILURE)
-          << "Could not create HTTP authenticator module '"
-          << httpAuthenticatorNames[0] << "': " << module.error();
-      }
-      LOG(INFO) << "Using '" << httpAuthenticatorNames[0]
-                << "' HTTP authenticator";
-      httpAuthenticator = module.get();
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE) << result.error();
     }
   }
 
-  if (httpAuthenticator.isSome() && httpAuthenticator.get() != nullptr) {
-    // Ownership of the `httpAuthenticator` is passed to libprocess.
-    process::http::authentication::setAuthenticator(
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
-        Owned<authentication::Authenticator>(httpAuthenticator.get()));
-    httpAuthenticator = None();
+  if (flags.authenticate_http_readwrite) {
+    Try<Nothing> result = initializeHttpAuthenticators(
+        READWRITE_HTTP_AUTHENTICATION_REALM,
+        strings::split(flags.http_authenticators, ","),
+        credentials);
+
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE) << result.error();
+    }
   }
 
   if (flags.authenticate_http_frameworks) {
@@ -621,84 +565,14 @@ void Master::initialize()
         << "in conjunction with `--authenticate_http_frameworks`";
     }
 
-    vector<string> httpFrameworkAuthenticatorNames =
-      strings::split(flags.http_framework_authenticators.get(), ",");
+    Try<Nothing> result = initializeHttpAuthenticators(
+        DEFAULT_HTTP_FRAMEWORK_AUTHENTICATION_REALM,
+        strings::split(flags.http_framework_authenticators.get(), ","),
+        credentials);
 
-    // Passing an empty string into the `http_framework_authenticators`
-    // flag is considered an error.
-    if (httpFrameworkAuthenticatorNames.empty()) {
-      EXIT(EXIT_FAILURE) << "No HTTP framework authenticator specified";
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE) << result.error();
     }
-
-    if (httpFrameworkAuthenticatorNames.size() > 1) {
-      EXIT(EXIT_FAILURE) << "Multiple HTTP framework authenticators not "
-                         << "supported";
-    }
-
-    if (httpFrameworkAuthenticatorNames[0] != DEFAULT_HTTP_AUTHENTICATOR &&
-        !modules::ModuleManager::contains<authentication::Authenticator>(
-            httpFrameworkAuthenticatorNames[0])) {
-      EXIT(EXIT_FAILURE)
-        << "HTTP framework authenticator '"
-        << httpFrameworkAuthenticatorNames[0]
-        << "' not found. Check the spelling (compare to '"
-        << DEFAULT_HTTP_AUTHENTICATOR << "') or verify that the"
-        << " authenticator was loaded successfully (see --modules)";
-    }
-
-    Option<authentication::Authenticator*> httpFrameworkAuthenticator;
-
-    if (httpFrameworkAuthenticatorNames[0] == DEFAULT_HTTP_AUTHENTICATOR) {
-      if (credentials.isNone()) {
-        EXIT(EXIT_FAILURE)
-          << "No credentials provided for the default '"
-          << DEFAULT_HTTP_AUTHENTICATOR << "' HTTP framework authenticator";
-      }
-
-      LOG(INFO) << "Using default '" << DEFAULT_HTTP_AUTHENTICATOR
-                << "' HTTP framework authenticator";
-
-      Try<authentication::Authenticator*> authenticator =
-        BasicAuthenticatorFactory::create(
-            DEFAULT_HTTP_FRAMEWORK_AUTHENTICATION_REALM,
-            credentials.get());
-
-      if (authenticator.isError()) {
-        EXIT(EXIT_FAILURE)
-          << "Could not create HTTP framework authenticator module '"
-          << httpFrameworkAuthenticatorNames[0] << "': "
-          << authenticator.error();
-      }
-
-      httpFrameworkAuthenticator = authenticator.get();
-    } else {
-      Try<authentication::Authenticator*> module =
-        modules::ModuleManager::create<authentication::Authenticator>(
-            httpFrameworkAuthenticatorNames[0]);
-
-      if (module.isError()) {
-        EXIT(EXIT_FAILURE)
-          << "Could not create HTTP framework authenticator module '"
-          << httpFrameworkAuthenticatorNames[0] << "': " << module.error();
-      }
-
-      LOG(INFO) << "Using '" << httpFrameworkAuthenticatorNames[0]
-                << "' HTTP framework authenticator";
-
-      httpFrameworkAuthenticator = module.get();
-    }
-
-    CHECK_SOME(httpFrameworkAuthenticator);
-
-    if (httpFrameworkAuthenticator.get() != nullptr) {
-      // Ownership of the `httpFrameworkAuthenticator` is passed to libprocess.
-      process::http::authentication::setAuthenticator(
-          DEFAULT_HTTP_FRAMEWORK_AUTHENTICATION_REALM,
-          Owned<authentication::Authenticator>(
-              httpFrameworkAuthenticator.get()));
-    }
-
-    httpFrameworkAuthenticator = None();
   }
 
   if (authorizer.isSome()) {
@@ -968,7 +842,7 @@ void Master::initialize()
         // TODO(benh): Is this authentication realm sufficient or do
         // we need some kind of hybrid if we expect both schedulers
         // and operators/tooling to use this endpoint?
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::API_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -984,7 +858,7 @@ void Master::initialize()
           return http.scheduler(request, principal);
         });
   route("/create-volumes",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::CREATE_VOLUMES_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -992,7 +866,7 @@ void Master::initialize()
           return http.createVolumes(request, principal);
         });
   route("/destroy-volumes",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::DESTROY_VOLUMES_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1000,7 +874,7 @@ void Master::initialize()
           return http.destroyVolumes(request, principal);
         });
   route("/frameworks",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::FRAMEWORKS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1008,7 +882,7 @@ void Master::initialize()
           return http.frameworks(request, principal);
         });
   route("/flags",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::FLAGS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1026,7 +900,7 @@ void Master::initialize()
           return http.redirect(request);
         });
   route("/reserve",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::RESERVE_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1036,7 +910,7 @@ void Master::initialize()
   // TODO(ijimenez): Remove this endpoint at the end of the
   // deprecation cycle on 0.26.
   route("/roles.json",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::ROLES_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1044,7 +918,7 @@ void Master::initialize()
           return http.roles(request, principal);
         });
   route("/roles",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::ROLES_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1052,7 +926,7 @@ void Master::initialize()
           return http.roles(request, principal);
         });
   route("/teardown",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::TEARDOWN_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1060,7 +934,7 @@ void Master::initialize()
           return http.teardown(request, principal);
         });
   route("/slaves",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::SLAVES_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1070,7 +944,7 @@ void Master::initialize()
   // TODO(ijimenez): Remove this endpoint at the end of the
   // deprecation cycle on 0.26.
   route("/state.json",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::STATE_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1078,7 +952,7 @@ void Master::initialize()
           return http.state(request, principal);
         });
   route("/state",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::STATE_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1086,7 +960,7 @@ void Master::initialize()
           return http.state(request, principal);
         });
   route("/state-summary",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::STATESUMMARY_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1096,7 +970,7 @@ void Master::initialize()
   // TODO(ijimenez): Remove this endpoint at the end of the
   // deprecation cycle.
   route("/tasks.json",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::TASKS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1104,7 +978,7 @@ void Master::initialize()
           return http.tasks(request, principal);
         });
   route("/tasks",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::TASKS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1112,7 +986,7 @@ void Master::initialize()
           return http.tasks(request, principal);
         });
   route("/maintenance/schedule",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::MAINTENANCE_SCHEDULE_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1120,7 +994,7 @@ void Master::initialize()
           return http.maintenanceSchedule(request, principal);
         });
   route("/maintenance/status",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READONLY_HTTP_AUTHENTICATION_REALM,
         Http::MAINTENANCE_STATUS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1128,7 +1002,7 @@ void Master::initialize()
           return http.maintenanceStatus(request, principal);
         });
   route("/machine/down",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::MACHINE_DOWN_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1136,7 +1010,7 @@ void Master::initialize()
           return http.machineDown(request, principal);
         });
   route("/machine/up",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::MACHINE_UP_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1144,7 +1018,7 @@ void Master::initialize()
           return http.machineUp(request, principal);
         });
   route("/unreserve",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::UNRESERVE_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1152,7 +1026,7 @@ void Master::initialize()
           return http.unreserve(request, principal);
         });
   route("/quota",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::QUOTA_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -1160,7 +1034,7 @@ void Master::initialize()
           return http.quota(request, principal);
         });
   route("/weights",
-        DEFAULT_HTTP_AUTHENTICATION_REALM,
+        READWRITE_HTTP_AUTHENTICATION_REALM,
         Http::WEIGHTS_HELP(),
         [this](const process::http::Request& request,
                const Option<string>& principal) {
@@ -3378,6 +3252,9 @@ void Master::accept(
         ++metrics->messages_launch_tasks;
       } else {
         ++metrics->messages_decline_offers;
+        LOG(WARNING) << "Implicitly declining offers: " << accept.offer_ids()
+                     << " in ACCEPT call for framework " << framework->id()
+                     << " as the launch operation specified no tasks";
       }
     }
 
@@ -7056,7 +6933,7 @@ void Master::removeExecutor(
             << " of framework " << frameworkId << " on agent " << *slave;
 
   allocator->recoverResources(
-    frameworkId, slave->id, executor.resources(), None());
+      frameworkId, slave->id, executor.resources(), None());
 
   Framework* framework = getFramework(frameworkId);
   if (framework != nullptr) { // The framework might not be re-registered yet.
