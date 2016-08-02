@@ -211,33 +211,62 @@ Try<Containerizer*> Containerizer::create(
     return containerizer.get();
   }
 
+  // Get the set of containerizer types.
+  const vector<string> _types = strings::split(flags.containerizers, ",");
+  const set<string> containerizerTypes(_types.begin(), _types.end());
+
+  if (containerizerTypes.size() != _types.size()) {
+    return Error("Duplicate entries found in --containerizer flag"
+                 " '" + flags.containerizers + "'");
+  }
+
   // Optionally create the Nvidia components.
   Option<NvidiaComponents> nvidia;
 
 #ifdef __linux__
   if (nvml::isAvailable()) {
-    Try<Resources> gpus = NvidiaGpuAllocator::resources(flags);
+    // If we are using the docker containerizer (either alone or in
+    // conjunction with the mesos containerizer), unconditionally
+    // create the Nvidia components and pass them through. If we are
+    // using the mesos containerizer alone, make sure we also have the
+    // `gpu/nvidia` isolator flag set before creating these components.
+    bool shouldCreate = false;
 
-    if (gpus.isError()) {
-      return Error("Failed call to NvidiaGpuAllocator::resources: " +
-                   gpus.error());
+    if (containerizerTypes.count("docker") > 0) {
+      shouldCreate = true;
+    } else if (containerizerTypes.count("mesos") > 0) {
+      const vector<string> _isolators = strings::tokenize(flags.isolation, ",");
+      const set<string> isolators(_isolators.begin(), _isolators.end());
+
+      if (isolators.count("gpu/nvidia") > 0) {
+        shouldCreate = true;
+      }
     }
 
-    Try<NvidiaGpuAllocator> allocator =
-      NvidiaGpuAllocator::create(flags, gpus.get());
+    if (shouldCreate) {
+      Try<Resources> gpus = NvidiaGpuAllocator::resources(flags);
 
-    if (allocator.isError()) {
-      return Error("Failed to NvidiaGpuAllocator::create: " +
-                   allocator.error());
+      if (gpus.isError()) {
+        return Error("Failed call to NvidiaGpuAllocator::resources: " +
+                     gpus.error());
+      }
+
+      Try<NvidiaGpuAllocator> allocator =
+        NvidiaGpuAllocator::create(flags, gpus.get());
+
+      if (allocator.isError()) {
+        return Error("Failed to NvidiaGpuAllocator::create: " +
+                     allocator.error());
+      }
+
+      Try<NvidiaVolume> volume = NvidiaVolume::create();
+
+      if (volume.isError()) {
+        return Error("Failed to NvidiaVolume::create: " + volume.error());
+      }
+
+      nvidia = NvidiaComponents(allocator.get(), volume.get());
     }
-
-    Try<NvidiaVolume> volume = NvidiaVolume::create();
-
-    if (volume.isError()) {
-      return Error("Failed to NvidiaVolume::create: " + volume.error());
-    }
-
-    nvidia = NvidiaComponents(allocator.get(), volume.get());
   }
 #endif
 
@@ -247,7 +276,7 @@ Try<Containerizer*> Containerizer::create(
   // Create containerizer(s).
   vector<Containerizer*> containerizers;
 
-  foreach (const string& type, strings::split(flags.containerizers, ",")) {
+  foreach (const string& type, containerizerTypes) {
     if (type == "mesos") {
       Try<MesosContainerizer*> containerizer =
         MesosContainerizer::create(flags, local, fetcher, nvidia);

@@ -14,22 +14,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-include(MesosTestsConfigure)
+# TODO(josephw): Enable this on Windows after sorting out the dependencies.
+if (NOT WIN32)
 
-######################
-set(ACTIVE_USER_TEST_HELPER_SRC
-  ${ACTIVE_USER_TEST_HELPER_SRC}
-  active_user_test_helper.cpp
+set(MESOS_EXECUTE_TARGET mesos-execute
+  CACHE STRING "Utility used to schedule and run a command in a mesos cluster.")
+
+# THE MESOS-EXECUTE SOURCE.
+###########################
+set(MESOS_EXECUTE_SRC
+  ${MESOS_EXECUTE_SRC}
+  execute.cpp
   )
 
-add_subdirectory(containerizer/)
+# THE MESOS EXECUTE.
+#######################
+add_executable(${MESOS_EXECUTE_TARGET} ${MESOS_EXECUTE_SRC})
 
-# TODO(hausdorff): Add the other tests here.
-
-# THE TEST AND HELPER EXECUTABLEs (generates, e.g., stout_tests, etc., on Linux).
-#################################$###############################################
-add_executable(${ACTIVE_USER_TEST_HELPER_TARGET} ${ACTIVE_USER_TEST_HELPER_SRC})
+# ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
+######################################################
+target_link_libraries(${MESOS_EXECUTE_TARGET} ${MESOS_TARGET})
 
 # ADD BINARY DEPENDENCIES (tells CMake what to compile/build first).
 ####################################################################
-add_dependencies(${ACTIVE_USER_TEST_HELPER_TARGET} ${STOUT_DEPENDENCIES})
+add_dependencies(${MESOS_EXECUTE_TARGET} ${MESOS_TARGET})
+
+endif (NOT WIN32)

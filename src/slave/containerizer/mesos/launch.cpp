@@ -22,6 +22,8 @@
 
 #include <iostream>
 
+#include <process/subprocess.hpp>
+
 #include <stout/foreach.hpp>
 #include <stout/os.hpp>
 #include <stout/protobuf.hpp>
@@ -41,6 +43,8 @@ using std::cout;
 using std::endl;
 using std::string;
 using std::vector;
+
+using process::Subprocess;
 
 namespace mesos {
 namespace internal {
@@ -106,7 +110,7 @@ int MesosContainerizerLaunch::execute()
   // Check command line flags.
   if (flags.command.isNone()) {
     cerr << "Flag --command is not specified" << endl;
-    return 1;
+    return EXIT_FAILURE;
   }
 
   bool controlPipeSpecified =
@@ -116,7 +120,7 @@ int MesosContainerizerLaunch::execute()
       (flags.pipe_read.isNone() && flags.pipe_write.isSome())) {
     cerr << "Flag --pipe_read and --pipe_write should either be "
          << "both set or both not set" << endl;
-    return 1;
+    return EXIT_FAILURE;
   }
 
   // Parse the command.
@@ -125,19 +129,19 @@ int MesosContainerizerLaunch::execute()
 
   if (command.isError()) {
     cerr << "Failed to parse the command: " << command.error() << endl;
-    return 1;
+    return EXIT_FAILURE;
   }
 
   // Validate the command.
   if (command.get().shell()) {
     if (!command.get().has_value()) {
       cerr << "Shell command is not specified" << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
   } else {
     if (!command.get().has_value()) {
       cerr << "Executable path is not specified" << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
   }
 
@@ -156,7 +160,7 @@ int MesosContainerizerLaunch::execute()
     Try<Nothing> close = os::close(pipe[1]);
     if (close.isError()) {
       cerr << "Failed to close pipe[1]: " << close.error() << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
 
     // Do a blocking read on the pipe until the parent signals us to continue.
@@ -170,13 +174,13 @@ int MesosContainerizerLaunch::execute()
        // agent restarts across a large/busy cluster.
        cerr << "Failed to synchronize with agent "
             << "(it's probably exited)" << endl;
-       return 1;
+       return EXIT_FAILURE;
     }
 
     close = os::close(pipe[0]);
     if (close.isError()) {
       cerr << "Failed to close pipe[0]: " << close.error() << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
   }
 
@@ -185,7 +189,7 @@ int MesosContainerizerLaunch::execute()
     if (unshare(CLONE_NEWNS) != 0) {
       cerr << "Failed to unshare mount namespace: "
            << os::strerror(errno) << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
   }
 #endif // __linux__
@@ -198,33 +202,53 @@ int MesosContainerizerLaunch::execute()
     foreach (const JSON::Value& value, array.values) {
       if (!value.is<JSON::Object>()) {
         cerr << "Invalid JSON format for flag --commands" << endl;
-        return 1;
+        return EXIT_FAILURE;
       }
 
       Try<CommandInfo> parse = ::protobuf::parse<CommandInfo>(value);
       if (parse.isError()) {
         cerr << "Failed to parse a preparation command: "
              << parse.error() << endl;
-        return 1;
-      }
-
-      // TODO(jieyu): Currently, we only accept shell commands for the
-      // preparation commands.
-      if (!parse.get().shell()) {
-        cerr << "Preparation commands need to be shell commands" << endl;
-        return 1;
+        return EXIT_FAILURE;
       }
 
       if (!parse.get().has_value()) {
         cerr << "The 'value' of a preparation command is not specified" << endl;
-        return 1;
+        return EXIT_FAILURE;
       }
 
-      // Block until the command completes.
-      int status = os::system(parse.get().value());
-      if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
-        cerr << "Failed to execute a preparation shell command" << endl;
-        return 1;
+      Try<Subprocess> s = Error("Not launched");
+
+      if (parse->shell()) {
+        s = subprocess(parse->value(), Subprocess::PATH("/dev/null"));
+      } else {
+        // Launch non-shell command as a subprocess to avoid injecting
+        // arbitrary shell commands.
+        vector<string> args;
+        foreach (const string& arg, parse->arguments()) {
+          args.push_back(arg);
+        }
+
+        s = subprocess(parse->value(), args, Subprocess::PATH("/dev/null"));
+      }
+
+      if (s.isError()) {
+        cerr << "Failed to create the pre-exec subprocess: "
+             << s.error() << endl;
+        return EXIT_FAILURE;
+      }
+
+      s->status().await();
+
+      Option<int> status = s->status().get();
+      if (status.isNone()) {
+        cerr << "Failed to reap the pre-exec subprocess "
+             << "'" << value << "'" << endl;
+        return EXIT_FAILURE;
+      } else if (status.get() != 0) {
+        cerr << "The pre-exec subprocess '" << value << "' "
+             << "failed" << endl;
+        return EXIT_FAILURE;
       }
     }
   }
@@ -249,7 +273,7 @@ int MesosContainerizerLaunch::execute()
     if (!_uid.isSome()) {
       cerr << "Failed to get the uid of user '" << flags.user.get() << "': "
            << (_uid.isError() ? _uid.error() : "not found") << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
 
     // No need to change user/groups if the specified user is the same
@@ -259,7 +283,7 @@ int MesosContainerizerLaunch::execute()
       if (!_gid.isSome()) {
         cerr << "Failed to get the gid of user '" << flags.user.get() << "': "
              << (_gid.isError() ? _gid.error() : "not found") << endl;
-        return 1;
+        return EXIT_FAILURE;
       }
 
       Try<vector<gid_t>> _gids = os::getgrouplist(flags.user.get());
@@ -267,7 +291,7 @@ int MesosContainerizerLaunch::execute()
         cerr << "Failed to get the supplementary gids of user '"
              << flags.user.get() << "': "
              << (_gids.isError() ? _gids.error() : "not found") << endl;
-        return 1;
+        return EXIT_FAILURE;
       }
 
       uid = _uid.get();
@@ -293,13 +317,13 @@ int MesosContainerizerLaunch::execute()
     if (realpath.isError()) {
       cerr << "Failed to determine if rootfs is an absolute path: "
            << realpath.error() << endl;
-      return 1;
+      return EXIT_FAILURE;
     } else if (realpath.isNone()) {
       cerr << "Rootfs path does not exist" << endl;
-      return 1;
+      return EXIT_FAILURE;
     } else if (realpath.get() != rootfs.get()) {
       cerr << "Rootfs path is not an absolute path" << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
 
 #ifdef __linux__
@@ -312,7 +336,7 @@ int MesosContainerizerLaunch::execute()
     if (chroot.isError()) {
       cerr << "Failed to enter chroot '" << rootfs.get()
            << "': " << chroot.error();
-      return 1;
+      return EXIT_FAILURE;
     }
   }
 
@@ -325,21 +349,21 @@ int MesosContainerizerLaunch::execute()
     if (setgid.isError()) {
       cerr << "Failed to set gid to " << gid.get()
            << ": " << setgid.error() << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
 
     Try<Nothing> setgroups = os::setgroups(gids, uid);
     if (setgroups.isError()) {
       cerr << "Failed to set supplementary gids: "
            << setgroups.error() << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
 
     Try<Nothing> setuid = os::setuid(uid.get());
     if (setuid.isError()) {
       cerr << "Failed to set uid to " << uid.get()
            << ": " << setuid.error() << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
   }
 #endif // __WINDOWS__
@@ -350,7 +374,7 @@ int MesosContainerizerLaunch::execute()
       cerr << "Failed to chdir into current working directory "
            << "'" << flags.working_directory.get() << "': "
            << chdir.error() << endl;
-      return 1;
+      return EXIT_FAILURE;
     }
   }
 
