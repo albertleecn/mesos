@@ -329,7 +329,7 @@ string RegistrarProcess::registryHelp()
 Future<Registry> RegistrarProcess::recover(const MasterInfo& info)
 {
   if (recovered.isNone()) {
-    LOG(INFO) << "Recovering registrar";
+    VLOG(1) << "Recovering registrar";
 
     metrics.state_fetch.start();
     state->fetch<Registry>("registry")
@@ -462,7 +462,7 @@ void RegistrarProcess::update()
   }
 
   LOG(INFO) << "Applied " << operations.size() << " operations in "
-            << stopwatch.elapsed() << "; attempting to update the 'registry'";
+            << stopwatch.elapsed() << "; attempting to update the registry";
 
   // Perform the store, and time the operation.
   metrics.state_store.start();
@@ -488,7 +488,7 @@ void RegistrarProcess::_update(
 
   // Abort if the storage operation did not succeed.
   if (!store.isReady() || store.get().isNone()) {
-    string message = "Failed to update 'registry': ";
+    string message = "Failed to update registry: ";
 
     if (store.isFailed()) {
       message += store.failure();
@@ -506,7 +506,7 @@ void RegistrarProcess::_update(
 
   Duration elapsed = metrics.state_store.stop();
 
-  LOG(INFO) << "Successfully updated the 'registry' in " << elapsed;
+  LOG(INFO) << "Successfully updated the registry in " << elapsed;
 
   variable = store.get().get();
 

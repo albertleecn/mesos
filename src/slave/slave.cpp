@@ -195,7 +195,7 @@ void Slave::signaled(int signal, int uid)
 
 void Slave::initialize()
 {
-  LOG(INFO) << "Agent started on " << string(self()).substr(6);
+  LOG(INFO) << "Mesos agent started on " << string(self()).substr(5);
   LOG(INFO) << "Flags at startup: " << flags;
 
   if (self().address.ip.isLoopback()) {
@@ -1964,7 +1964,7 @@ void Slave::runTasks(
   // when the original instance of the executor was shutting down.
   if (executor->containerId != containerId) {
     LOG(WARNING) << "Ignoring sending queued tasks '" << taskIds
-                 << " to executor " << *executor
+                 << "' to executor " << *executor
                  << " because the target container " << containerId
                  << " has exited";
     return;
@@ -3782,7 +3782,7 @@ void Slave::pingTimeout(Future<Option<MasterInfo>> future)
 
 void Slave::exited(const UPID& pid)
 {
-  LOG(INFO) << pid << " exited";
+  LOG(INFO) << "Got exited event for " << pid;
 
   if (master.isNone() || master.get() == pid) {
     // TODO(neilc): Try to re-link to the master (MESOS-1963).
@@ -5757,12 +5757,12 @@ Executor* Framework::launchExecutor(
   }
 
   CHECK(!executors.contains(executorInfo.executor_id()))
-    << "Unknown executor " << executorInfo.executor_id();
+    << "Unknown executor '" << executorInfo.executor_id() << "'";
 
   executors[executorInfo.executor_id()] = executor;
 
-  LOG(INFO) << "Launching executor " << executorInfo.executor_id()
-            << " of framework " << id()
+  LOG(INFO) << "Launching executor '" << executorInfo.executor_id()
+            << "' of framework " << id()
             << " with resources " << executorInfo.resources()
             << " in work directory '" << directory << "'";
 

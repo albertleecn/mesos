@@ -1515,7 +1515,11 @@ MESOS_JAR_SOURCE =							\
   $(srcdir)/java/src/org/apache/mesos/state/LogState.java		\
   $(srcdir)/java/src/org/apache/mesos/state/State.java			\
   $(srcdir)/java/src/org/apache/mesos/state/Variable.java		\
-  $(srcdir)/java/src/org/apache/mesos/state/ZooKeeperState.java
+  $(srcdir)/java/src/org/apache/mesos/state/ZooKeeperState.java		\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/JNIMesos.java		\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Mesos.java		\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/Scheduler.java	\
+  $(srcdir)/java/src/org/apache/mesos/v1/scheduler/V0Mesos.java
 MESOS_JAR_GENERATED = $(JAVA_PROTOS) $(V1_JAVA_PROTOS)			\
   java/generated/org/apache/mesos/MesosNativeLibrary.java
 EXTRA_DIST += $(MESOS_JAR_SOURCE)					\
@@ -1528,7 +1532,8 @@ EXAMPLES_SOURCE =							\
   $(srcdir)/examples/java/TestExecutor.java				\
   $(srcdir)/examples/java/TestFramework.java				\
   $(srcdir)/examples/java/TestLog.java					\
-  $(srcdir)/examples/java/TestMultipleExecutorsFramework.java
+  $(srcdir)/examples/java/TestMultipleExecutorsFramework.java		\
+  $(srcdir)/examples/java/V1TestFramework.java
 EXTRA_DIST += $(EXAMPLES_SOURCE)
 
 
@@ -1558,6 +1563,8 @@ libjava_la_SOURCES =							\
   java/jni/org_apache_mesos_state_LogState.cpp				\
   java/jni/org_apache_mesos_state_Variable.cpp				\
   java/jni/org_apache_mesos_state_ZooKeeperState.cpp			\
+  java/jni/org_apache_mesos_v1_scheduler_JNIMesos.cpp			\
+  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.cpp			\
   jvm/jvm.cpp								\
   jvm/jvm.hpp								\
   jvm/java/io.hpp							\
@@ -1599,7 +1606,9 @@ nodist_libjava_la_SOURCES =						\
   java/jni/org_apache_mesos_state_LevelDBState.h			\
   java/jni/org_apache_mesos_state_LogState.h				\
   java/jni/org_apache_mesos_state_Variable.h				\
-  java/jni/org_apache_mesos_state_ZooKeeperState.h
+  java/jni/org_apache_mesos_state_ZooKeeperState.h			\
+  java/jni/org_apache_mesos_v1_scheduler_JNIMesos.h			\
+  java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h
 
 BUILT_SOURCES += $(nodist_libjava_la_SOURCES)
 
@@ -1642,6 +1651,16 @@ java/jni/org_apache_mesos_state_ZooKeeperState.h: $(MESOS_JAR)
 	$(JAVA_HOME)/bin/javah -d java/jni				\
 	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
 	  org.apache.mesos.state.ZooKeeperState
+
+java/jni/org_apache_mesos_v1_scheduler_JNIMesos.h: $(MESOS_JAR)
+	$(JAVA_HOME)/bin/javah -d java/jni				\
+	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
+	  org.apache.mesos.v1.scheduler.JNIMesos
+
+java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h: $(MESOS_JAR)
+	$(JAVA_HOME)/bin/javah -d java/jni				\
+	-classpath $(MESOS_JAR):@PROTOBUF_JAR@				\
+	  org.apache.mesos.v1.scheduler.V0Mesos
 
 $(EXAMPLES_JAR): $(EXAMPLES_SOURCE)
 	@echo "Building examples.jar ..."
@@ -1824,8 +1843,8 @@ all-local: $(MESOS_EGGS)
 endif # HAS_PYTHON
 
 clean-python:
-	find python -name "build" -o -name "dist" -o -name "*.pyc"	\
-	  -o -name "*.egg-info" -exec rm -rf '{}' \+
+	find python \( -name "build" -o -name "dist" -o -name "*.pyc"	\
+	  -o -name "*.egg-info" \) -exec rm -rf '{}' \+
 
 PHONY_TARGETS += clean-python
 
@@ -2218,7 +2237,8 @@ EXAMPLESCRIPTSJAVA =						\
   examples/java/test-exception-framework			\
   examples/java/test-framework					\
   examples/java/test-log					\
-  examples/java/test-multiple-executors-framework
+  examples/java/test-multiple-executors-framework		\
+  examples/java/v1-test-framework
 
 check_SCRIPTS += $(EXAMPLESCRIPTSJAVA)
 mesos_tests_DEPENDENCIES += $(EXAMPLESCRIPTSJAVA)
@@ -2252,6 +2272,8 @@ dist_check_SCRIPTS +=						\
   tests/java_exception_test.sh					\
   tests/java_framework_test.sh					\
   tests/java_log_test.sh					\
+  tests/java_v0_framework_test.sh				\
+  tests/java_v1_framework_test.sh				\
   tests/no_executor_framework_test.sh				\
   tests/persistent_volume_framework_test.sh			\
   tests/python_framework_test.sh				\

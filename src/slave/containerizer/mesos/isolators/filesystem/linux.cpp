@@ -265,11 +265,6 @@ Future<Option<ContainerLaunchInfo>> LinuxFilesystemIsolatorProcess::prepare(
 {
   const string& directory = containerConfig.directory();
 
-  Option<string> user;
-  if (containerConfig.has_user()) {
-    user = containerConfig.user();
-  }
-
   if (infos.contains(containerId)) {
     return Failure("Container has already been prepared");
   }
@@ -345,6 +340,9 @@ Try<vector<CommandInfo>> LinuxFilesystemIsolatorProcess::getPreExecCommands(
         containerConfig.rootfs(),
         flags.sandbox_directory);
 
+    // If the rootfs is a read-only filesystem (e.g., using the bind
+    // backend), the sandbox must be already exist. Please see the
+    // comments in 'provisioner/backend.hpp' for details.
     Try<Nothing> mkdir = os::mkdir(sandbox);
     if (mkdir.isError()) {
       return Error(

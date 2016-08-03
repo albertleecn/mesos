@@ -4,9 +4,12 @@ Release Notes - Mesos - Version 1.0.1
 
 All Issues:
 ** Bug
+  * [MESOS-5388] - MesosContainerizerLaunch flags execute arbitrary commands via shell.
   * [MESOS-5911] - Webui redirection to leader in browser does not work.
   * [MESOS-5913] - Stale socket FD usage when using libevent + SSL.
   * [MESOS-5923] - Ubuntu 14.04 LTS GPU Isolator "/run" directory is noexec.
+  * [MESOS-5927] - Unable to run "scratch" Dockerfiles with Unified Containerizer.
+  * [MESOS-5943] - Incremental http parsing of URLs leads to decoder error.
   * [MESOS-5945] - NvidiaVolume::create() should check for root before creating volume.
   * [MESOS-5959] - All non-root tests fail on GPU machine.
 
@@ -582,7 +585,7 @@ All Issues:
     * [MESOS-5356] - Add Windows support for StopWatch
     * [MESOS-5360] - Set death signal for dvdcli subprocess in docker volume isolator.
     * [MESOS-5370] - Add deprecation support for Flags
-    * [MESOS-5372] - Add random() to os:: namespace 
+    * [MESOS-5372] - Add random() to os:: namespace
     * [MESOS-5373] - Remove `Zookeeper's` NTDDI_VERSION define
     * [MESOS-5374] - Add support for Console Ctrl handling in `slave.cpp`
     * [MESOS-5375] - Implement stout/os/windows/kill.hpp
@@ -653,7 +656,7 @@ All Issues:
     * [MESOS-3439] - Port ip_tests
     * [MESOS-3443] - Windows: Port protobuf_tests.hpp
     * [MESOS-3541] - Add CMakeLists that builds the Mesos master
-    * [MESOS-3558] - Implement  HTTPCommandExecutor that uses the Executor Library 
+    * [MESOS-3558] - Implement  HTTPCommandExecutor that uses the Executor Library
     * [MESOS-3559] - Make the Command Scheduler use the HTTP Scheduler Library
     * [MESOS-3609] - Port slave/gc.cpp
     * [MESOS-3610] - Port slave/flags.cpp to Windows
@@ -707,8 +710,8 @@ All Issues:
     * [MESOS-3779] - Slave/Agent Rename Phase I - Update terms in Web UI.
     * [MESOS-3781] - Replace Master/Slave Terminology Phase I - Rename flag names and deprecate old ones
     * [MESOS-3782] - Slave/Agent Rename Phase I - Add duplicate binaries (or create symlinks)
-    * [MESOS-3783] - Replace Master/Slave Terminology Phase I - Update documentation 
-    * [MESOS-3784] - Replace Master/Slave Terminology Phase I - Update mesos-cli 
+    * [MESOS-3783] - Replace Master/Slave Terminology Phase I - Update documentation
+    * [MESOS-3784] - Replace Master/Slave Terminology Phase I - Update mesos-cli
     * [MESOS-3854] - Finalize design for generalized Authorizer interface
     * [MESOS-3945] - Add operator documentation for /weight endpoint
     * [MESOS-4033] - Add a commit hook for non-ascii characters.
@@ -725,7 +728,7 @@ All Issues:
     * [MESOS-4758] - Add a 'name' field into NetworkInfo.
     * [MESOS-4759] - Add network/cni isolator for Mesos containerizer.
     * [MESOS-4761] - Add agent flags to allow operators to specify CNI plugin and config directories.
-    * [MESOS-4764] - The network/cni isolator should report assigned IP address. 
+    * [MESOS-4764] - The network/cni isolator should report assigned IP address.
     * [MESOS-4771] - Document the network/cni isolator.
     * [MESOS-4788] - Mesos UI should show the role and principal of a framework
     * [MESOS-4797] - Add a couple of registrar tests for /weights endpoint
@@ -853,6 +856,9 @@ All Issues:
   * [MESOS-5698] - Quota sorter not updated for resource changes at agent.
   * [MESOS-5740] - Consider adding `relink` functionality to libprocess.
   * [MESOS-5576] - Masters may drop the first message they send between masters after a network partition.
+  * [MESOS-5913] - Stale socket FD usage when using libevent + SSL.
+  * [MESOS-5927] - Unable to run "scratch" Dockerfiles with Unified Containerizer.
+  * [MESOS-5943] - Incremental http parsing of URLs leads to decoder error.
 
 
 Release Notes - Mesos - Version 0.28.2
@@ -1151,7 +1157,8 @@ All Issues:
   * [MESOS-5691] - SSL downgrade support will leak sockets in CLOSE_WAIT status.
   * [MESOS-5723] - SSL-enabled libprocess will leak incoming links to forks.
   * [MESOS-5748] - Potential segfault in `link` when linking to a remote process.
-
+  * [MESOS-5913] - Stale socket FD usage when using libevent + SSL.
+  * [MESOS-5943] - Incremental http parsing of URLs leads to decoder error.
 
 Release Notes - Mesos - Version 0.27.3
 --------------------------------------
