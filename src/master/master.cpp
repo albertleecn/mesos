@@ -4572,6 +4572,7 @@ void Master::_registerSlave(
     const string& version,
     const Future<bool>& admit)
 {
+  CHECK(slaves.registering.contains(pid));
   slaves.registering.erase(pid);
 
   CHECK(!admit.isDiscarded());
@@ -4822,6 +4823,7 @@ void Master::_reregisterSlave(
     const string& version,
     const Future<bool>& readmit)
 {
+  CHECK(slaves.reregistering.contains(slaveInfo.id()));
   slaves.reregistering.erase(slaveInfo.id());
 
   CHECK(!readmit.isDiscarded());
@@ -5138,16 +5140,6 @@ void Master::statusUpdate(StatusUpdate update, const UPID& pid)
     return;
   }
 
-  Framework* framework = getFramework(update.framework_id());
-
-  if (framework == nullptr) {
-    LOG(WARNING) << "Ignoring status update " << update
-                 << " from agent " << *slave
-                 << " because the framework is unknown";
-    metrics->invalid_status_updates++;
-    return;
-  }
-
   LOG(INFO) << "Status update " << update << " from agent " << *slave;
 
   // We ensure that the uuid of task status matches the update's uuid, in case
@@ -5159,8 +5151,21 @@ void Master::statusUpdate(StatusUpdate update, const UPID& pid)
     update.mutable_status()->set_uuid(update.uuid());
   }
 
-  // Forward the update to the framework.
-  forward(update, pid, framework);
+  bool validStatusUpdate = true;
+
+  Framework* framework = getFramework(update.framework_id());
+
+  // A framework might not have re-registered upon a master failover or
+  // got disconnected.
+  if (framework != nullptr && framework->connected) {
+    forward(update, pid, framework);
+  } else {
+    validStatusUpdate = false;
+    LOG(WARNING) << "Received status update " << update << " from agent "
+                 << *slave << " for "
+                 << (framework == nullptr ? "an unknown " : "a disconnected ")
+                 << "framework";
+  }
 
   // Lookup the task and see if we need to update anything locally.
   Task* task = slave->getTask(update.framework_id(), update.status().task_id());
@@ -5179,7 +5184,8 @@ void Master::statusUpdate(StatusUpdate update, const UPID& pid)
     removeTask(task);
   }
 
-  metrics->valid_status_updates++;
+  validStatusUpdate
+    ? metrics->valid_status_updates++ : metrics->invalid_status_updates++;
 }
 
 
@@ -5197,6 +5203,18 @@ void Master::forward(
                   : "");
   } else {
     LOG(INFO) << "Forwarding status update " << update;
+  }
+
+  // The task might not exist in master's memory (e.g., failed task validation).
+  Task* task = framework->getTask(update.status().task_id());
+  if (task != nullptr) {
+    // Set the status update state and uuid for the task. Note that
+    // master-generated updates are terminal and do not have a uuid
+    // (in which case the master also calls `removeTask()`).
+    if (update.has_uuid()) {
+      task->set_status_update_state(update.status().state());
+      task->set_status_update_uuid(update.status().uuid());
+    }
   }
 
   StatusUpdateMessage message;
@@ -5917,6 +5935,7 @@ void Master::_authenticate(
     authenticated.put(pid, future.get().get());
   }
 
+  CHECK(authenticating.contains(pid));
   authenticating.erase(pid);
 }
 
@@ -6704,6 +6723,7 @@ void Master::_removeSlave(
     const string& message,
     Option<Counter> reason)
 {
+  CHECK(slaves.removing.contains(slaveInfo.id()));
   slaves.removing.erase(slaveInfo.id());
 
   CHECK(!removed.isDiscarded());
@@ -6809,14 +6829,6 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
 
       task->set_state(status.state());
     }
-  }
-
-  // Set the status update state and uuid for the task. Note that
-  // master-generated updates are terminal and do not have a uuid
-  // (in which case the master also calls `removeTask()`).
-  if (update.has_uuid()) {
-    task->set_status_update_state(status.state());
-    task->set_status_update_uuid(update.uuid());
   }
 
   // TODO(brenden): Consider wiping the `message` field?

@@ -182,13 +182,6 @@ int main(int argc, char** argv)
 
   Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
 
-  // TODO(marco): this pattern too should be abstracted away
-  // in FlagsBase; I have seen it at least 15 times.
-  if (load.isError()) {
-    cerr << flags.usage(load.error()) << endl;
-    return EXIT_FAILURE;
-  }
-
   if (flags.help) {
     cout << flags.usage() << endl;
     return EXIT_SUCCESS;
@@ -197,6 +190,13 @@ int main(int argc, char** argv)
   if (flags.version) {
     cout << "mesos" << " " << MESOS_VERSION << endl;
     return EXIT_SUCCESS;
+  }
+
+  // TODO(marco): this pattern too should be abstracted away
+  // in FlagsBase; I have seen it at least 15 times.
+  if (load.isError()) {
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
   }
 
   if (master.isNone() && flags.master_detector.isNone()) {
