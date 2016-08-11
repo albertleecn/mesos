@@ -63,7 +63,8 @@ inline void post(const process::UPID& from,
 // Note that this header file assumes you will be linking
 // against BOTH libprotobuf and libglog.
 
-namespace google { namespace protobuf {
+namespace google {
+namespace protobuf {
 
 // Type conversions helpful for changing between protocol buffer types
 // and standard C++ types (for parameters).
@@ -947,7 +948,7 @@ private:
 // and waiting for a protobuf "response", but uses futures so that
 // this can be done without needing to implement a process.
 template <typename Req, typename Res>
-class ReqResProcess : public ProtobufProcess<ReqResProcess<Req, Res> >
+class ReqResProcess : public ProtobufProcess<ReqResProcess<Req, Res>>
 {
 public:
   ReqResProcess(const process::UPID& _pid, const Req& _req)
@@ -955,7 +956,7 @@ public:
       pid(_pid),
       req(_req)
   {
-    ProtobufProcess<ReqResProcess<Req, Res> >::template
+    ProtobufProcess<ReqResProcess<Req, Res>>::template
       install<Res>(&ReqResProcess<Req, Res>::response);
   }
 
@@ -969,7 +970,7 @@ public:
   {
     promise.future().onDiscard(defer(this, &ReqResProcess::discarded));
 
-    ProtobufProcess<ReqResProcess<Req, Res> >::send(pid, req);
+    ProtobufProcess<ReqResProcess<Req, Res>>::send(pid, req);
 
     return promise.future();
   }
