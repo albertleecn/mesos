@@ -214,6 +214,39 @@ completed, executing commands within the container network namespace
 would be simplified and we will no longer have a dependency on the
 `iproute2` package to debug Mesos container networking.
 
+#### <a name="adding-modifying-deleting"></a>Adding/Deleting/Modifying CNI networks
+
+The `network/cni` isolator learns about all the CNI networks by
+reading the CNI configuration specified in `--network_cni_config_dir`
+at startup. Hence, if the operator wants to add a CNI network, the
+corresponding configuration needs to be added to
+`--network_cni_config_dir` and the agent needs to be restarted.
+
+While the `network/cni` isolator learns the CNI networks at startup,
+it does not keep an in-memory copy of the CNI configurations. Whenever
+the `network/cni` isolator needs to attach a container to a CNI
+network, it reads the corresponding configuration from the disk and
+invokes the appropriate plugin with the specified JSON configuration.
+Though the `network/cni` isolator does not keep an in-memory copy of
+the JSON configuration, it checkpoints the CNI configuration used to
+launch a container.  Checkpointing the CNI configuration protects the
+resources associated with the container to be freed correctly when the
+container is destroyed, even if the CNI configuration is deleted.
+Thus, to delete a CNI network, the operator needs to delete the
+corresponding configuration and restart the agent.
+
+While addition and deletion of CNI networks require an agent restart,
+modification to a CNI network does not need a restart. To modify a CNI
+network the operator needs to only change the JSON CNI configuration
+for the network on the disk. The changes made to the CNI configuration
+will be used when the next container on that specific network is
+launched. It is important to note that the changes made to the CNI
+configuration will not affect any existing containers that were
+launched with the un-modified CNI configuration. Since, to tear down
+an exiting container the `network/cni` isolator will be using the
+checkpointed configuration.
+
+
 ### <a name="networking-recipes"></a>Networking Recipes
 
 This section presents examples for launching containers on different
@@ -381,35 +414,13 @@ documentation](https://www.weave.works/docs/net/latest/cni-plugin/)
 
 ### <a name="limitations"></a>Limitations
 
-Although the CNI specification caters to a broad set of network
-technologies the specification still has the following open questions:
-
-* If the IP address of the container is not routeable from outside the
-host, how do users (frameworks) expose TCP/UDP ports for services
-running on their container?
-* What should be the behavior of containers when the CNI configuration
-of the network, on which the containers were launched, is modified or
-deleted?
-
-Given the unspecified nature of these answers, in the current release
-we not aiming to address these questions. Accordingly there are two
-limitations to the `network/cni` isolator:
-
-* Currently the `network/cni` isolator does not provide any
-port mapping capabilities. Therefore if operators are running services
-on networks that are not addressable from outside the Agent host, the
-operators will need to run proxies/gateways for the services on the
-host network to direct traffic to their services.
-* Currently, if the CNI configuration that was used to launch a
-container is deleted or modified, while the container is still
-operational, while it will not hamper the operation of the container,
-the user might encounter errors when the container is deleted, which
-could potentially lead to leakage of resources (IP addresses).
-
-In future releases we plan to address both these limitations.
-[MESOS-4823](https://issues.apache.org/jira/browse/MESOS-4823) is
-tracking the development of port-mapping functionality for the
-`network/cni` isolator and
-[MESOS-5310](https://issues.apache.org/jira/browse/MESOS-5310) is
-tracking the progress of adding the ability to modify and delete CNI
-configuration without affecting container orchestration.
+Currently the `network/cni` isolator does not provide any port mapping
+capabilities. Therefore if operators are running services on networks
+that are not addressable from outside the Agent host, the operators
+will need to run proxies/gateways for the services on the host network
+to direct traffic to their services. We plan to address this
+limitation by having a CNI plugin, within the Mesos repository, that
+provides port mapping functionality and can be used with any other CNI
+plugin, such as the CNI bridge plugin. We are tracking this effort
+through
+[MESOS-6014](https://issues.apache.org/jira/browse/MESOS-6014).
