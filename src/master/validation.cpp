@@ -29,6 +29,8 @@
 #include <stout/none.hpp>
 #include <stout/stringify.hpp>
 
+#include "health-check/health_checker.hpp"
+
 #include "master/master.hpp"
 #include "master/validation.hpp"
 
@@ -570,10 +572,8 @@ Option<Error> validateExecutorInfo(
   }
 
   if (task.has_executor()) {
-    // The master currently expects ExecutorInfo.framework_id to be
-    // set even though it is an optional field. Currently, the
-    // scheduler driver ensures that the field is set. For schedulers
-    // not using the driver, we need to do the validation here.
+    // Master ensures `ExecutorInfo.framework_id` is set before calling
+    // this method.
     CHECK(task.executor().has_framework_id());
 
     if (task.executor().framework_id() != framework->id()) {
@@ -581,6 +581,21 @@ Option<Error> validateExecutorInfo(
           "ExecutorInfo has an invalid FrameworkID"
           " (Actual: " + stringify(task.executor().framework_id()) +
           " vs Expected: " + stringify(framework->id()) + ")");
+    }
+
+
+    // TODO(vinod): Revisit these when `TaskGroup` validation is added
+    // (MESOS-6042).
+
+    if (task.executor().has_type() &&
+        task.executor().type() != ExecutorInfo::CUSTOM) {
+      return Error("'ExecutorInfo.type' must be 'CUSTOM'");
+    }
+
+    // While `ExecutorInfo.command` is optional in the protobuf,
+    // semantically it is still required for backwards compatibility.
+    if (!task.executor().has_command()) {
+      return Error("'ExecutorInfo.command' must be set");
     }
 
     const ExecutorID& executorId = task.executor().executor_id();
@@ -736,6 +751,19 @@ Option<Error> validateKillPolicy(const TaskInfo& task)
 }
 
 
+Option<Error> validateHealthCheck(const TaskInfo& task)
+{
+  if (task.has_health_check()) {
+    Option<Error> error = health::validation::healthCheck(task.health_check());
+
+    if (error.isSome()) {
+      return Error("Task uses invalid health check: " + error.get().message);
+    }
+  }
+
+  return None();
+}
+
 } // namespace internal {
 
 
@@ -759,6 +787,7 @@ Option<Error> validate(
     lambda::bind(internal::validateExecutorInfo, task, framework, slave),
     lambda::bind(internal::validateResources, task),
     lambda::bind(internal::validateKillPolicy, task),
+    lambda::bind(internal::validateHealthCheck, task),
     lambda::bind(
         internal::validateResourceUsage, task, framework, slave, offered)
   };

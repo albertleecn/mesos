@@ -76,22 +76,19 @@ public:
 
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
 
-  virtual process::Future<bool> launch(
+  virtual process::Future<Nothing> launch(
       const ContainerID& containerId,
-      const TaskInfo& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
-      const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint);
+      const CommandInfo& commandInfo,
+      const Option<ContainerInfo>& containerInfo,
+      const Resources& resources);
 
   virtual process::Future<Nothing> update(
       const ContainerID& containerId,
@@ -148,8 +145,14 @@ public:
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
+
+  virtual process::Future<Nothing> launch(
+      const ContainerID& containerId,
+      const CommandInfo& commandInfo,
+      const Option<ContainerInfo>& containerInfo,
+      const Resources& resources);
 
   virtual process::Future<Nothing> update(
       const ContainerID& containerId,
@@ -216,7 +219,7 @@ private:
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint,
       const Option<ProvisionInfo>& provisionInfo);
 
@@ -227,7 +230,7 @@ private:
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& _environment,
       bool checkpoint,
       const Option<ProvisionInfo>& provisionInfo,
       const std::list<Option<mesos::slave::ContainerLaunchInfo>>& launchInfos);
@@ -334,15 +337,15 @@ private:
     // ResourceStatistics limits in usage().
     Resources resources;
 
-    // The executor's working directory on the host.
-    std::string directory;
-
     State state;
 
     // Used when `status` needs to be collected from isolators
     // associated with this container. `Sequence` allows us to
     // maintain the order of `status` requests for a given container.
     process::Sequence sequence;
+
+    // Containers nested under this container.
+    hashmap<ContainerID, process::Owned<Container>> containers;
   };
 
   hashmap<ContainerID, process::Owned<Container>> containers_;

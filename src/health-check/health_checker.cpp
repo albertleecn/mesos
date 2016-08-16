@@ -59,6 +59,7 @@ using std::vector;
 
 namespace mesos {
 namespace internal {
+namespace health {
 
 Try<Owned<HealthChecker>> HealthChecker::create(
     const HealthCheck& check,
@@ -66,12 +67,9 @@ Try<Owned<HealthChecker>> HealthChecker::create(
     const TaskID& taskID)
 {
   // Validate the 'HealthCheck' protobuf.
-  if (check.has_http() && check.has_command()) {
-    return Error("Both 'http' and 'command' health check requested");
-  }
-
-  if (!check.has_http() && !check.has_command()) {
-    return Error("Expecting one of 'http' or 'command' health check");
+  Option<Error> error = validation::healthCheck(check);
+  if (error.isSome()) {
+    return error.get();
   }
 
   Owned<HealthCheckerProcess> process(new HealthCheckerProcess(
@@ -184,15 +182,33 @@ void HealthCheckerProcess::success()
 
 void HealthCheckerProcess::_healthCheck()
 {
-  if (check.has_http()) {
-    promise.fail("HTTP health check is not supported");
-    return;
-  }
+  switch (check.type()) {
+    case HealthCheck::COMMAND: {
+      _commandHealthCheck();
+      return;
+    }
 
-  if (!check.has_command()) {
-    promise.fail("No check found in health check");
-    return;
+    case HealthCheck::HTTP: {
+      _httpHealthCheck();
+      return;
+    }
+
+    case HealthCheck::TCP: {
+      _tcpHealthCheck();
+      return;
+    }
+
+    default: {
+      UNREACHABLE();
+    }
   }
+}
+
+
+void HealthCheckerProcess::_commandHealthCheck()
+{
+  CHECK_EQ(HealthCheck::COMMAND, check.type());
+  CHECK(check.has_command());
 
   const CommandInfo& command = check.command();
 
@@ -208,11 +224,6 @@ void HealthCheckerProcess::_healthCheck()
 
   if (command.shell()) {
     // Use the shell variant.
-    if (!command.has_value()) {
-      promise.fail("Shell command is not specified");
-      return;
-    }
-
     VLOG(2) << "Launching health command '" << command.value() << "'";
 
     external = subprocess(
@@ -224,11 +235,6 @@ void HealthCheckerProcess::_healthCheck()
         environment);
   } else {
     // Use the exec variant.
-    if (!command.has_value()) {
-      promise.fail("Executable path is not specified");
-      return;
-    }
-
     vector<string> argv;
     foreach (const string& arg, command.arguments()) {
       argv.push_back(arg);
@@ -292,6 +298,24 @@ void HealthCheckerProcess::_healthCheck()
 }
 
 
+void HealthCheckerProcess::_httpHealthCheck()
+{
+  CHECK_EQ(HealthCheck::HTTP, check.type());
+  CHECK(check.has_http());
+
+  promise.fail("HTTP health check is not supported");
+}
+
+
+void HealthCheckerProcess::_tcpHealthCheck()
+{
+  CHECK_EQ(HealthCheck::TCP, check.type());
+  CHECK(check.has_tcp());
+
+  promise.fail("TCP health check is not supported");
+}
+
+
 void HealthCheckerProcess::reschedule()
 {
   VLOG(1) << "Rescheduling health check in "
@@ -300,5 +324,60 @@ void HealthCheckerProcess::reschedule()
   delay(Seconds(check.interval_seconds()), self(), &Self::_healthCheck);
 }
 
+
+namespace validation {
+
+Option<Error> healthCheck(const HealthCheck& check)
+{
+  if (!check.has_type()) {
+    return Error("HealthCheck must specify 'type'");
+  }
+
+  if (check.type() == HealthCheck::COMMAND) {
+    if (!check.has_command()) {
+      return Error("Expecting 'command' to be set for command health check");
+    }
+
+    const CommandInfo& command = check.command();
+
+    if (!command.has_value()) {
+      string commandType =
+        (command.shell() ? "'shell command'" : "'executable path'");
+
+      return Error("Command health check must contain " + commandType);
+    }
+  } else if (check.type() == HealthCheck::HTTP) {
+    if (!check.has_http()) {
+      return Error("Expecting 'http' to be set for HTTP health check");
+    }
+
+    const HealthCheck::HTTPCheckInfo& http = check.http();
+
+    if (http.has_scheme() &&
+        http.scheme() != "https" &&
+        http.scheme() != "https") {
+      return Error("Unsupported HTTP health check scheme: '" + http.scheme() +
+                   "'");
+    }
+
+    if (http.has_path() && !strings::startsWith(http.path(), '/')) {
+      return Error("The path '" + http.path() + "' of HTTP health check must "
+                   "start with '/'");
+    }
+  } else if (check.type() == HealthCheck::TCP) {
+    if (!check.has_tcp()) {
+      return Error("Expecting 'tcp' to be set for TCP health check");
+    }
+  } else {
+    return Error("Unsupported health check type: '" +
+                 HealthCheck::Type_Name(check.type()) + "'");
+  }
+
+  return None();
+}
+
+} // namespace validation {
+
+} // namespace health {
 } // namespace internal {
 } // namespace mesos {

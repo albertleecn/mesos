@@ -77,32 +77,29 @@ public:
   virtual process::Future<Nothing> recover(
       const Option<state::SlaveState>& state) = 0;
 
-  // Launch a containerized executor. Returns true if launching this
-  // ExecutorInfo is supported and it has been launched, otherwise
-  // false or a failure is something went wrong.
+  // Launch a containerized task/executor. Returns true if launching
+  // this TaskInfo/ExecutorInfo is supported and it has been launched,
+  // otherwise false or a failure if something went wrong.
   virtual process::Future<bool> launch(
       const ContainerID& containerId,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint) = 0;
 
-  // Launch a containerized task. Returns true if launching this
-  // TaskInfo/ExecutorInfo is supported and it has been launched,
-  // otherwise false or a failure is something went wrong.
-  // TODO(nnielsen): Obsolete the executorInfo argument when the slave
-  // doesn't require executors to run standalone tasks.
-  virtual process::Future<bool> launch(
+  // Launch a nested container.
+  // TODO(jieyu): Consider combining with the 'launch' above.
+  virtual process::Future<Nothing> launch(
       const ContainerID& containerId,
-      const TaskInfo& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
-      const SlaveID& slaveId,
-      const process::PID<Slave>& slavePid,
-      bool checkpoint) = 0;
+      const CommandInfo& commandInfo,
+      const Option<ContainerInfo>& containerInfo,
+      const Resources& resources)
+  {
+    return process::Failure("Unsupported");
+  }
 
   // Update the resources for a container.
   virtual process::Future<Nothing> update(
@@ -139,28 +136,6 @@ public:
 
   virtual process::Future<hashset<ContainerID>> containers() = 0;
 };
-
-
-/**
- * Returns a map of environment variables necessary in order to launch
- * an executor.
- *
- * @param executorInfo ExecutorInfo being launched.
- * @param directory Path to the sandbox directory.
- * @param slaveId SlaveID where this executor is being launched.
- * @param slavePid PID of the slave launching the executor.
- * @param checkpoint Whether or not the framework is checkpointing.
- * @param flags Flags used to launch the slave.
- *
- * @return Map of environment variables (name, value).
- */
-std::map<std::string, std::string> executorEnvironment(
-    const ExecutorInfo& executorInfo,
-    const std::string& directory,
-    const SlaveID& slaveId,
-    const process::PID<Slave>& slavePid,
-    bool checkpoint,
-    const Flags& flags);
 
 } // namespace slave {
 } // namespace internal {

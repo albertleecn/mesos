@@ -3369,6 +3369,12 @@ void Master::accept(
         break;
       }
 
+      case Offer::Operation::LAUNCH_GROUP : {
+        // TODO(vinod): Implement this.
+        LOG(WARNING) << "Ignoring unimplemented LAUNCH_GROUP operation";
+        break;
+      }
+
       // NOTE: When handling RESERVE and UNRESERVE operations, authorization
       // will proceed even if no principal is specified, although currently
       // resources cannot be reserved or unreserved unless a principal is
@@ -3424,6 +3430,12 @@ void Master::accept(
             authorizeDestroyVolume(
                 operation.destroy(), principal));
 
+        break;
+      }
+
+      case Offer::Operation::UNKNOWN: {
+        // TODO(vinod): Send an error event to the scheduler?
+        LOG(ERROR) << "Ignoring unknown offer operation";
         break;
       }
     }
@@ -3861,9 +3873,16 @@ void Master::_accept(
         break;
       }
 
-      default:
-        LOG(ERROR) << "Unsupported offer operation " << operation.type();
+      case Offer::Operation::LAUNCH_GROUP : {
+        // TODO(vinod): Implement this.
+        LOG(WARNING) << "Ignoring unimplemented LAUNCH_GROUP operation";
         break;
+      }
+
+      case Offer::Operation::UNKNOWN: {
+        LOG(ERROR) << "Ignoring unknown offer operation";
+        break;
+      }
     }
   }
 

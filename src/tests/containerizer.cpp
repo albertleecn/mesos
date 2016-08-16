@@ -90,11 +90,12 @@ TestContainerizer::~TestContainerizer()
 
 Future<bool> TestContainerizer::_launch(
     const ContainerID& containerId,
+    const Option<TaskInfo>& taskInfo,
     const ExecutorInfo& executorInfo,
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<slave::Slave>& slavePid,
+    const map<string, string>& environment,
     bool checkpoint)
 {
   CHECK(!drivers.contains(containerId))
@@ -135,14 +136,6 @@ Future<bool> TestContainerizer::_launch(
     // We need to save the original set of environment variables so we
     // can reset the environment after calling 'driver->start()' below.
     hashmap<string, string> original = os::environment();
-
-    const map<string, string> environment = executorEnvironment(
-        executorInfo,
-        directory,
-        slaveId,
-        slavePid,
-        checkpoint,
-        flags);
 
     foreachpair (const string& name, const string variable, environment) {
       os::setenv(name, variable);
@@ -197,27 +190,6 @@ Future<bool> TestContainerizer::_launch(
       new Promise<containerizer::Termination>());
 
   return true;
-}
-
-
-Future<bool> TestContainerizer::launch(
-    const ContainerID& containerId,
-    const TaskInfo& taskInfo,
-    const ExecutorInfo& executorInfo,
-    const string& directory,
-    const Option<string>& user,
-    const SlaveID& slaveId,
-    const PID<slave::Slave>& slavePid,
-    bool checkpoint)
-{
-  return launch(
-      containerId,
-      executorInfo,
-      directory,
-      user,
-      slaveId,
-      slavePid,
-      checkpoint);
 }
 
 
@@ -303,7 +275,7 @@ void TestContainerizer::setup()
   EXPECT_CALL(*this, update(_, _))
     .WillRepeatedly(Return(Nothing()));
 
-  EXPECT_CALL(*this, launch(_, _, _, _, _, _, _))
+  EXPECT_CALL(*this, launch(_, _, _, _, _, _, _, _))
     .WillRepeatedly(Invoke(this, &TestContainerizer::_launch));
 
   EXPECT_CALL(*this, wait(_))

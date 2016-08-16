@@ -34,6 +34,7 @@
 
 namespace mesos {
 namespace internal {
+namespace health {
 
 // Forward declarations.
 class HealthCheckerProcess;
@@ -71,10 +72,13 @@ public:
 
 private:
   void failure(const std::string& message);
-
   void success();
 
   void _healthCheck();
+
+  void _commandHealthCheck();
+  void _httpHealthCheck();
+  void _tcpHealthCheck();
 
   void reschedule();
 
@@ -87,6 +91,14 @@ private:
   process::Time startTime;
 };
 
+
+namespace validation {
+
+Option<Error> healthCheck(const HealthCheck& check);
+
+} // namespace validation {
+
+} // namespace health {
 } // namespace internal {
 } // namespace mesos {
 

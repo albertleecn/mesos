@@ -24,6 +24,8 @@
 
 #include "docker/docker.hpp"
 
+#include "health-check/health_checker.hpp"
+
 #include "slave/slave.hpp"
 
 #include "slave/containerizer/docker.hpp"
@@ -135,6 +137,7 @@ public:
       }
     }
 
+    healthCheck.set_type(HealthCheck::COMMAND);
     healthCheck.mutable_command()->CopyFrom(healthCommand);
     healthCheck.set_delay_seconds(0);
     healthCheck.set_interval_seconds(0);
@@ -156,6 +159,72 @@ public:
     return tasks;
   }
 };
+
+
+// This tests ensures `HealthCheck` protobuf is validated correctly.
+TEST_F(HealthCheckTest, HealthCheckProtobufValidation)
+{
+  using namespace mesos::internal::health;
+
+  // Health check type must be set to a known value.
+  {
+    HealthCheck healthCheckProto;
+
+    Option<Error> validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+
+    healthCheckProto.set_type(HealthCheck::UNKNOWN);
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+  }
+
+  // The associated with the type health description must be present.
+  {
+    HealthCheck healthCheckProto;
+
+    healthCheckProto.set_type(HealthCheck::COMMAND);
+    Option<Error> validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+
+    healthCheckProto.set_type(HealthCheck::HTTP);
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+
+    healthCheckProto.set_type(HealthCheck::TCP);
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+  }
+
+  // Command health check must specify an actual command in `command.value`.
+  {
+    HealthCheck healthCheckProto;
+
+    healthCheckProto.set_type(HealthCheck::COMMAND);
+    healthCheckProto.mutable_command()->CopyFrom(CommandInfo());
+    Option<Error> validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+  }
+
+  // HTTP health check may specify a known scheme and a path starting with '/'.
+  {
+    HealthCheck healthCheckProto;
+
+    healthCheckProto.set_type(HealthCheck::HTTP);
+    healthCheckProto.mutable_http()->set_port(8080);
+
+    Option<Error> validate = validation::healthCheck(healthCheckProto);
+    EXPECT_NONE(validate);
+
+    healthCheckProto.mutable_http()->set_scheme("ftp");
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+
+    healthCheckProto.mutable_http()->set_scheme("https");
+    healthCheckProto.mutable_http()->set_path("healthz");
+    validate = validation::healthCheck(healthCheckProto);
+    EXPECT_SOME(validate);
+  }
+}
 
 
 // Testing a healthy task reporting one healthy status to scheduler.
@@ -353,6 +422,7 @@ TEST_F(HealthCheckTest, ROOT_HealthyTaskWithContainerImage)
   container->mutable_mesos()->mutable_image()->CopyFrom(image);
 
   HealthCheck* health = task.mutable_health_check();
+  health->set_type(HealthCheck::COMMAND);
   health->mutable_command()->set_value("exit 0");
 
   Future<TaskStatus> statusRunning;

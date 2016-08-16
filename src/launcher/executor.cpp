@@ -195,6 +195,15 @@ public:
         break;
       }
 
+      case Event::LAUNCH_GROUP: {
+        cerr << "LAUNCH_GROUP event is not supported" << endl;
+        // Shut down because this is unexpected; `LAUNCH_GROUP` event
+        // should only ever go to a group-capable default executor and
+        // not the command executor.
+        shutdown();
+        break;
+      }
+
       case Event::KILL: {
         Option<KillPolicy> override = event.kill().has_kill_policy()
           ? Option<KillPolicy>(event.kill().kill_policy())
@@ -409,10 +418,11 @@ protected:
     cout << "Forked command at " << pid << endl;
 
     if (task->has_health_check()) {
-      Try<Owned<HealthChecker>> _checker = HealthChecker::create(
-          task->health_check(),
-          self(),
-          task->task_id());
+      Try<Owned<health::HealthChecker>> _checker =
+        health::HealthChecker::create(
+            task->health_check(),
+            self(),
+            task->task_id());
 
       if (_checker.isError()) {
         // TODO(gilbert): Consider ABORT and return a TASK_FAILED here.
@@ -745,7 +755,7 @@ private:
   Owned<MesosBase> mesos;
   LinkedHashMap<UUID, Call::Update> updates; // Unacknowledged updates.
   Option<TaskInfo> task; // Unacknowledged task.
-  Owned<HealthChecker> checker;
+  Owned<health::HealthChecker> checker;
 };
 
 } // namespace internal {

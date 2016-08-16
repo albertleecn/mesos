@@ -242,7 +242,7 @@ DockerContainerizerProcess::Container::create(
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
+    const map<string, string>& environment,
     bool checkpoint,
     const Flags& flags)
 {
@@ -302,7 +302,6 @@ DockerContainerizerProcess::Container::create(
 
   Option<ContainerInfo> containerInfo = None();
   Option<CommandInfo> commandInfo = None();
-  Option<map<string, string>> environment = None();
   bool launchesExecutorContainer = false;
   if (taskInfo.isSome() && flags.docker_mesos_image.isSome()) {
     // Override the container and command to launch an executor
@@ -361,13 +360,6 @@ DockerContainerizerProcess::Container::create(
 
     containerInfo = newContainerInfo;
     commandInfo = newCommandInfo;
-    environment = executorEnvironment(
-        executorInfo,
-        containerWorkdir,
-        slaveId,
-        slavePid,
-        checkpoint,
-        flags);
     launchesExecutorContainer = true;
   }
 
@@ -378,7 +370,6 @@ DockerContainerizerProcess::Container::create(
       containerWorkdir,
       user,
       slaveId,
-      slavePid,
       checkpoint,
       symlinked,
       flags,
@@ -676,35 +667,12 @@ Future<Nothing> DockerContainerizer::recover(
 
 Future<bool> DockerContainerizer::launch(
     const ContainerID& containerId,
+    const Option<TaskInfo>& taskInfo,
     const ExecutorInfo& executorInfo,
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
-    bool checkpoint)
-{
-  return dispatch(
-      process.get(),
-      &DockerContainerizerProcess::launch,
-      containerId,
-      None(),
-      executorInfo,
-      directory,
-      user,
-      slaveId,
-      slavePid,
-      checkpoint);
-}
-
-
-Future<bool> DockerContainerizer::launch(
-    const ContainerID& containerId,
-    const TaskInfo& taskInfo,
-    const ExecutorInfo& executorInfo,
-    const string& directory,
-    const Option<string>& user,
-    const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
+    const map<string, string>& environment,
     bool checkpoint)
 {
   return dispatch(
@@ -716,7 +684,7 @@ Future<bool> DockerContainerizer::launch(
       directory,
       user,
       slaveId,
-      slavePid,
+      environment,
       checkpoint);
 }
 
@@ -996,9 +964,11 @@ Future<bool> DockerContainerizerProcess::launch(
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
+    const map<string, string>& environment,
     bool checkpoint)
 {
+  CHECK(!containerId.has_parent());
+
   if (containers_.contains(containerId)) {
     return Failure("Container already started");
   }
@@ -1028,7 +998,7 @@ Future<bool> DockerContainerizerProcess::launch(
       directory,
       user,
       slaveId,
-      slavePid,
+      environment,
       checkpoint,
       flags);
 
@@ -1425,6 +1395,8 @@ Future<Nothing> DockerContainerizerProcess::update(
     const Resources& _resources,
     bool force)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     LOG(WARNING) << "Ignoring updating unknown container: "
                  << containerId;
@@ -1655,6 +1627,8 @@ Future<Nothing> DockerContainerizerProcess::__update(
 Future<ResourceStatistics> DockerContainerizerProcess::usage(
     const ContainerID& containerId)
 {
+  CHECK(!containerId.has_parent());
+
 #ifndef __linux__
   return Failure("Does not support usage() on non-linux platform");
 #else
@@ -1808,6 +1782,8 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
 Future<containerizer::Termination> DockerContainerizerProcess::wait(
     const ContainerID& containerId)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     return Failure("Unknown container: " + stringify(containerId));
   }
@@ -1820,6 +1796,8 @@ void DockerContainerizerProcess::destroy(
     const ContainerID& containerId,
     bool killed)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     LOG(WARNING) << "Ignoring destroy of unknown container: " << containerId;
     return;

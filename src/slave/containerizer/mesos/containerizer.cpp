@@ -425,46 +425,57 @@ Future<Nothing> MesosContainerizer::recover(
 
 Future<bool> MesosContainerizer::launch(
     const ContainerID& containerId,
+    const Option<TaskInfo>& taskInfo,
     const ExecutorInfo& executorInfo,
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
+    const map<string, string>& environment,
     bool checkpoint)
 {
-  return dispatch(process.get(),
-                  &MesosContainerizerProcess::launch,
-                  containerId,
-                  None(),
-                  executorInfo,
-                  directory,
-                  user,
-                  slaveId,
-                  slavePid,
-                  checkpoint);
-}
+  // Need to disambiguate for the compiler.
+  Future<bool> (MesosContainerizerProcess::*launch)(
+      const ContainerID&,
+      const Option<TaskInfo>&,
+      const ExecutorInfo&,
+      const string&,
+      const Option<string>&,
+      const SlaveID&,
+      const map<string, string>&,
+      bool) = &MesosContainerizerProcess::launch;
 
-
-Future<bool> MesosContainerizer::launch(
-    const ContainerID& containerId,
-    const TaskInfo& taskInfo,
-    const ExecutorInfo& executorInfo,
-    const string& directory,
-    const Option<string>& user,
-    const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
-    bool checkpoint)
-{
   return dispatch(process.get(),
-                  &MesosContainerizerProcess::launch,
+                  launch,
                   containerId,
                   taskInfo,
                   executorInfo,
                   directory,
                   user,
                   slaveId,
-                  slavePid,
+                  environment,
                   checkpoint);
+}
+
+
+Future<Nothing> MesosContainerizer::launch(
+    const ContainerID& containerId,
+    const CommandInfo& commandInfo,
+    const Option<ContainerInfo>& containerInfo,
+    const Resources& resources)
+{
+  // Need to disambiguate for the compiler.
+  Future<Nothing> (MesosContainerizerProcess::*launch)(
+      const ContainerID&,
+      const CommandInfo&,
+      const Option<ContainerInfo>&,
+      const Resources&) = &MesosContainerizerProcess::launch;
+
+  return dispatch(process.get(),
+                  launch,
+                  containerId,
+                  commandInfo,
+                  containerInfo,
+                  resources);
 }
 
 
@@ -662,8 +673,6 @@ Future<Nothing> MesosContainerizerProcess::__recover(
     status.onAny(defer(self(), &Self::reaped, containerId));
     container->status = status;
 
-    container->directory = run.directory();
-
     // We only checkpoint the containerizer pid after the container
     // successfully launched, therefore we can assume checkpointed
     // containers should be running after recover.
@@ -753,9 +762,11 @@ Future<bool> MesosContainerizerProcess::launch(
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
+    const map<string, string>& environment,
     bool checkpoint)
 {
+  CHECK(!containerId.has_parent());
+
   if (containers_.contains(containerId)) {
     return Failure("Container already started");
   }
@@ -788,7 +799,6 @@ Future<bool> MesosContainerizerProcess::launch(
             << "' of framework " << executorInfo.framework_id();
 
   Container* container = new Container();
-  container->directory = directory;
   container->state = PROVISIONING;
   container->resources = executorInfo.resources();
 
@@ -817,7 +827,7 @@ Future<bool> MesosContainerizerProcess::launch(
                   directory,
                   user,
                   slaveId,
-                  slavePid,
+                  environment,
                   checkpoint,
                   None(),
                   lambda::_1));
@@ -844,7 +854,7 @@ Future<bool> MesosContainerizerProcess::launch(
                    directory,
                    user,
                    slaveId,
-                   slavePid,
+                   environment,
                    checkpoint,
                    None());
   }
@@ -864,7 +874,7 @@ Future<bool> MesosContainerizerProcess::launch(
                 directory,
                 user,
                 slaveId,
-                slavePid,
+                environment,
                 checkpoint,
                 lambda::_1));
 }
@@ -877,7 +887,7 @@ Future<bool> MesosContainerizerProcess::_launch(
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
+    const map<string, string>& environment,
     bool checkpoint,
     const Option<ProvisionInfo>& provisionInfo)
 {
@@ -949,32 +959,11 @@ Future<bool> MesosContainerizerProcess::_launch(
                     directory,
                     user,
                     slaveId,
-                    slavePid,
+                    environment,
                     checkpoint,
                     provisionInfo,
                     lambda::_1));
     }));
-}
-
-
-static list<Option<ContainerLaunchInfo>> accumulate(
-    list<Option<ContainerLaunchInfo>> l,
-    const Option<ContainerLaunchInfo>& e)
-{
-  l.push_back(e);
-  return l;
-}
-
-
-static Future<list<Option<ContainerLaunchInfo>>> _prepare(
-    const Owned<Isolator>& isolator,
-    const ContainerID& containerId,
-    const ContainerConfig& containerConfig,
-    const list<Option<ContainerLaunchInfo>> launchInfos)
-{
-  // Propagate any failure.
-  return isolator->prepare(containerId, containerConfig)
-    .then(lambda::bind(&accumulate, launchInfos, lambda::_1));
 }
 
 
@@ -1047,11 +1036,13 @@ Future<list<Option<ContainerLaunchInfo>>> MesosContainerizerProcess::prepare(
 
   foreach (const Owned<Isolator>& isolator, isolators) {
     // Chain together preparing each isolator.
-    f = f.then(lambda::bind(&_prepare,
-                            isolator,
-                            containerId,
-                            containerConfig,
-                            lambda::_1));
+    f = f.then([=](list<Option<ContainerLaunchInfo>> launchInfos) {
+      return isolator->prepare(containerId, containerConfig)
+        .then([=](const Option<ContainerLaunchInfo>& launchInfo) mutable {
+          launchInfos.push_back(launchInfo);
+          return launchInfos;
+        });
+      });
   }
 
   containers_[containerId]->launchInfos = f;
@@ -1102,7 +1093,7 @@ Future<bool> MesosContainerizerProcess::__launch(
     const string& directory,
     const Option<string>& user,
     const SlaveID& slaveId,
-    const PID<Slave>& slavePid,
+    const map<string, string>& _environment,
     bool checkpoint,
     const Option<ProvisionInfo>& provisionInfo,
     const list<Option<ContainerLaunchInfo>>& launchInfos)
@@ -1117,14 +1108,7 @@ Future<bool> MesosContainerizerProcess::__launch(
 
   CHECK_EQ(containers_[containerId]->state, PREPARING);
 
-  // Prepare environment variables for the executor.
-  map<string, string> environment = executorEnvironment(
-      executorInfo,
-      directory,
-      slaveId,
-      slavePid,
-      checkpoint,
-      flags);
+  map<string, string> environment = _environment;
 
   // Determine the root filesystem for the executor.
   Option<string> executorRootfs;
@@ -1370,6 +1354,8 @@ Future<bool> MesosContainerizerProcess::isolate(
     const ContainerID& containerId,
     pid_t _pid)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     return Failure("Container destroyed during preparing");
   }
@@ -1440,9 +1426,21 @@ Future<bool> MesosContainerizerProcess::exec(
 }
 
 
+Future<Nothing> MesosContainerizerProcess::launch(
+    const ContainerID& containerId,
+    const CommandInfo& commandInfo,
+    const Option<ContainerInfo>& containerInfo,
+    const Resources& resources)
+{
+  return Failure("Unsupported");
+}
+
+
 Future<containerizer::Termination> MesosContainerizerProcess::wait(
     const ContainerID& containerId)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     // See the comments in destroy() for race conditions which lead
     // to "unknown containers".
@@ -1458,6 +1456,8 @@ Future<Nothing> MesosContainerizerProcess::update(
     const ContainerID& containerId,
     const Resources& resources)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     // It is not considered a failure if the container is not known
     // because the slave will attempt to update the container's
@@ -1499,6 +1499,8 @@ Future<ResourceStatistics> _usage(
     const Option<Resources>& resources,
     const list<Future<ResourceStatistics>>& statistics)
 {
+  CHECK(!containerId.has_parent());
+
   ResourceStatistics result;
 
   // Set the timestamp now we have all statistics.
@@ -1535,6 +1537,8 @@ Future<ResourceStatistics> _usage(
 Future<ResourceStatistics> MesosContainerizerProcess::usage(
     const ContainerID& containerId)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     return Failure("Unknown container: " + stringify(containerId));
   }
@@ -1582,6 +1586,8 @@ Future<ContainerStatus> _status(
 Future<ContainerStatus> MesosContainerizerProcess::status(
     const ContainerID& containerId)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     return Failure("Unknown container: " + stringify(containerId));
   }
@@ -1610,6 +1616,8 @@ Future<ContainerStatus> MesosContainerizerProcess::status(
 void MesosContainerizerProcess::destroy(
     const ContainerID& containerId)
 {
+  CHECK(!containerId.has_parent());
+
   if (!containers_.contains(containerId)) {
     // This can happen due to the race between destroys initiated by
     // the launch failure, the terminated executor and the agent so
@@ -1930,26 +1938,6 @@ MesosContainerizerProcess::Metrics::~Metrics()
 }
 
 
-static Future<list<Future<Nothing>>> _cleanupIsolators(
-    const Owned<Isolator>& isolator,
-    const ContainerID& containerId,
-    list<Future<Nothing>> cleanups)
-{
-  // Accumulate but do not propagate any failure.
-  Future<Nothing> cleanup = isolator->cleanup(containerId);
-  cleanups.push_back(cleanup);
-
-  // Wait for the cleanup to complete/fail before returning the list.
-  // We use await here to asynchronously wait for the isolator to
-  // complete then return cleanups.
-  list<Future<Nothing>> cleanup_;
-  cleanup_.push_back(cleanup);
-
-  return await(cleanup_)
-    .then([cleanups]() -> list<Future<Nothing>> { return cleanups; });
-}
-
-
 Future<list<Future<Nothing>>> MesosContainerizerProcess::cleanupIsolators(
     const ContainerID& containerId)
 {
@@ -1962,10 +1950,17 @@ Future<list<Future<Nothing>>> MesosContainerizerProcess::cleanupIsolators(
     // complete and continuing if one fails.
     // TODO(jieyu): Technically, we cannot bind 'isolator' here
     // because the ownership will be transferred after the bind.
-    f = f.then(lambda::bind(&_cleanupIsolators,
-                            isolator,
-                            containerId,
-                            lambda::_1));
+    f = f.then([=](list<Future<Nothing>> cleanups) {
+      // Accumulate but do not propagate any failure.
+      Future<Nothing> cleanup = isolator->cleanup(containerId);
+      cleanups.push_back(cleanup);
+
+      // Wait for the cleanup to complete/fail before returning the
+      // list. We use await here to asynchronously wait for the
+      // isolator to complete then return cleanups.
+      return await(list<Future<Nothing>>({cleanup}))
+        .then([cleanups]() { return cleanups; });
+    });
   }
 
   return f;

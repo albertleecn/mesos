@@ -1523,11 +1523,12 @@ TEST_F(NamespacesPidIsolatorTest, ROOT_PidNamespace)
 
   process::Future<bool> launch = containerizer->launch(
       containerId,
+      None(),
       CREATE_EXECUTOR_INFO("executor", command),
       directory,
       None(),
       SlaveID(),
-      process::PID<Slave>(),
+      std::map<string, string>(),
       false);
   AWAIT_READY(launch);
   ASSERT_TRUE(launch.get());

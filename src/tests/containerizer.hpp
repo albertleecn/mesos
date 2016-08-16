@@ -77,26 +77,17 @@ public:
       recover,
       process::Future<Nothing>(const Option<slave::state::SlaveState>&));
 
-  MOCK_METHOD7(
+  MOCK_METHOD8(
       launch,
       process::Future<bool>(
           const ContainerID&,
+          const Option<TaskInfo>&,
           const ExecutorInfo&,
           const std::string&,
           const Option<std::string>&,
           const SlaveID&,
-          const process::PID<slave::Slave>&,
+          const std::map<std::string, std::string>&,
           bool checkpoint));
-
-  virtual process::Future<bool> launch(
-      const ContainerID& containerId,
-      const TaskInfo& taskInfo,
-      const ExecutorInfo& executorInfo,
-      const std::string& directory,
-      const Option<std::string>& user,
-      const SlaveID& slaveId,
-      const process::PID<slave::Slave>& slavePid,
-      bool checkpoint);
 
   MOCK_METHOD2(
       update,
@@ -128,11 +119,12 @@ private:
   // Default implementations of mock methods.
   process::Future<bool> _launch(
       const ContainerID& containerId,
+      const Option<TaskInfo>& taskInfo,
       const ExecutorInfo& executorInfo,
       const std::string& directory,
       const Option<std::string>& user,
       const SlaveID& slaveId,
-      const process::PID<slave::Slave>& slavePid,
+      const std::map<std::string, std::string>& environment,
       bool checkpoint);
 
   process::Future<containerizer::Termination> _wait(
