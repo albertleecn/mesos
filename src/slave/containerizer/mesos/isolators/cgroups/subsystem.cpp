@@ -15,17 +15,15 @@
 // limitations under the License.
 
 #include <stout/error.hpp>
-#include <stout/nothing.hpp>
-#include <stout/try.hpp>
+#include <stout/hashmap.hpp>
 
+#include "slave/containerizer/mesos/isolators/cgroups/constants.hpp"
 #include "slave/containerizer/mesos/isolators/cgroups/subsystem.hpp"
 
-using mesos::slave::ContainerLimitation;
+#include "slave/containerizer/mesos/isolators/cgroups/subsystems/cpu.hpp"
 
-using process::Failure;
 using process::Future;
 using process::Owned;
-using process::PID;
 
 using std::string;
 
@@ -34,11 +32,27 @@ namespace internal {
 namespace slave {
 
 Try<Owned<Subsystem>> Subsystem::create(
-    const Flags& _flags,
-    const string& _name,
-    const string& _hierarchy)
+    const Flags& flags,
+    const string& name,
+    const string& hierarchy)
 {
-  return Error("Not implemented.");
+  hashmap<string, Try<Owned<Subsystem>>(*)(const Flags&, const string&)>
+    creators = {
+    {CGROUP_SUBSYSTEM_CPU_NAME, &CpuSubsystem::create},
+  };
+
+  if (!creators.contains(name)) {
+    return Error("Unknown subsystem '" + name + "'");
+  }
+
+  Try<Owned<Subsystem>> subsystem = creators[name](flags, hierarchy);
+  if (subsystem.isError()) {
+    return Error(
+        "Failed to create subsystem '" + name + "': " +
+        subsystem.error());
+  }
+
+  return subsystem.get();
 }
 
 
@@ -49,26 +63,21 @@ Subsystem::Subsystem(
     hierarchy(_hierarchy) {}
 
 
-Subsystem::~Subsystem()
-{
-}
-
-
 Future<Nothing> Subsystem::recover(const ContainerID& containerId)
 {
-  return Failure("Not implemented.");
+  return Nothing();
 }
 
 
 Future<Nothing> Subsystem::prepare(const ContainerID& containerId)
 {
-  return Failure("Not implemented.");
+  return Nothing();
 }
 
 
 Future<Nothing> Subsystem::isolate(const ContainerID& containerId, pid_t pid)
 {
-  return Failure("Not implemented.");
+  return Nothing();
 }
 
 
@@ -76,25 +85,25 @@ Future<Nothing> Subsystem::update(
     const ContainerID& containerId,
     const Resources& resources)
 {
-  return Failure("Not implemented.");
+  return Nothing();
 }
 
 
 Future<ResourceStatistics> Subsystem::usage(const ContainerID& containerId)
 {
-  return Failure("Not implemented.");
+  return ResourceStatistics();
 }
 
 
 Future<ContainerStatus> Subsystem::status(const ContainerID& containerId)
 {
-  return Failure("Not implemented.");
+  return ContainerStatus();
 }
 
 
 Future<Nothing> Subsystem::cleanup(const ContainerID& containerId)
 {
-  return Failure("Not implemented.");
+  return Nothing();
 }
 
 } // namespace slave {
