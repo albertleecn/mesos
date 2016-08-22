@@ -21,6 +21,11 @@
 #include "slave/containerizer/mesos/isolators/cgroups/subsystem.hpp"
 
 #include "slave/containerizer/mesos/isolators/cgroups/subsystems/cpu.hpp"
+#include "slave/containerizer/mesos/isolators/cgroups/subsystems/cpuacct.hpp"
+#include "slave/containerizer/mesos/isolators/cgroups/subsystems/devices.hpp"
+#include "slave/containerizer/mesos/isolators/cgroups/subsystems/memory.hpp"
+
+using mesos::slave::ContainerLimitation;
 
 using process::Future;
 using process::Owned;
@@ -39,6 +44,9 @@ Try<Owned<Subsystem>> Subsystem::create(
   hashmap<string, Try<Owned<Subsystem>>(*)(const Flags&, const string&)>
     creators = {
     {CGROUP_SUBSYSTEM_CPU_NAME, &CpuSubsystem::create},
+    {CGROUP_SUBSYSTEM_CPUACCT_NAME, &CpuacctSubsystem::create},
+    {CGROUP_SUBSYSTEM_DEVICES_NAME, &DevicesSubsystem::create},
+    {CGROUP_SUBSYSTEM_MEMORY_NAME, &MemorySubsystem::create},
   };
 
   if (!creators.contains(name)) {
@@ -78,6 +86,12 @@ Future<Nothing> Subsystem::prepare(const ContainerID& containerId)
 Future<Nothing> Subsystem::isolate(const ContainerID& containerId, pid_t pid)
 {
   return Nothing();
+}
+
+
+Future<ContainerLimitation> Subsystem::watch(const ContainerID& containerId)
+{
+  return Future<ContainerLimitation>();
 }
 
 
