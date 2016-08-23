@@ -25,13 +25,12 @@ PROTOC_TO_INCLUDE_DIR(ALLOCATOR        mesos/allocator/allocator)
 PROTOC_TO_INCLUDE_DIR(APPC_SPEC        mesos/appc/spec)
 PROTOC_TO_INCLUDE_DIR(AUTHENTICATION   mesos/authentication/authentication)
 PROTOC_TO_INCLUDE_DIR(AUTHORIZATION    mesos/authorizer/authorizer)
-PROTOC_TO_INCLUDE_DIR(CONTAINERIZER    mesos/containerizer/containerizer)
+PROTOC_TO_INCLUDE_DIR(CONTAINERIZER    mesos/slave/containerizer)
 PROTOC_TO_INCLUDE_DIR(DOCKER_SPEC      mesos/docker/spec)
 PROTOC_TO_INCLUDE_DIR(DOCKER_V1        mesos/docker/v1)
 PROTOC_TO_INCLUDE_DIR(DOCKER_V2        mesos/docker/v2)
 PROTOC_TO_INCLUDE_DIR(EXECUTOR         mesos/executor/executor)
 PROTOC_TO_INCLUDE_DIR(FETCHER          mesos/fetcher/fetcher)
-PROTOC_TO_INCLUDE_DIR(ISOLATOR         mesos/slave/isolator)
 PROTOC_TO_INCLUDE_DIR(MAINTENANCE      mesos/maintenance/maintenance)
 PROTOC_TO_INCLUDE_DIR(MASTER           mesos/master/master)
 PROTOC_TO_INCLUDE_DIR(MESOS            mesos/mesos)
@@ -76,7 +75,6 @@ set(MESOS_PROTOBUF_SRC
   ${INTERNAL_LOG_PROTO_CC}
   ${INTERNAL_MESSAGES_PROTO_CC}
   ${INTERNAL_STATE_PROTO_CC}
-  ${ISOLATOR_PROTO_CC}
   ${ISOLATOR_CNI_SPEC_PROTO_CC}
   ${ISOLATOR_DOCKER_VOLUME_STATE_PROTO_CC}
   ${MAINTENANCE_PROTO_CC}
@@ -182,6 +180,7 @@ set(LINUX_SRC
   slave/containerizer/mesos/isolators/gpu/volume.cpp
   slave/containerizer/mesos/isolators/namespaces/pid.cpp
   slave/containerizer/mesos/isolators/network/cni/cni.cpp
+  slave/containerizer/mesos/isolators/volume/image.cpp
   slave/containerizer/mesos/provisioner/backends/aufs.cpp
   slave/containerizer/mesos/provisioner/backends/bind.cpp
   slave/containerizer/mesos/provisioner/backends/overlay.cpp

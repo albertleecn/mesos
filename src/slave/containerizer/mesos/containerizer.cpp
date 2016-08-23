@@ -109,6 +109,10 @@
 #include "slave/containerizer/mesos/isolators/network/port_mapping.hpp"
 #endif
 
+#ifdef __linux__
+#include "slave/containerizer/mesos/isolators/volume/image.hpp"
+#endif
+
 #include "slave/containerizer/mesos/constants.hpp"
 #include "slave/containerizer/mesos/containerizer.hpp"
 #include "slave/containerizer/mesos/launch.hpp"
@@ -133,6 +137,7 @@ using mesos::slave::ContainerLaunchInfo;
 using mesos::slave::ContainerLimitation;
 using mesos::slave::ContainerLogger;
 using mesos::slave::ContainerState;
+using mesos::slave::ContainerTermination;
 using mesos::slave::Isolator;
 
 using state::SlaveState;
@@ -195,7 +200,18 @@ Try<MesosContainerizer*> MesosContainerizer::create(
   if (!strings::contains(flags_.isolation, "network/")) {
     flags_.isolation += ",network/cni";
   }
-#endif
+
+  // Always enable 'volume/image' on linux if 'filesystem/linux' is
+  // enabled, to ensure backwards compatibility.
+  //
+  // TODO(gilbert): Make sure the 'gpu/nvidia' isolator to be created
+  // after all volume isolators, so that the nvidia gpu libraries
+  // '/usr/local/nvidia' will be overwritten.
+  if (strings::contains(flags_.isolation, "filesystem/linux") &&
+      !strings::contains(flags_.isolation, "volume/image")) {
+    flags_.isolation += ",volume/image";
+  }
+#endif // __linux__
 
   LOG(INFO) << "Using isolation: " << flags_.isolation;
 
@@ -248,10 +264,12 @@ Try<MesosContainerizer*> MesosContainerizer::create(
     return Error("Failed to create launcher: " + launcher.error());
   }
 
-  Try<Owned<Provisioner>> provisioner = Provisioner::create(flags_);
-  if (provisioner.isError()) {
-    return Error("Failed to create provisioner: " + provisioner.error());
+  Try<Owned<Provisioner>> _provisioner = Provisioner::create(flags_);
+  if (_provisioner.isError()) {
+    return Error("Failed to create provisioner: " + _provisioner.error());
   }
+
+  Shared<Provisioner> provisioner = _provisioner.get().share();
 
   // Create the isolators.
   //
@@ -312,6 +330,11 @@ Try<MesosContainerizer*> MesosContainerizer::create(
     {"docker/runtime", &DockerRuntimeIsolatorProcess::create},
     {"docker/volume", &DockerVolumeIsolatorProcess::create},
 
+    {"volume/image",
+      [&provisioner] (const Flags& flags) -> Try<Isolator*> {
+        return VolumeImageIsolatorProcess::create(flags, provisioner);
+      }},
+
     {"gpu/nvidia",
       [&nvidia] (const Flags& flags) -> Try<Isolator*> {
         if (!nvml::isAvailable()) {
@@ -334,12 +357,12 @@ Try<MesosContainerizer*> MesosContainerizer::create(
 #endif
   };
 
-  const vector<string> isolations = strings::tokenize(flags_.isolation, ",");
+  vector<string> tokens = strings::tokenize(flags_.isolation, ",");
+  set<string> isolations = set<string>(tokens.begin(), tokens.end());
 
-  if (isolations.size() !=
-      set<string>(isolations.begin(), isolations.end()).size()) {
-    return Error("Duplicate entries found in --isolation flag"
-                 " '" + stringify(isolations) + "'");
+  if (tokens.size() != isolations.size()) {
+    return Error("Duplicate entries found in --isolation flag '" +
+                 stringify(tokens) + "'");
   }
 
   vector<Owned<Isolator>> isolators;
@@ -375,7 +398,7 @@ Try<MesosContainerizer*> MesosContainerizer::create(
       fetcher,
       Owned<ContainerLogger>(logger.get()),
       Owned<Launcher>(launcher.get()),
-      provisioner.get(),
+      provisioner,
       isolators);
 }
 
@@ -386,7 +409,7 @@ MesosContainerizer::MesosContainerizer(
     Fetcher* fetcher,
     const Owned<ContainerLogger>& logger,
     const Owned<Launcher>& launcher,
-    const Owned<Provisioner>& provisioner,
+    const Shared<Provisioner>& provisioner,
     const vector<Owned<Isolator>>& isolators)
   : process(new MesosContainerizerProcess(
       flags,
@@ -510,7 +533,7 @@ Future<ContainerStatus> MesosContainerizer::status(
 }
 
 
-Future<containerizer::Termination> MesosContainerizer::wait(
+Future<ContainerTermination> MesosContainerizer::wait(
     const ContainerID& containerId)
 {
   return dispatch(process.get(), &MesosContainerizerProcess::wait, containerId);
@@ -562,10 +585,11 @@ Future<Nothing> MesosContainerizerProcess::recover(
         CHECK_SOME(run);
         CHECK_SOME(run.get().id);
 
-        // We need the pid so the reaper can monitor the executor so skip this
-        // executor if it's not present. This is not an error because the slave
-        // will try to wait on the container which will return a failed
-        // Termination and everything will get cleaned up.
+        // We need the pid so the reaper can monitor the executor so
+        // skip this executor if it's not present. This is not an
+        // error because the slave will try to wait on the container
+        // which will return a failed ContainerTermination and
+        // everything will get cleaned up.
         if (!run.get().forkedPid.isSome()) {
           continue;
         }
@@ -590,8 +614,8 @@ Future<Nothing> MesosContainerizerProcess::recover(
           continue;
         }
 
-        LOG(INFO) << "Recovering container '" << containerId
-                  << "' for executor '" << executor.id
+        LOG(INFO) << "Recovering container " << containerId
+                  << " for executor '" << executor.id
                   << "' of framework " << framework.id;
 
         // NOTE: We create the executor directory before checkpointing
@@ -794,13 +818,62 @@ Future<bool> MesosContainerizerProcess::launch(
         flags.default_container_info.get());
   }
 
-  LOG(INFO) << "Starting container '" << containerId
-            << "' for executor '" << executorInfo.executor_id()
+  LOG(INFO) << "Starting container " << containerId
+            << " for executor '" << executorInfo.executor_id()
             << "' of framework " << executorInfo.framework_id();
 
+  ContainerConfig containerConfig;
+  containerConfig.mutable_executor_info()->CopyFrom(executorInfo);
+  containerConfig.mutable_command_info()->CopyFrom(executorInfo.command());
+  containerConfig.mutable_resources()->CopyFrom(executorInfo.resources());
+  containerConfig.set_directory(directory);
+
+  if (user.isSome()) {
+    containerConfig.set_user(user.get());
+  }
+
+  if (taskInfo.isSome()) {
+    // Command task case.
+    containerConfig.mutable_task_info()->CopyFrom(taskInfo.get());
+
+    if (taskInfo->has_container()) {
+      ContainerInfo* containerInfo = containerConfig.mutable_container_info();
+      containerInfo->CopyFrom(taskInfo->container());
+
+      if (taskInfo->container().mesos().has_image()) {
+        // For command tasks, We need to set the command executor user
+        // as root as it needs to perform chroot (even when
+        // switch_user is set to false).
+        containerConfig.mutable_command_info()->set_user("root");
+      }
+    }
+  } else {
+    // Other cases.
+    if (executorInfo.has_container()) {
+      ContainerInfo* containerInfo = containerConfig.mutable_container_info();
+      containerInfo->CopyFrom(executorInfo.container());
+    }
+  }
+
+  return launch(containerId,
+                containerConfig,
+                environment,
+                slaveId,
+                checkpoint);
+}
+
+
+Future<bool> MesosContainerizerProcess::launch(
+    const ContainerID& containerId,
+    const ContainerConfig& containerConfig,
+    const map<string, string>& environment,
+    const SlaveID& slaveId,
+    bool checkpoint)
+{
   Container* container = new Container();
   container->state = PROVISIONING;
-  container->resources = executorInfo.resources();
+  container->config = containerConfig;
+  container->resources = containerConfig.resources();
 
   // We need to set the `launchInfos` to be a ready future initially
   // before we starting calling isolator->prepare() because otherwise,
@@ -810,169 +883,40 @@ Future<bool> MesosContainerizerProcess::launch(
 
   containers_.put(containerId, Owned<Container>(container));
 
-  // If 'container' is not set in 'executorInfo', one of the following
-  // is true:
-  //  1) This is a custom executor without ContainerInfo.
-  //  2) This is a command task without ContainerInfo (since we copy
-  //     ContainerInfo for command tasks if exists).
-  // In either of the above cases, no provisioning is needed.
-  // Therefore, we can go straight to 'prepare'.
-  if (!executorInfo.has_container()) {
-    return prepare(containerId, taskInfo, executorInfo, directory, user, None())
+  // We'll first provision the image for the container, and
+  // then provision the images specified in `volumes` using
+  // the 'volume/image' isolator.
+  if (!containerConfig.has_container_info() ||
+      !containerConfig.container_info().mesos().has_image()) {
+    return prepare(containerId, None())
       .then(defer(self(),
-                  &Self::__launch,
+                  &Self::_launch,
                   containerId,
-                  taskInfo,
-                  executorInfo,
-                  directory,
-                  user,
-                  slaveId,
                   environment,
-                  checkpoint,
-                  None(),
-                  lambda::_1));
+                  slaveId,
+                  checkpoint));
   }
 
-  // We'll first provision the image for the container , and then
-  // provision the images specified in Volumes.
-  Option<Image> containerImage;
-
-  if (taskInfo.isSome() &&
-      taskInfo->has_container() &&
-      taskInfo->container().mesos().has_image()) {
-    // Command task.
-    containerImage = taskInfo->container().mesos().image();
-  } else if (executorInfo.container().mesos().has_image()) {
-    // Custom executor.
-    containerImage = executorInfo.container().mesos().image();
-  }
-
-  if (containerImage.isNone()) {
-    return _launch(containerId,
-                   taskInfo,
-                   executorInfo,
-                   directory,
-                   user,
-                   slaveId,
-                   environment,
-                   checkpoint,
-                   None());
-  }
-
-  Future<ProvisionInfo> provisioning = provisioner->provision(
+  container->provisioning = provisioner->provision(
       containerId,
-      containerImage.get());
+      containerConfig.container_info().mesos().image());
 
-  container->provisionInfos.push_back(provisioning);
-
-  return provisioning
-    .then(defer(PID<MesosContainerizerProcess>(this),
-                &MesosContainerizerProcess::_launch,
-                containerId,
-                taskInfo,
-                executorInfo,
-                directory,
-                user,
-                slaveId,
-                environment,
-                checkpoint,
-                lambda::_1));
-}
-
-
-Future<bool> MesosContainerizerProcess::_launch(
-    const ContainerID& containerId,
-    const Option<TaskInfo>& taskInfo,
-    const ExecutorInfo& executorInfo,
-    const string& directory,
-    const Option<string>& user,
-    const SlaveID& slaveId,
-    const map<string, string>& environment,
-    bool checkpoint,
-    const Option<ProvisionInfo>& provisionInfo)
-{
-  CHECK(executorInfo.has_container());
-  CHECK_EQ(executorInfo.container().type(), ContainerInfo::MESOS);
-
-  // This is because if a 'destroy' happens after 'launch' and before
-  // '_launch', even if the '___destroy' will wait for the 'provision'
-  // in 'launch' to finish, there is still a chance that '___destroy'
-  // and its dependencies finish before '_launch' starts since onAny
-  // is not guaranteed to be executed in order.
-  if (!containers_.contains(containerId)) {
-    return Failure("Container destroyed during provisioning");
-  }
-
-  // Make sure containerizer is not in DESTROYING state, to avoid
-  // a possible race that containerizer is destroying the container
-  // while it is provisioning the image from volumes.
-  if (containers_[containerId]->state == DESTROYING) {
-    return Failure("Container is being destroyed during provisioning");
-  }
-
-  CHECK_EQ(containers_[containerId]->state, PROVISIONING);
-
-  // We will provision the images specified in ContainerInfo::volumes
-  // as well. We will mutate ContainerInfo::volumes to include the
-  // paths to the provisioned root filesystems (by setting the
-  // 'host_path') if the volume specifies an image as the source.
-  //
-  // TODO(gilbert): We need to figure out a way to support passing
-  // runtime configurations specified in the image to the container.
-  Owned<ExecutorInfo> _executorInfo(new ExecutorInfo(executorInfo));
-
-  list<Future<Nothing>> futures;
-
-  for (int i = 0; i < _executorInfo->container().volumes_size(); i++) {
-    Volume* volume = _executorInfo->mutable_container()->mutable_volumes(i);
-
-    if (!volume->has_image()) {
-      continue;
-    }
-
-    const Image& image = volume->image();
-
-    Future<ProvisionInfo> future = provisioner->provision(containerId, image);
-    containers_[containerId]->provisionInfos.push_back(future);
-
-    futures.push_back(future.then([=](const ProvisionInfo& info) {
-        volume->set_host_path(info.rootfs);
-        return Nothing();
-      }));
-  }
-
-  // We put `prepare` inside of a lambda expression, in order to get
-  // _executorInfo object after host path set in volume.
-  return collect(futures)
-    .then(defer([=]() -> Future<bool> {
-      return prepare(containerId,
-                     taskInfo,
-                     *_executorInfo,
-                     directory,
-                     user,
-                     provisionInfo)
+  return container->provisioning
+    .then(defer(self(),
+                [=](const ProvisionInfo& provisionInfo) -> Future<bool> {
+      return prepare(containerId, provisionInfo)
         .then(defer(self(),
-                    &Self::__launch,
+                    &Self::_launch,
                     containerId,
-                    taskInfo,
-                    *_executorInfo,
-                    directory,
-                    user,
-                    slaveId,
                     environment,
-                    checkpoint,
-                    provisionInfo,
-                    lambda::_1));
+                    slaveId,
+                    checkpoint));
     }));
 }
 
 
-Future<list<Option<ContainerLaunchInfo>>> MesosContainerizerProcess::prepare(
+Future<Nothing> MesosContainerizerProcess::prepare(
     const ContainerID& containerId,
-    const Option<TaskInfo>& taskInfo,
-    const ExecutorInfo& executorInfo,
-    const string& directory,
-    const Option<string>& user,
     const Option<ProvisionInfo>& provisionInfo)
 {
   // This is because if a 'destroy' happens during the provisoiner is
@@ -985,32 +929,21 @@ Future<list<Option<ContainerLaunchInfo>>> MesosContainerizerProcess::prepare(
     return Failure("Container destroyed during provisioning");
   }
 
+  const Owned<Container>& container = containers_[containerId];
+
   // Make sure containerizer is not in DESTROYING state, to avoid
   // a possible race that containerizer is destroying the container
   // while it is preparing isolators for the container.
-  if (containers_[containerId]->state == DESTROYING) {
+  if (container->state == DESTROYING) {
     return Failure("Container is being destroyed during provisioning");
   }
 
-  CHECK_EQ(containers_[containerId]->state, PROVISIONING);
+  CHECK_EQ(container->state, PROVISIONING);
 
-  containers_[containerId]->state = PREPARING;
-
-  // Construct ContainerConfig.
-  ContainerConfig containerConfig;
-  containerConfig.set_directory(directory);
-  containerConfig.mutable_executor_info()->CopyFrom(executorInfo);
-
-  if (taskInfo.isSome()) {
-    containerConfig.mutable_task_info()->CopyFrom(taskInfo.get());
-  }
-
-  if (user.isSome()) {
-    containerConfig.set_user(user.get());
-  }
+  container->state = PREPARING;
 
   if (provisionInfo.isSome()) {
-    containerConfig.set_rootfs(provisionInfo->rootfs);
+    container->config.set_rootfs(provisionInfo->rootfs);
 
     if (provisionInfo->dockerManifest.isSome() &&
         provisionInfo->appcManifest.isSome()) {
@@ -1018,15 +951,18 @@ Future<list<Option<ContainerLaunchInfo>>> MesosContainerizerProcess::prepare(
     }
 
     if (provisionInfo->dockerManifest.isSome()) {
-      ContainerConfig::Docker* docker = containerConfig.mutable_docker();
+      ContainerConfig::Docker* docker = container->config.mutable_docker();
       docker->mutable_manifest()->CopyFrom(provisionInfo->dockerManifest.get());
     }
 
     if (provisionInfo->appcManifest.isSome()) {
-      ContainerConfig::Appc* appc = containerConfig.mutable_appc();
+      ContainerConfig::Appc* appc = container->config.mutable_appc();
       appc->mutable_manifest()->CopyFrom(provisionInfo->appcManifest.get());
     }
   }
+
+  // Captured for lambdas below.
+  ContainerConfig containerConfig = container->config;
 
   // We prepare the isolators sequentially according to their ordering
   // to permit basic dependency specification, e.g., preparing a
@@ -1045,34 +981,40 @@ Future<list<Option<ContainerLaunchInfo>>> MesosContainerizerProcess::prepare(
       });
   }
 
-  containers_[containerId]->launchInfos = f;
+  container->launchInfos = f;
 
-  return f;
+  return f.then([]() { return Nothing(); });
 }
 
 
 Future<Nothing> MesosContainerizerProcess::fetch(
     const ContainerID& containerId,
-    const CommandInfo& commandInfo,
-    const string& directory,
-    const Option<string>& user,
     const SlaveID& slaveId)
 {
   if (!containers_.contains(containerId)) {
     return Failure("Container destroyed during isolating");
   }
 
-  if (containers_[containerId]->state == DESTROYING) {
+  const Owned<Container>& container = containers_[containerId];
+
+  if (container->state == DESTROYING) {
     return Failure("Container is being destroyed during isolating");
   }
 
-  CHECK_EQ(containers_[containerId]->state, ISOLATING);
+  CHECK_EQ(container->state, ISOLATING);
 
-  containers_[containerId]->state = FETCHING;
+  container->state = FETCHING;
+
+  const string directory = container->config.directory();
+
+  Option<string> user;
+  if (container->config.has_user()) {
+    user = container->config.user();
+  }
 
   return fetcher->fetch(
       containerId,
-      commandInfo,
+      container->config.command_info(),
       directory,
       user,
       slaveId,
@@ -1086,44 +1028,61 @@ Future<Nothing> MesosContainerizerProcess::fetch(
 }
 
 
-Future<bool> MesosContainerizerProcess::__launch(
+Future<bool> MesosContainerizerProcess::_launch(
     const ContainerID& containerId,
-    const Option<TaskInfo>& taskInfo,
-    const ExecutorInfo& executorInfo,
-    const string& directory,
-    const Option<string>& user,
+    map<string, string> environment,
     const SlaveID& slaveId,
-    const map<string, string>& _environment,
-    bool checkpoint,
-    const Option<ProvisionInfo>& provisionInfo,
-    const list<Option<ContainerLaunchInfo>>& launchInfos)
+    bool checkpoint)
 {
   if (!containers_.contains(containerId)) {
     return Failure("Container destroyed during preparing");
   }
 
-  if (containers_[containerId]->state == DESTROYING) {
+  const Owned<Container>& container = containers_[containerId];
+
+  if (container->state == DESTROYING) {
     return Failure("Container is being destroyed during preparing");
   }
 
-  CHECK_EQ(containers_[containerId]->state, PREPARING);
+  CHECK_EQ(container->state, PREPARING);
 
-  map<string, string> environment = _environment;
+  // TODO(jieyu): Consider moving this to 'executorEnvironment' and
+  // consolidating with docker containerizer.
+  //
+  // NOTE: For the command executor case, although it uses the host
+  // filesystem for itself, we still set 'MESOS_SANDBOX' according to
+  // the root filesystem of the task (if specified). Command executor
+  // itself does not use this environment variable.
+  environment["MESOS_SANDBOX"] = container->config.has_rootfs()
+    ? flags.sandbox_directory
+    : container->config.directory();
 
-  // Determine the root filesystem for the executor.
-  Option<string> executorRootfs;
-  if (taskInfo.isNone() && provisionInfo.isSome()) {
-    executorRootfs = provisionInfo->rootfs;
+  // NOTE: Command task is a special case. Even if the container
+  // config has a root filesystem, the executor container still uses
+  // the host filesystem.
+  Option<string> rootfs;
+  if (!container->config.has_task_info() &&
+      container->config.has_rootfs()) {
+    rootfs = container->config.rootfs();
   }
 
-  // Determine the executor launch command for the container.
-  // At most one command can be returned from docker runtime
-  // isolator if a docker image is specified.
-  Option<CommandInfo> executorLaunchCommand;
+  Option<CommandInfo> launchCommand;
   Option<string> workingDirectory;
+  JSON::Array preExecCommands;
 
-  foreach (const Option<ContainerLaunchInfo>& launchInfo, launchInfos) {
-    if (launchInfo.isSome() && launchInfo->has_environment()) {
+  // TODO(jieyu): We should use Option here. If no namespace is
+  // required, we should pass None() to 'launcher->fork'.
+  int namespaces = 0;
+
+  CHECK_READY(container->launchInfos);
+
+  foreach (const Option<ContainerLaunchInfo>& launchInfo,
+           container->launchInfos.get()) {
+    if (launchInfo.isNone()) {
+      continue;
+    }
+
+    if (launchInfo->has_environment()) {
       foreach (const Environment::Variable& variable,
                launchInfo->environment().variables()) {
         const string& name = variable.name();
@@ -1141,15 +1100,15 @@ Future<bool> MesosContainerizerProcess::__launch(
       }
     }
 
-    if (launchInfo.isSome() && launchInfo->has_command()) {
-      if (executorLaunchCommand.isSome()) {
+    if (launchInfo->has_command()) {
+      if (launchCommand.isSome()) {
         return Failure("At most one command can be returned from isolators");
       } else {
-        executorLaunchCommand = launchInfo->command();
+        launchCommand = launchInfo->command();
       }
     }
 
-    if (launchInfo.isSome() && launchInfo->has_working_directory()) {
+    if (launchInfo->has_working_directory()) {
       if (workingDirectory.isSome()) {
         return Failure(
             "At most one working directory can be returned from isolators");
@@ -1157,48 +1116,9 @@ Future<bool> MesosContainerizerProcess::__launch(
         workingDirectory = launchInfo->working_directory();
       }
     }
-  }
 
-  // TODO(jieyu): Consider moving this to 'executorEnvironment' and
-  // consolidating with docker containerizer.
-  //
-  // NOTE: For the command executor case, although it uses the host
-  // filesystem for itself, we still set 'MESOS_SANDBOX' according to
-  // the root filesystem of the task (if specified). Command executor
-  // itself does not use this environment variable.
-  environment["MESOS_SANDBOX"] = provisionInfo.isSome()
-    ? flags.sandbox_directory
-    : directory;
-
-  // Include any enviroment variables from CommandInfo.
-  foreach (const Environment::Variable& variable,
-           executorInfo.command().environment().variables()) {
-    environment[variable.name()] = variable.value();
-  }
-
-  JSON::Array preExecCommands;
-
-  // TODO(jieyu): We should use Option here. If no namespace is
-  // required, we should pass None() to 'launcher->fork'.
-  int namespaces = 0;
-
-  foreach (const Option<ContainerLaunchInfo>& launchInfo, launchInfos) {
-    if (!launchInfo.isSome()) {
-      continue;
-    }
-
-    // Populate the list of additional commands to be run inside the container
-    // context.
     foreach (const CommandInfo& command, launchInfo->pre_exec_commands()) {
       preExecCommands.values.emplace_back(JSON::protobuf(command));
-    }
-
-    // Process additional environment variables returned by isolators.
-    if (launchInfo->has_environment()) {
-      foreach (const Environment::Variable& variable,
-               launchInfo->environment().variables()) {
-        environment[variable.name()] = variable.value();
-      }
     }
 
     if (launchInfo->has_namespaces()) {
@@ -1206,21 +1126,46 @@ Future<bool> MesosContainerizerProcess::__launch(
     }
   }
 
-  if (executorLaunchCommand.isNone()) {
-    executorLaunchCommand = executorInfo.command();
+  if (launchCommand.isNone()) {
+    launchCommand = container->config.command_info();
   }
 
-  // Inform the command executor about the rootfs of the task.
-  if (taskInfo.isSome() && provisionInfo.isSome()) {
-    CHECK_SOME(executorLaunchCommand);
-    executorLaunchCommand->add_arguments("--rootfs=" + provisionInfo->rootfs);
+  // For the command executor case, we should add the rootfs flag to
+  // the launch command of the command executor.
+  if (container->config.has_task_info() &&
+      container->config.has_rootfs()) {
+    CHECK_SOME(launchCommand);
+    launchCommand->add_arguments(
+        "--rootfs=" + container->config.rootfs());
   }
 
-  return logger->prepare(executorInfo, directory)
+  // Include any enviroment variables from CommandInfo.
+  foreach (const Environment::Variable& variable,
+           container->config.command_info().environment().variables()) {
+    const string& name = variable.name();
+    const string& value = variable.value();
+
+    if (environment.count(name)) {
+      VLOG(1) << "Overwriting environment variable '"
+              << name << "', original: '"
+              << environment[name] << "', new: '"
+              << value << "', for container "
+              << containerId;
+    }
+
+    environment[name] = value;
+  }
+
+  return logger->prepare(
+      container->config.executor_info(),
+      container->config.directory())
     .then(defer(
         self(),
         [=](const ContainerLogger::SubprocessInfo& subprocessInfo)
           -> Future<bool> {
+    CHECK(containers_.contains(containerId));
+    const Owned<Container>& container = containers_[containerId];
+
     // Use a pipe to block the child until it's been isolated.
     // The `pipes` array is captured later in a lambda.
     std::array<int, 2> pipes;
@@ -1232,9 +1177,9 @@ Future<bool> MesosContainerizerProcess::__launch(
     // Prepare the flags to pass to the launch process.
     MesosContainerizerLaunch::Flags launchFlags;
 
-    launchFlags.command = JSON::protobuf(executorLaunchCommand.get());
+    launchFlags.command = JSON::protobuf(launchCommand.get());
 
-    if (executorRootfs.isNone()) {
+    if (rootfs.isNone()) {
       // NOTE: If the executor shares the host filesystem, we should
       // not allow them to 'cd' into an arbitrary directory because
       // that'll create security issues.
@@ -1245,7 +1190,7 @@ Future<bool> MesosContainerizerProcess::__launch(
                      << "host filesystem";
       }
 
-      launchFlags.working_directory = directory;
+      launchFlags.working_directory = container->config.directory();
     } else {
       launchFlags.working_directory = workingDirectory.isSome()
         ? workingDirectory
@@ -1253,20 +1198,23 @@ Future<bool> MesosContainerizerProcess::__launch(
     }
 
 #ifdef __WINDOWS__
-    if (executorRootfs.isSome()) {
+    if (rootfs.isSome()) {
       return Failure(
           "`chroot` is not supported on Windows, but the executor "
           "specifies a root filesystem.");
     }
 
-    if (user.isSome()) {
+    if (container->config.has_user()) {
       return Failure(
           "`su` is not supported on Windows, but the executor "
           "specifies a user.");
     }
 #else
-    launchFlags.rootfs = executorRootfs;
-    launchFlags.user = user;
+    launchFlags.rootfs = rootfs;
+
+    if (container->config.has_user()) {
+      launchFlags.user = container->config.user();
+    }
 #endif // __WINDOWS__
 
 #ifndef __WINDOWS__
@@ -1311,8 +1259,8 @@ Future<bool> MesosContainerizerProcess::__launch(
       const string& path = slave::paths::getForkedPidPath(
           slave::paths::getMetaRootDir(flags.work_dir),
           slaveId,
-          executorInfo.framework_id(),
-          executorInfo.executor_id(),
+          container->config.executor_info().framework_id(),
+          container->config.executor_info().executor_id(),
           containerId);
 
       LOG(INFO) << "Checkpointing executor's forked pid " << pid
@@ -1333,15 +1281,13 @@ Future<bool> MesosContainerizerProcess::__launch(
     // refer to it again during container destroy.
     Future<Option<int>> status = process::reap(pid);
     status.onAny(defer(self(), &Self::reaped, containerId));
-    containers_[containerId]->status = status;
+
+    container->status = status;
 
     return isolate(containerId, pid)
       .then(defer(self(),
                   &Self::fetch,
                   containerId,
-                  executorInfo.command(),
-                  directory,
-                  user,
                   slaveId))
       .then(defer(self(), &Self::exec, containerId, pipes[1]))
       .onAny([pipes]() { os::close(pipes[0]); })
@@ -1436,7 +1382,7 @@ Future<Nothing> MesosContainerizerProcess::launch(
 }
 
 
-Future<containerizer::Termination> MesosContainerizerProcess::wait(
+Future<ContainerTermination> MesosContainerizerProcess::wait(
     const ContainerID& containerId)
 {
   CHECK(!containerId.has_parent());
@@ -1463,15 +1409,15 @@ Future<Nothing> MesosContainerizerProcess::update(
     // because the slave will attempt to update the container's
     // resources on a task's terminal state change but the executor
     // may have already exited and the container cleaned up.
-    LOG(WARNING) << "Ignoring update for unknown container: " << containerId;
+    LOG(WARNING) << "Ignoring update for unknown container " << containerId;
     return Nothing();
   }
 
   const Owned<Container>& container = containers_[containerId];
 
   if (container->state == DESTROYING) {
-    LOG(WARNING) << "Ignoring update for currently being destroyed container: "
-                 << containerId;
+    LOG(WARNING) << "Ignoring update for currently being destroyed "
+                 << "container " << containerId;
     return Nothing();
   }
 
@@ -1540,7 +1486,7 @@ Future<ResourceStatistics> MesosContainerizerProcess::usage(
   CHECK(!containerId.has_parent());
 
   if (!containers_.contains(containerId)) {
-    return Failure("Unknown container: " + stringify(containerId));
+    return Failure("Unknown container " + stringify(containerId));
   }
 
   list<Future<ResourceStatistics>> futures;
@@ -1577,7 +1523,7 @@ Future<ContainerStatus> _status(
     }
   }
 
-  VLOG(2) << "Aggregating status for container: " << containerId;
+  VLOG(2) << "Aggregating status for container " << containerId;
 
   return result;
 }
@@ -1603,7 +1549,7 @@ Future<ContainerStatus> MesosContainerizerProcess::status(
   // serialize the invocation to `await` in order to maintain the
   // order of requests for `ContainerStatus` by the agent.  See
   // MESOS-4671 for more details.
-  VLOG(2) << "Serializing status request for container: " << containerId;
+  VLOG(2) << "Serializing status request for container " << containerId;
 
   return containers_[containerId]->sequence.add<ContainerStatus>(
       [=]() -> Future<ContainerStatus> {
@@ -1631,18 +1577,18 @@ void MesosContainerizerProcess::destroy(
     //
     // The guard here and `if (container->state == DESTROYING)` below
     // make sure redundant destroys short-circuit.
-    VLOG(1) << "Ignoring destroy of unknown container: " << containerId;
+    VLOG(1) << "Ignoring destroy of unknown container " << containerId;
     return;
   }
 
   Container* container = containers_[containerId].get();
 
   if (container->state == DESTROYING) {
-    VLOG(1) << "Destroy has already been initiated for '" << containerId << "'";
+    VLOG(1) << "Destroy has already been initiated for " << containerId;
     return;
   }
 
-  LOG(INFO) << "Destroying container '" << containerId << "'";
+  LOG(INFO) << "Destroying container " << containerId;
 
   if (container->state == PROVISIONING) {
     VLOG(1) << "Waiting for the provisioner to complete for container '"
@@ -1652,7 +1598,7 @@ void MesosContainerizerProcess::destroy(
 
     // Wait for the provisioner to finish provisioning before we
     // start destroying the container.
-    await(container->provisionInfos)
+    container->provisioning
       .onAny(defer(
           self(),
           &Self::____destroy,
@@ -1838,7 +1784,7 @@ void MesosContainerizerProcess::_____destroy(
     return;
   }
 
-  containerizer::Termination termination;
+  ContainerTermination termination;
 
   if (status.isReady() && status->isSome()) {
     termination.set_status(status->get());
@@ -1883,7 +1829,7 @@ void MesosContainerizerProcess::reaped(const ContainerID& containerId)
     return;
   }
 
-  LOG(INFO) << "Executor for container '" << containerId << "' has exited";
+  LOG(INFO) << "Executor for container " << containerId << " has exited";
 
   // The executor has exited so destroy the container.
   destroy(containerId);
@@ -1959,7 +1905,9 @@ Future<list<Future<Nothing>>> MesosContainerizerProcess::cleanupIsolators(
       // list. We use await here to asynchronously wait for the
       // isolator to complete then return cleanups.
       return await(list<Future<Nothing>>({cleanup}))
-        .then([cleanups]() { return cleanups; });
+        .then([cleanups]() -> Future<list<Future<Nothing>>> {
+          return cleanups;
+        });
     });
   }
 
