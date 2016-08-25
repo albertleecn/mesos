@@ -1,3 +1,13 @@
+- name: Aaron Wood
+  affiliations:
+    - {organization: Verizon Labs}
+  emails:
+    - aaronjwood@gmail.com
+    - me@aaronjwood.com
+    - aaron.wood@verizon.com
+  jira_user: aaron.wood
+  reviewboard_user: aaron.wood
+
 - name: Adam B
   affiliations:
     - {organization: Mesosphere}
@@ -288,6 +298,12 @@
     - klaus@cguru.net
   jira_user: klaus1982
   reviewboard_user: klaus1982
+
+- name: Krzysztof Paprocki
+  emails:
+    - paprocki.krzysztof@gmail.com
+  jira_user: Kris-Paprocki
+  reviewboard_user: Kris-Paprocki
 
 - name: Lily Chen
   affiliations:

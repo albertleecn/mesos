@@ -166,6 +166,117 @@ TEST_F(SlaveTest, Shutdown)
 }
 
 
+// This test verifies that the slave rejects duplicate terminal
+// status updates for tasks before the first terminal update is
+// acknowledged.
+TEST_F(SlaveTest, DuplicateTerminalUpdateBeforeAck)
+{
+  Clock::pause();
+
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+  TestContainerizer containerizer(&exec);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), &containerizer);
+  ASSERT_SOME(slave);
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_checkpoint(true); // Enable checkpointing.
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  FrameworkID frameworkId;
+  EXPECT_CALL(sched, registered(_, _, _))
+    .WillOnce(SaveArg<1>(&frameworkId));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(_, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers->size());
+
+  ExecutorDriver* execDriver;
+  EXPECT_CALL(exec, registered(_, _, _, _))
+    .WillOnce(SaveArg<0>(&execDriver));
+
+  // Send a terminal update right away.
+  EXPECT_CALL(exec, launchTask(_, _))
+    .WillOnce(SendStatusUpdateFromTask(TASK_FINISHED));
+
+  Future<TaskStatus> status;
+  EXPECT_CALL(sched, statusUpdate(_, _))
+    .WillOnce(FutureArg<1>(&status));
+
+  // Drop the first ACK from the scheduler to the slave.
+  Future<StatusUpdateAcknowledgementMessage> statusUpdateAckMessage =
+    DROP_PROTOBUF(StatusUpdateAcknowledgementMessage(), _, slave.get()->pid);
+
+  Future<Nothing> ___statusUpdate =
+    FUTURE_DISPATCH(slave.get()->pid, &Slave::___statusUpdate);
+
+  TaskInfo task;
+  task.set_name("test-task");
+  task.mutable_task_id()->set_value("1");
+  task.mutable_slave_id()->MergeFrom(offers->at(0).slave_id());
+  task.mutable_resources()->MergeFrom(offers->at(0).resources());
+  task.mutable_executor()->MergeFrom(DEFAULT_EXECUTOR_INFO);
+
+  driver.launchTasks(offers->at(0).id(), {task});
+
+  AWAIT_READY(status);
+
+  EXPECT_EQ(TASK_FINISHED, status->state());
+
+  AWAIT_READY(statusUpdateAckMessage);
+
+  // At this point the status update manager has enqueued
+  // TASK_FINISHED update.
+  AWAIT_READY(___statusUpdate);
+
+  Future<Nothing> _statusUpdate2 =
+    FUTURE_DISPATCH(slave.get()->pid, &Slave::_statusUpdate);
+
+  // Now send a TASK_KILLED update for the same task.
+  TaskStatus status2 = status.get();
+  status2.set_state(TASK_KILLED);
+  execDriver->sendStatusUpdate(status2);
+
+  // At this point the slave has handled the TASK_KILLED update.
+  AWAIT_READY(_statusUpdate2);
+
+  // After we advance the clock, the scheduler should receive
+  // the retried TASK_FINISHED update and acknowledge it.
+  Future<TaskStatus> update;
+  EXPECT_CALL(sched, statusUpdate(_, _))
+    .WillOnce(FutureArg<1>(&update));
+
+  Clock::advance(slave::STATUS_UPDATE_RETRY_INTERVAL_MIN);
+  Clock::settle();
+
+  // Ensure the scheduler receives TASK_FINISHED.
+  AWAIT_READY(update);
+  EXPECT_EQ(TASK_FINISHED, update->state());
+
+  // Settle the clock to ensure that TASK_KILLED is not sent.
+  Clock::settle();
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
+}
+
+
 TEST_F(SlaveTest, ShutdownUnregisteredExecutor)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -255,6 +366,135 @@ TEST_F(SlaveTest, ShutdownUnregisteredExecutor)
   EXPECT_EQ(TaskStatus::SOURCE_SLAVE, status->source());
   EXPECT_EQ(TaskStatus::REASON_EXECUTOR_REGISTRATION_TIMEOUT,
             status->reason());
+
+  Clock::resume();
+
+  driver.stop();
+  driver.join();
+}
+
+
+// This test verifies that mesos agent gets notified of task
+// launch failure triggered by the executor register timeout
+// caused by slow URI fetching.
+TEST_F(SlaveTest, ExecutorTimeoutCausedBySlowFetch)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  string hadoopPath = os::getcwd();
+  string hadoopBinPath = path::join(hadoopPath, "bin");
+
+  ASSERT_SOME(os::mkdir(hadoopBinPath));
+  ASSERT_SOME(os::chmod(hadoopBinPath, S_IRWXU | S_IRWXG | S_IRWXO));
+
+  // A spurious "hadoop" script that sleeps forever.
+  string mockHadoopScript = "#!/usr/bin/env bash\n"
+                            "sleep 1000";
+
+  string hadoopCommand = path::join(hadoopBinPath, "hadoop");
+  ASSERT_SOME(os::write(hadoopCommand, mockHadoopScript));
+  ASSERT_SOME(os::chmod(hadoopCommand,
+                        S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH));
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.hadoop_home = hadoopPath;
+
+  Fetcher fetcher;
+
+  Try<MesosContainerizer*> _containerizer = MesosContainerizer::create(
+      flags, true, &fetcher);
+
+  CHECK_SOME(_containerizer);
+  Owned<MesosContainerizer> containerizer(_containerizer.get());
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(
+      detector.get(),
+      containerizer.get(),
+      flags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched,
+      DEFAULT_FRAMEWORK_INFO,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .Times(1);
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers.get().size());
+
+  // Launch a task with the command executor.
+  // The task uses a URI that needs to be fetched by the HDFS client
+  // and will be blocked until the executor registrartion times out.
+  CommandInfo commandInfo;
+  CommandInfo::URI* uri = commandInfo.add_uris();
+  uri->set_value(path::join("hdfs://dummyhost/dummypath", "test"));
+
+  // Using a dummy command value as it's a required field. The
+  // command won't be invoked.
+  commandInfo.set_value("sleep 10");
+
+  ExecutorID executorId;
+  executorId.set_value("test-executor-staging");
+
+  TaskInfo task = createTask(
+      offers.get()[0].slave_id(),
+      offers.get()[0].resources(),
+      commandInfo,
+      executorId,
+      "test-task-staging");
+
+  Future<Nothing> fetch = FUTURE_DISPATCH(
+      _, &FetcherProcess::fetch);
+
+  Future<TaskStatus> status;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status));
+
+  Clock::pause();
+
+  driver.launchTasks(offers.get()[0].id(), {task});
+
+  Future<Nothing> executorLost;
+  EXPECT_CALL(sched, executorLost(&driver, executorId, _, _))
+    .WillOnce(FutureSatisfy(&executorLost));
+
+  // Ensure that the slave times out and kills the executor.
+  Future<Nothing> destroyExecutor = FUTURE_DISPATCH(
+      _, &MesosContainerizerProcess::destroy);
+
+  AWAIT_READY(fetch);
+
+  Clock::advance(flags.executor_registration_timeout);
+
+  AWAIT_READY(destroyExecutor);
+
+  Clock::settle(); // Wait for Containerizer::destroy to complete.
+
+  // Now advance time until the reaper reaps the executor.
+  while (status.isPending()) {
+    Clock::advance(process::MAX_REAP_INTERVAL());
+    Clock::settle();
+  }
+
+  AWAIT_READY(executorLost);
+
+  AWAIT_READY(status);
+  ASSERT_EQ(TASK_FAILED, status->state());
+  EXPECT_EQ(TaskStatus::SOURCE_SLAVE, status->source());
+  EXPECT_EQ(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED, status->reason());
 
   Clock::resume();
 
