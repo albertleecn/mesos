@@ -12,43 +12,37 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License
+// limitations under the License.
 
-#include <string>
-
-#include <stout/os.hpp>
+#include <stout/none.hpp>
+#include <stout/subcommand.hpp>
 
 #include "tests/active_user_test_helper.hpp"
 
-using std::string;
+#include "tests/containerizer/memory_test_helper.hpp"
+#ifdef __linux__
+#include "tests/containerizer/capabilities_test_helper.hpp"
+#include "tests/containerizer/setns_test_helper.hpp"
+#endif
 
-namespace mesos {
-namespace internal {
-namespace tests {
+using mesos::internal::tests::ActiveUserTestHelper;
+using mesos::internal::tests::MemoryTestHelper;
+#ifdef __linux__
+using mesos::internal::tests::CapabilitiesTestHelper;
+using mesos::internal::tests::SetnsTestHelper;
+#endif
 
-const char ActiveUserTestHelper::NAME[] = "ActiveUser";
 
-
-ActiveUserTestHelper::Flags::Flags()
+int main(int argc, char** argv)
 {
-  add(&user,
-      "user",
-      "The expected user name.");
+  return Subcommand::dispatch(
+      None(),
+      argc,
+      argv,
+#ifdef __linux__
+      new CapabilitiesTestHelper(),
+      new SetnsTestHelper(),
+#endif
+      new ActiveUserTestHelper(),
+      new MemoryTestHelper());
 }
-
-
-// This test helper returns 0 if the current username equals the
-// expected username. Returns 1 otherwise.
-int ActiveUserTestHelper::execute()
-{
-  Result<string> user = os::user();
-  if (user.isSome() && user.get() == flags.user) {
-    return 0;
-  }
-
-  return 1;
-}
-
-} // namespace tests {
-} // namespace internal {
-} // namespace mesos {

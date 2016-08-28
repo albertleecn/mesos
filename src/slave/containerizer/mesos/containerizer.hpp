@@ -232,25 +232,18 @@ private:
       const process::Future<Nothing>& future);
 
   // Continues '__destroy()' once we get the exit status of the executor.
-  void ___destroy(
-      const ContainerID& containerId,
-      const process::Future<Option<int>>& status,
-      const Option<std::string>& message);
+  void ___destroy(const ContainerID& containerId);
 
   // Continues '___destroy()' once all isolators have completed
   // cleanup.
   void ____destroy(
       const ContainerID& containerId,
-      const process::Future<Option<int>>& status,
-      const process::Future<std::list<process::Future<Nothing>>>& cleanups,
-      Option<std::string> message);
+      const process::Future<std::list<process::Future<Nothing>>>& cleanups);
 
   // Continues '____destroy()' once provisioner have completed destroy.
   void _____destroy(
       const ContainerID& containerId,
-      const process::Future<Option<int>>& status,
-      const process::Future<bool>& destroy,
-      Option<std::string> message);
+      const process::Future<bool>& destroy);
 
   // Call back for when an isolator limits a container and impacts the
   // processes. This will trigger container destruction.
@@ -292,36 +285,41 @@ private:
     // Promise for futures returned from wait().
     process::Promise<mesos::slave::ContainerTermination> promise;
 
-    // We need to keep track of the future exit status for each
-    // executor because we'll only get a single notification when
-    // the executor exits.
-    process::Future<Option<int>> status;
+    // We keep track of the future exit status for the container if it
+    // has been launched. If the container has not been launched yet,
+    // 'status' will be set to None().
+    //
+    // NOTE: A container has an exit status does not mean that it has
+    // been properly destroyed. We need to perform cleanup on
+    // isolators and provisioner after that.
+    Option<process::Future<Option<int>>> status;
 
-    // We keep track of the future that is waiting for the provisioner's
-    // `ProvisionInfo`, so that destroy will only start calling
-    // provisioner->destroy after provisioner->provision has finished.
+    // We keep track of the future for 'provisioner->provision' so
+    // that destroy will only start calling 'provisioner->destroy'
+    // after 'provisioner->provision' has finished.
     process::Future<ProvisionInfo> provisioning;
 
     // We keep track of the future that is waiting for all the
-    // isolators' prepare futures, so that destroy will only start
+    // 'isolator->prepare' to finish so that destroy will only start
     // calling cleanup after all isolators have finished preparing.
     process::Future<std::list<Option<mesos::slave::ContainerLaunchInfo>>>
       launchInfos;
 
     // We keep track of the future that is waiting for all the
-    // isolators' isolate futures, so that destroy will only start
+    // 'isolator->isolate' futures so that destroy will only start
     // calling cleanup after all isolators have finished isolating.
     process::Future<std::list<Nothing>> isolation;
 
-    // We keep track of any limitations received from each isolator so we can
-    // determine the cause of an executor termination.
+    // We keep track of any limitations received from each isolator so
+    // we can determine the cause of a container termination.
     std::vector<mesos::slave::ContainerLimitation> limitations;
 
-    // We keep track of the resources for each container so we can set the
-    // ResourceStatistics limits in usage().
+    // We keep track of the resources for each container so we can set
+    // the ResourceStatistics limits in usage().
     Resources resources;
 
-    // The configuration for the container to be launched.
+    // The configuration for the container to be launched. This field
+    // is only used during the launch of a container.
     mesos::slave::ContainerConfig config;
 
     State state;

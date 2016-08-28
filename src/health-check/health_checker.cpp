@@ -29,7 +29,10 @@
 
 #include <mesos/mesos.hpp>
 
+#include <process/collect.hpp>
 #include <process/delay.hpp>
+#include <process/http.hpp>
+#include <process/io.hpp>
 #include <process/subprocess.hpp>
 
 #include <stout/duration.hpp>
@@ -43,8 +46,13 @@
 
 #include "common/status_utils.hpp"
 
+#ifdef __linux__
+#include "linux/ns.hpp"
+#endif
+
 using process::delay;
 using process::Clock;
+using process::Failure;
 using process::Future;
 using process::NO_SETSID;
 using process::Owned;
@@ -55,16 +63,54 @@ using process::UPID;
 
 using std::map;
 using std::string;
+using std::tuple;
 using std::vector;
 
 namespace mesos {
 namespace internal {
 namespace health {
 
+static const string DEFAULT_HTTP_SCHEME = "http";
+
+// Use '127.0.0.1' instead of 'localhost', because the host
+// file in some container images may not contain 'localhost'.
+static const string DEFAULT_DOMAIN = "127.0.0.1";
+
+
+#ifdef __linux__
+pid_t cloneWithSetns(
+    const lambda::function<int()>& func,
+    Option<pid_t> taskPid,
+    const vector<string>& namespaces)
+{
+  return process::defaultClone([=]() -> int {
+    if (taskPid.isSome()) {
+      foreach (const string& ns, namespaces) {
+        Try<Nothing> setns = ns::setns(taskPid.get(), ns);
+        if (setns.isError()) {
+          // This effectively aborts the health check.
+          LOG(FATAL) << "Failed to enter the " << ns << " namespace of "
+                     << "task (pid: '" << taskPid.get() << "'): "
+                     << setns.error();
+        }
+
+        VLOG(1) << "Entered the " << ns << " namespace of "
+                << "task (pid: '" << taskPid.get() << "') successfully";
+      }
+    }
+
+    return func();
+  });
+}
+#endif
+
+
 Try<Owned<HealthChecker>> HealthChecker::create(
     const HealthCheck& check,
     const UPID& executor,
-    const TaskID& taskID)
+    const TaskID& taskID,
+    Option<pid_t> taskPid,
+    const vector<string>& namespaces)
 {
   // Validate the 'HealthCheck' protobuf.
   Option<Error> error = validation::healthCheck(check);
@@ -75,7 +121,9 @@ Try<Owned<HealthChecker>> HealthChecker::create(
   Owned<HealthCheckerProcess> process(new HealthCheckerProcess(
       check,
       executor,
-      taskID));
+      taskID,
+      taskPid,
+      namespaces));
 
   return Owned<HealthChecker>(new HealthChecker(process));
 }
@@ -105,20 +153,31 @@ Future<Nothing> HealthChecker::healthCheck()
 HealthCheckerProcess::HealthCheckerProcess(
     const HealthCheck& _check,
     const UPID& _executor,
-    const TaskID& _taskID)
+    const TaskID& _taskID,
+    Option<pid_t> _taskPid,
+    const vector<string>& _namespaces)
   : ProcessBase(process::ID::generate("health-checker")),
     check(_check),
     initializing(true),
     executor(_executor),
     taskID(_taskID),
-    consecutiveFailures(0) {}
+    taskPid(_taskPid),
+    namespaces(_namespaces),
+    consecutiveFailures(0)
+{
+#ifdef __linux__
+  if (!namespaces.empty()) {
+    clone = lambda::bind(&cloneWithSetns, lambda::_1, taskPid, namespaces);
+  }
+#endif
+}
 
 
 Future<Nothing> HealthCheckerProcess::healthCheck()
 {
-  VLOG(2) << "Health checks starting in "
-    << Seconds(check.delay_seconds()) << ", grace period "
-    << Seconds(check.grace_period_seconds());
+  VLOG(1) << "Health check starting in "
+          << Seconds(check.delay_seconds()) << ", grace period "
+          << Seconds(check.grace_period_seconds());
 
   startTime = Clock::now();
 
@@ -137,7 +196,8 @@ void HealthCheckerProcess::failure(const string& message)
   }
 
   consecutiveFailures++;
-  VLOG(1) << "#" << consecutiveFailures << " check failed: " << message;
+  LOG(WARNING) << "Health check failed " << consecutiveFailures
+               << " times consecutively: " << message;
 
   bool killTask = consecutiveFailures >= check.consecutive_failures();
 
@@ -163,7 +223,7 @@ void HealthCheckerProcess::failure(const string& message)
 
 void HealthCheckerProcess::success()
 {
-  VLOG(1) << "Check passed";
+  VLOG(1) << HealthCheck::Type_Name(check.type()) << " health check passed";
 
   // Send a healthy status update on the first success,
   // and on the first success following failure(s).
@@ -182,30 +242,49 @@ void HealthCheckerProcess::success()
 
 void HealthCheckerProcess::_healthCheck()
 {
+  Future<Nothing> checkResult;
+
   switch (check.type()) {
     case HealthCheck::COMMAND: {
-      _commandHealthCheck();
-      return;
+      checkResult = _commandHealthCheck();
+      break;
     }
 
     case HealthCheck::HTTP: {
-      _httpHealthCheck();
-      return;
+      checkResult = _httpHealthCheck();
+      break;
     }
 
     case HealthCheck::TCP: {
-      _tcpHealthCheck();
-      return;
+      checkResult = _tcpHealthCheck();
+      break;
     }
 
     default: {
       UNREACHABLE();
     }
   }
+
+  checkResult.onAny(defer(self(), &Self::__healthCheck, lambda::_1));
 }
 
 
-void HealthCheckerProcess::_commandHealthCheck()
+void HealthCheckerProcess::__healthCheck(const Future<Nothing>& future)
+{
+  if (future.isReady()) {
+    success();
+    return;
+  }
+
+  string message = HealthCheck::Type_Name(check.type()) +
+                   " health check failed: " +
+                   (future.isFailed() ? future.failure() : "discarded");
+
+  failure(message);
+}
+
+
+Future<Nothing> HealthCheckerProcess::_commandHealthCheck()
 {
   CHECK_EQ(HealthCheck::COMMAND, check.type());
   CHECK(check.has_command());
@@ -220,11 +299,11 @@ void HealthCheckerProcess::_commandHealthCheck()
   }
 
   // Launch the subprocess.
-  Option<Try<Subprocess>> external = None();
+  Try<Subprocess> external = Error("Not launched");
 
   if (command.shell()) {
     // Use the shell variant.
-    VLOG(2) << "Launching health command '" << command.value() << "'";
+    VLOG(1) << "Launching command health check '" << command.value() << "'";
 
     external = subprocess(
         command.value(),
@@ -232,7 +311,8 @@ void HealthCheckerProcess::_commandHealthCheck()
         Subprocess::FD(STDERR_FILENO),
         Subprocess::FD(STDERR_FILENO),
         NO_SETSID,
-        environment);
+        environment,
+        clone);
   } else {
     // Use the exec variant.
     vector<string> argv;
@@ -240,7 +320,7 @@ void HealthCheckerProcess::_commandHealthCheck()
       argv.push_back(arg);
     }
 
-    VLOG(2) << "Launching health command [" << command.value() << ", "
+    VLOG(1) << "Launching command health check [" << command.value() << ", "
             << strings::join(", ", argv) << "]";
 
     external = subprocess(
@@ -250,76 +330,265 @@ void HealthCheckerProcess::_commandHealthCheck()
         Subprocess::FD(STDERR_FILENO),
         Subprocess::FD(STDERR_FILENO),
         NO_SETSID,
-        None(),
-        environment);
+        nullptr,
+        environment,
+        clone);
   }
 
-  CHECK_SOME(external);
-
-  if (external.get().isError()) {
-    failure("Error creating subprocess for healthcheck: " +
-            external.get().error());
-    return;
+  if (external.isError()) {
+    return Failure("Failed to create subprocess: " + external.error());
   }
 
-  pid_t commandPid = external.get().get().pid();
+  pid_t commandPid = external->pid();
+  Duration timeout = Seconds(check.timeout_seconds());
 
-  Future<Option<int>> status = external.get().get().status();
-  status.await(Seconds(check.timeout_seconds()));
+  return external->status()
+    .after(timeout, [timeout, commandPid](Future<Option<int>> future) {
+      future.discard();
 
-  if (!status.isReady()) {
-    string msg = "Command check failed with reason: ";
-    if (status.isFailed()) {
-      msg += "failed with error: " + status.failure();
-    } else if (status.isDiscarded()) {
-      msg += "status future discarded";
-    } else {
-      msg += "status still pending after timeout " +
-             stringify(Seconds(check.timeout_seconds()));
-    }
+      if (commandPid != -1) {
+        // Cleanup the external command process.
+        VLOG(1) << "Killing the command health check process " << commandPid;
 
-    if (commandPid != -1) {
-      // Cleanup the external command process.
-      os::killtree(commandPid, SIGKILL);
-      VLOG(1) << "Kill health check command " << commandPid;
-    }
+        os::killtree(commandPid, SIGKILL);
+      }
 
-    failure(msg);
-    return;
-  }
+      return Failure(
+          "Command has not returned after " + stringify(timeout) +
+          "; aborting");
+    })
+    .then([](const Option<int>& status) -> Future<Nothing> {
+      if (status.isNone()) {
+        return Failure("Failed to reap the command process");
+      }
 
-  int statusCode = status.get().get();
-  if (statusCode != 0) {
-    string message = "Health command check " + WSTRINGIFY(statusCode);
-    failure(message);
-  } else {
-    success();
-  }
+      int statusCode = status.get();
+      if (statusCode != 0) {
+        return Failure("Command returned " + WSTRINGIFY(statusCode));
+      }
+
+      return Nothing();
+    });
 }
 
 
-void HealthCheckerProcess::_httpHealthCheck()
+Future<Nothing> HealthCheckerProcess::_httpHealthCheck()
 {
   CHECK_EQ(HealthCheck::HTTP, check.type());
   CHECK(check.has_http());
 
-  promise.fail("HTTP health check is not supported");
+  const HealthCheck::HTTPCheckInfo& http = check.http();
+
+  const string scheme = http.has_scheme() ? http.scheme() : DEFAULT_HTTP_SCHEME;
+  const string path = http.has_path() ? http.path() : "";
+  const string url = scheme + "://" + DEFAULT_DOMAIN + ":" +
+                     stringify(http.port()) + path;
+
+  VLOG(1) << "Launching HTTP health check '" << url << "'";
+
+  const vector<string> argv = {
+    "curl",
+    "-s",                 // Don't show progress meter or error messages.
+    "-S",                 // Makes curl show an error message if it fails.
+    "-L",                 // Follows HTTP 3xx redirects.
+    "-k",                 // Ignores SSL validation when scheme is https.
+    "-w", "%{http_code}", // Displays HTTP response code on stdout.
+    "-o", "/dev/null",    // Ignores output.
+    url
+  };
+
+  Try<Subprocess> s = subprocess(
+      "curl",
+      argv,
+      Subprocess::PATH("/dev/null"),
+      Subprocess::PIPE(),
+      Subprocess::PIPE(),
+      NO_SETSID,
+      nullptr,
+      None(),
+      clone);
+
+  if (s.isError()) {
+    return Failure("Failed to create the curl subprocess: " + s.error());
+  }
+
+  pid_t curlPid = s->pid();
+  Duration timeout = Seconds(check.timeout_seconds());
+
+  return await(
+      s->status(),
+      process::io::read(s->out().get()),
+      process::io::read(s->err().get()))
+    .after(timeout,
+      [timeout, curlPid](Future<tuple<Future<Option<int>>,
+                                      Future<string>,
+                                      Future<string>>> future) {
+      future.discard();
+
+      if (curlPid != -1) {
+        // Cleanup the curl process.
+        VLOG(1) << "Killing the HTTP health check process " << curlPid;
+
+        os::killtree(curlPid, SIGKILL);
+      }
+
+      return Failure(
+          "curl has not returned after " + stringify(timeout) + "; aborting");
+    })
+    .then(defer(self(), &Self::__httpHealthCheck, lambda::_1));
 }
 
 
-void HealthCheckerProcess::_tcpHealthCheck()
+Future<Nothing> HealthCheckerProcess::__httpHealthCheck(
+    const tuple<
+        Future<Option<int>>,
+        Future<string>,
+        Future<string>>& t)
+{
+  Future<Option<int>> status = std::get<0>(t);
+  if (!status.isReady()) {
+    return Failure(
+        "Failed to get the exit status of the curl process: " +
+        (status.isFailed() ? status.failure() : "discarded"));
+  }
+
+  if (status->isNone()) {
+    return Failure("Failed to reap the curl process");
+  }
+
+  int statusCode = status->get();
+  if (statusCode != 0) {
+    Future<string> error = std::get<2>(t);
+    if (!error.isReady()) {
+      return Failure("curl returned " + WSTRINGIFY(statusCode) +
+                     "; reading stderr failed: " +
+                     (error.isFailed() ? error.failure() : "discarded"));
+    }
+
+    return Failure("curl returned " + WSTRINGIFY(statusCode) + ": " +
+                   error.get());
+  }
+
+  Future<string> output = std::get<1>(t);
+  if (!output.isReady()) {
+    return Failure("Failed to read stdout from curl: " +
+                   (output.isFailed() ? output.failure() : "discarded"));
+  }
+
+  // Parse the output and get the HTTP response code.
+  Try<int> code = numify<int>(output.get());
+  if (code.isError()) {
+    return Failure("Unexpected output from curl: " + output.get());
+  }
+
+  if (code.get() < process::http::Status::OK ||
+      code.get() >= process::http::Status::BAD_REQUEST) {
+    return Failure(
+        "Unexpected HTTP response code: " +
+        process::http::Status::string(code.get()));
+  }
+
+  return Nothing();
+}
+
+
+Future<Nothing> HealthCheckerProcess::_tcpHealthCheck()
 {
   CHECK_EQ(HealthCheck::TCP, check.type());
   CHECK(check.has_tcp());
 
-  promise.fail("TCP health check is not supported");
+  const HealthCheck::TCPCheckInfo& tcp = check.tcp();
+
+  VLOG(1) << "Launching TCP health check at port '" << tcp.port() << "'";
+
+  // TODO(haosdent): Replace `bash` with a tiny binary to support
+  // TCP health check with half-open.
+  const vector<string> argv = {
+    "bash",
+    "-c",
+    "</dev/tcp/" + DEFAULT_DOMAIN + "/" + stringify(tcp.port())
+  };
+
+  Try<Subprocess> s = subprocess(
+      "bash",
+      argv,
+      Subprocess::PATH("/dev/null"),
+      Subprocess::PIPE(),
+      Subprocess::PIPE(),
+      NO_SETSID,
+      nullptr,
+      None(),
+      clone);
+
+  if (s.isError()) {
+    return Failure("Failed to create the bash subprocess: " + s.error());
+  }
+
+  pid_t bashPid = s->pid();
+  Duration timeout = Seconds(check.timeout_seconds());
+
+  return await(
+      s->status(),
+      process::io::read(s->out().get()),
+      process::io::read(s->err().get()))
+    .after(timeout,
+      [timeout, bashPid](Future<tuple<Future<Option<int>>,
+                                      Future<string>,
+                                      Future<string>>> future) {
+      future.discard();
+
+      if (bashPid != -1) {
+        // Cleanup the bash process.
+        VLOG(1) << "Killing the TCP health check process " << bashPid;
+
+        os::killtree(bashPid, SIGKILL);
+      }
+
+      return Failure(
+          "bash has not returned after " + stringify(timeout) + "; aborting");
+    })
+    .then(defer(self(), &Self::__tcpHealthCheck, lambda::_1));
+}
+
+
+Future<Nothing> HealthCheckerProcess::__tcpHealthCheck(
+    const tuple<
+        Future<Option<int>>,
+        Future<string>,
+        Future<string>>& t)
+{
+  Future<Option<int>> status = std::get<0>(t);
+  if (!status.isReady()) {
+    return Failure(
+        "Failed to get the exit status of the bash process: " +
+        (status.isFailed() ? status.failure() : "discarded"));
+  }
+
+  if (status->isNone()) {
+    return Failure("Failed to reap the bash process");
+  }
+
+  int statusCode = status->get();
+  if (statusCode != 0) {
+    Future<string> error = std::get<2>(t);
+    if (!error.isReady()) {
+      return Failure("bash returned " + WSTRINGIFY(statusCode) +
+                     "; reading stderr failed: " +
+                     (error.isFailed() ? error.failure() : "discarded"));
+    }
+
+    return Failure("bash returned " + WSTRINGIFY(statusCode) + ": " +
+                   error.get());
+  }
+
+  return Nothing();
 }
 
 
 void HealthCheckerProcess::reschedule()
 {
   VLOG(1) << "Rescheduling health check in "
-    << Seconds(check.interval_seconds());
+          << Seconds(check.interval_seconds());
 
   delay(Seconds(check.interval_seconds()), self(), &Self::_healthCheck);
 }
@@ -354,7 +623,7 @@ Option<Error> healthCheck(const HealthCheck& check)
     const HealthCheck::HTTPCheckInfo& http = check.http();
 
     if (http.has_scheme() &&
-        http.scheme() != "https" &&
+        http.scheme() != "http" &&
         http.scheme() != "https") {
       return Error("Unsupported HTTP health check scheme: '" + http.scheme() +
                    "'");

@@ -18,6 +18,8 @@
 #define __HEALTH_CHECKER_HPP__
 
 #include <string>
+#include <tuple>
+#include <vector>
 
 #include <mesos/mesos.hpp>
 
@@ -42,10 +44,25 @@ class HealthCheckerProcess;
 class HealthChecker
 {
 public:
+  /**
+   * Attempts to create a `HealthChecker` object.
+   *
+   * @param check The protobuf message definition of health check.
+   * @param executor The executor UPID to which health check results will be
+   *     reported.
+   * @param taskID The TaskID of the target task.
+   * @param taskPid The target task's pid used to enter the specified
+   *     namespaces.
+   * @param namespaces The namespaces to enter prior performing a single health
+   *     check.
+   * @return A `HealthChecker` object or an error if `create` fails.
+   */
   static Try<process::Owned<HealthChecker>> create(
       const HealthCheck& check,
       const process::UPID& executor,
-      const TaskID& taskID);
+      const TaskID& taskID,
+      Option<pid_t> taskPid,
+      const std::vector<std::string>& namespaces);
 
   ~HealthChecker();
 
@@ -64,7 +81,9 @@ public:
   HealthCheckerProcess(
       const HealthCheck& _check,
       const process::UPID& _executor,
-      const TaskID& _taskID);
+      const TaskID& _taskID,
+      Option<pid_t> _taskPid,
+      const std::vector<std::string>& _namespaces);
 
   virtual ~HealthCheckerProcess() {}
 
@@ -76,9 +95,25 @@ private:
 
   void _healthCheck();
 
-  void _commandHealthCheck();
-  void _httpHealthCheck();
-  void _tcpHealthCheck();
+  void __healthCheck(const process::Future<Nothing>& future);
+
+  process::Future<Nothing> _commandHealthCheck();
+
+  process::Future<Nothing> _httpHealthCheck();
+
+  process::Future<Nothing> __httpHealthCheck(
+      const std::tuple<
+          process::Future<Option<int>>,
+          process::Future<std::string>,
+          process::Future<std::string>>& t);
+
+  process::Future<Nothing> _tcpHealthCheck();
+
+  process::Future<Nothing> __tcpHealthCheck(
+      const std::tuple<
+          process::Future<Option<int>>,
+          process::Future<std::string>,
+          process::Future<std::string>>& t);
 
   void reschedule();
 
@@ -87,6 +122,9 @@ private:
   bool initializing;
   process::UPID executor;
   TaskID taskID;
+  Option<pid_t> taskPid;
+  std::vector<std::string> namespaces;
+  Option<lambda::function<pid_t(const lambda::function<int()>&)>> clone;
   uint32_t consecutiveFailures;
   process::Time startTime;
 };

@@ -980,6 +980,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   slave/containerizer/mesos/provisioner/docker/store.hpp		\
   slave/qos_controllers/noop.hpp					\
   slave/resource_estimators/noop.hpp					\
+  tests/active_user_test_helper.hpp					\
   tests/allocator.hpp							\
   tests/cluster.hpp							\
   tests/containerizer.hpp						\
@@ -992,6 +993,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   tests/utils.hpp							\
   tests/zookeeper.hpp							\
   tests/zookeeper_test_server.hpp					\
+  tests/containerizer/capabilities_test_helper.hpp			\
   tests/containerizer/docker_archive.hpp				\
   tests/containerizer/isolator.hpp					\
   tests/containerizer/launcher.hpp					\
@@ -1353,11 +1355,6 @@ mesos_network_helper_SOURCES = slave/containerizer/mesos/isolators/network/helpe
 mesos_network_helper_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_network_helper_LDADD = libmesos.la $(LDADD)
 endif
-
-pkglibexec_PROGRAMS += mesos-health-check
-mesos_health_check_SOURCES = health-check/main.cpp
-mesos_health_check_CPPFLAGS = $(MESOS_CPPFLAGS)
-mesos_health_check_LDADD = libmesos.la $(LDADD)
 
 pkglibexec_PROGRAMS += mesos-usage
 mesos_usage_SOURCES = usage/main.cpp
@@ -1905,28 +1902,20 @@ disk_full_framework_SOURCES = examples/disk_full_framework.cpp
 disk_full_framework_CPPFLAGS = $(MESOS_CPPFLAGS)
 disk_full_framework_LDADD = libmesos.la $(LDADD)
 
-if OS_LINUX
-check_PROGRAMS += setns-test-helper
-setns_test_helper_SOURCES =					\
-  tests/containerizer/setns_test_helper_main.cpp		\
-  tests/containerizer/setns_test_helper.cpp
-setns_test_helper_CPPFLAGS = $(MESOS_CPPFLAGS)
-setns_test_helper_LDADD = libmesos.la $(LDADD)
-endif
-
-check_PROGRAMS += memory-test-helper
-memory_test_helper_SOURCES =					\
+check_PROGRAMS += test-helper
+test_helper_SOURCES =						\
+  tests/active_user_test_helper.cpp				\
   tests/flags.cpp						\
+  tests/test_helper_main.cpp					\
   tests/utils.cpp						\
-  tests/containerizer/memory_test_helper_main.cpp		\
   tests/containerizer/memory_test_helper.cpp
-memory_test_helper_CPPFLAGS = $(mesos_tests_CPPFLAGS)
-memory_test_helper_LDADD = $(mesos_tests_LDADD)
-
-check_PROGRAMS += active-user-test-helper
-active_user_test_helper_SOURCES = tests/active_user_test_helper.cpp
-active_user_test_helper_CPPFLAGS = $(MESOS_CPPFLAGS)
-active_user_test_helper_LDADD = libmesos.la $(LDADD)
+if OS_LINUX
+test_helper_SOURCES +=						\
+  tests/containerizer/capabilities_test_helper.cpp		\
+  tests/containerizer/setns_test_helper.cpp
+endif
+test_helper_CPPFLAGS = $(mesos_tests_CPPFLAGS)
+test_helper_LDADD = libmesos.la $(mesos_tests_LDADD)
 
 check_PROGRAMS += mesos-tests
 
@@ -2059,6 +2048,7 @@ endif
 
 mesos_tests_SOURCES =						\
   slave/qos_controllers/load.cpp				\
+  tests/active_user_test_helper.cpp				\
   tests/anonymous_tests.cpp					\
   tests/api_tests.cpp						\
   tests/attributes_tests.cpp					\
@@ -2182,6 +2172,8 @@ mesos_tests_DEPENDENCIES =					\
 if OS_LINUX
 mesos_tests_SOURCES +=						\
   tests/ldcache_tests.cpp					\
+  tests/containerizer/capabilities_tests.cpp			\
+  tests/containerizer/capabilities_test_helper.cpp		\
   tests/containerizer/cgroups_isolator_tests.cpp		\
   tests/containerizer/cgroups_tests.cpp				\
   tests/containerizer/cni_isolator_tests.cpp			\

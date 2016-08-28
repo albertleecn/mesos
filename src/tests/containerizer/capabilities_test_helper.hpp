@@ -12,43 +12,46 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License
+// limitations under the License.
+
+#ifndef __CAPABILITIES_TEST_HELPER_HPP__
+#define __CAPABILITIES_TEST_HELPER_HPP__
 
 #include <string>
 
-#include <stout/os.hpp>
+#include <stout/option.hpp>
+#include <stout/subcommand.hpp>
 
-#include "tests/active_user_test_helper.hpp"
-
-using std::string;
+#include <mesos/mesos.hpp>
 
 namespace mesos {
 namespace internal {
 namespace tests {
 
-const char ActiveUserTestHelper::NAME[] = "ActiveUser";
-
-
-ActiveUserTestHelper::Flags::Flags()
+class CapabilitiesTestHelper : public Subcommand
 {
-  add(&user,
-      "user",
-      "The expected user name.");
-}
+public:
+  static const char NAME[];
 
+  struct Flags : public flags::FlagsBase
+  {
+    Flags();
 
-// This test helper returns 0 if the current username equals the
-// expected username. Returns 1 otherwise.
-int ActiveUserTestHelper::execute()
-{
-  Result<string> user = os::user();
-  if (user.isSome() && user.get() == flags.user) {
-    return 0;
-  }
+    Option<std::string> user;
+    Option<CapabilityInfo> capabilities;
+  };
 
-  return 1;
-}
+  CapabilitiesTestHelper() : Subcommand(NAME) {}
+
+  Flags flags;
+
+protected:
+  virtual int execute();
+  virtual flags::FlagsBase* getFlags() { return &flags; }
+};
 
 } // namespace tests {
 } // namespace internal {
 } // namespace mesos {
+
+#endif // __CAPABILITIES_TEST_HELPER_HPP__

@@ -95,16 +95,13 @@ class ProcessCapabilities
 public:
   Set<Capability> get(const Type& type) const;
   void set(const Type& type, const Set<Capability>& capabilities);
+  void add(const Type& type, const Capability& capability);
+  void drop(const Type& type, const Capability& capability);
 
 private:
-  friend class Capabilities;
-
   friend std::ostream& operator<<(
       std::ostream& stream,
       const ProcessCapabilities& set);
-
-  // Disallow default constructor.
-  ProcessCapabilities() {}
 
   Set<Capability> effective;
   Set<Capability> permitted;
@@ -178,7 +175,8 @@ private:
 };
 
 
-Capability convert(const CapabilityInfo::Capability& capabilityInfo);
+Capability convert(const CapabilityInfo::Capability& capability);
+Set<Capability> convert(const CapabilityInfo& capabilityInfo);
 CapabilityInfo convert(const Set<Capability>& capabilitySet);
 
 

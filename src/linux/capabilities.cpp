@@ -137,8 +137,8 @@ Set<Capability> ProcessCapabilities::get(const Type& type) const
 {
   switch (type) {
     case EFFECTIVE:   return effective;
-    case INHERITABLE: return inheritable;
     case PERMITTED:   return permitted;
+    case INHERITABLE: return inheritable;
     case BOUNDING:    return bounding;
   }
 
@@ -155,6 +155,36 @@ void ProcessCapabilities::set(
     case PERMITTED:   permitted = capabilities;   return;
     case INHERITABLE: inheritable = capabilities; return;
     case BOUNDING:    bounding = capabilities;    return;
+  }
+
+  UNREACHABLE();
+}
+
+
+void ProcessCapabilities::add(
+    const Type& type,
+    const Capability& capability)
+{
+  switch (type) {
+    case EFFECTIVE:   effective.insert(capability);   return;
+    case PERMITTED:   permitted.insert(capability);   return;
+    case INHERITABLE: inheritable.insert(capability); return;
+    case BOUNDING:    bounding.insert(capability);    return;
+  }
+
+  UNREACHABLE();
+}
+
+
+void ProcessCapabilities::drop(
+    const Type& type,
+    const Capability& capability)
+{
+  switch (type) {
+    case EFFECTIVE:   effective.erase(capability);   return;
+    case PERMITTED:   permitted.erase(capability);   return;
+    case INHERITABLE: inheritable.erase(capability); return;
+    case BOUNDING:    bounding.erase(capability);    return;
   }
 
   UNREACHABLE();
@@ -219,11 +249,21 @@ Try<ProcessCapabilities> Capabilities::get() const
 
   ProcessCapabilities capabilities;
 
-  capabilities.effective = toCapabilitySet(payload.effective());
-  capabilities.permitted = toCapabilitySet(payload.permitted());
-  capabilities.inheritable = toCapabilitySet(payload.inheritable());
+  capabilities.set(EFFECTIVE, toCapabilitySet(payload.effective()));
+  capabilities.set(PERMITTED, toCapabilitySet(payload.permitted()));
+  capabilities.set(INHERITABLE, toCapabilitySet(payload.inheritable()));
 
-  // TODO(jojy): Add support for BOUNDING capabilities.
+  Set<Capability> bounding;
+
+  // TODO(bbannier): Parse bounding set from the `CapBnd` entry in
+  // `/proc/self/status`.
+  for (int i = 0; i <= lastCap; i++) {
+    if (prctl(PR_CAPBSET_READ, i) == 1) {
+      bounding.insert(Capability(i));
+    }
+  }
+
+  capabilities.set(BOUNDING, bounding);
 
   return capabilities;
 }
@@ -239,7 +279,7 @@ Try<Nothing> Capabilities::set(const ProcessCapabilities& capabilities)
 {
   // NOTE: We can only drop capabilities in the bounding set.
   for (int i = 0; i <= lastCap; i++) {
-    if (capabilities.bounding.count(Capability(i)) > 0) {
+    if (capabilities.get(BOUNDING).count(Capability(i)) > 0) {
       continue;
     }
 
@@ -257,9 +297,9 @@ Try<Nothing> Capabilities::set(const ProcessCapabilities& capabilities)
   payload.head.version = _LINUX_CAPABILITY_VERSION_3;
   payload.head.pid = 0;
 
-  payload.setEffective(toCapabilityBitset(capabilities.effective));
-  payload.setPermitted(toCapabilityBitset(capabilities.permitted));
-  payload.setInheritable(toCapabilityBitset(capabilities.inheritable));
+  payload.setEffective(toCapabilityBitset(capabilities.get(EFFECTIVE)));
+  payload.setPermitted(toCapabilityBitset(capabilities.get(PERMITTED)));
+  payload.setInheritable(toCapabilityBitset(capabilities.get(INHERITABLE)));
 
   if (capset(&payload.head, &payload.set[0])) {
     return ErrnoError("Failed to set capabilities");
@@ -299,6 +339,18 @@ Capability convert(const CapabilityInfo::Capability& capability)
   CHECK_GT(MAX_CAPABILITY, value);
 
   return static_cast<Capability>(value);
+}
+
+
+Set<Capability> convert(const CapabilityInfo& capabilityInfo)
+{
+  Set<Capability> result;
+
+  foreach (int value, capabilityInfo.capabilities()) {
+    result.insert(convert(static_cast<CapabilityInfo::Capability>(value)));
+  }
+
+  return result;
 }
 
 
@@ -367,8 +419,8 @@ ostream& operator<<(ostream& stream, const Type& type)
 {
   switch (type) {
     case EFFECTIVE:   return stream << "eff";
-    case INHERITABLE: return stream << "inh";
     case PERMITTED:   return stream << "perm";
+    case INHERITABLE: return stream << "inh";
     case BOUNDING:    return stream << "bnd";
   }
 
