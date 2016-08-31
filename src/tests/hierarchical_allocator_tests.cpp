@@ -1236,6 +1236,7 @@ TEST_F(HierarchicalAllocatorTest, UpdateAllocation)
   allocator->updateAllocation(
       framework.id(),
       slave.id(),
+      Resources::sum(allocation.get().resources),
       {create});
 
   // Now recover the resources, and expect the next allocation to
@@ -2685,6 +2686,32 @@ TEST_F(HierarchicalAllocatorTest, ResourceMetrics)
   };
 
   metrics = Metrics();
+
+  EXPECT_TRUE(metrics.contains(expected));
+}
+
+
+// The allocator is not fully initialized until `allocator->initialize(...)`
+// is called (e.g., from `Master::initialize()` or
+// `HierarchicalAllocatorTestBase::initialize(...)`). This test
+// verifies that metrics collection works but returns empty results
+// when the allocator is uninitialized. In reality this can happen if
+// the metrics endpoint is polled before the master is initialized.
+TEST_F(HierarchicalAllocatorTest, ResourceMetricsUninitialized)
+{
+  JSON::Value metrics = Metrics();
+
+  JSON::Object expected;
+
+  // Nothing is added to the allocator or allocated.
+  expected.values = {
+      {"allocator/mesos/resources/cpus/total", 0},
+      {"allocator/mesos/resources/mem/total",  0},
+      {"allocator/mesos/resources/disk/total", 0},
+      {"allocator/mesos/resources/cpus/offered_or_allocated", 0},
+      {"allocator/mesos/resources/mem/offered_or_allocated",  0},
+      {"allocator/mesos/resources/disk/offered_or_allocated", 0},
+  };
 
   EXPECT_TRUE(metrics.contains(expected));
 }
