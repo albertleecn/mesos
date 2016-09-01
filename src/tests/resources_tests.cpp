@@ -2446,6 +2446,34 @@ TEST(ResourcesTest, Count)
 }
 
 
+TEST(SharedResourcesTest, Printing)
+{
+  Resources volume = createPersistentVolume(
+      Megabytes(64),
+      "role1",
+      "id1",
+      "path1",
+      None(),
+      None(),
+      "principal1",
+      true); // Shared.
+
+  {
+    ostringstream oss;
+
+    oss << volume;
+    EXPECT_EQ("disk(role1)[id1:path1]<SHARED>:64<1>", oss.str());
+  }
+
+  {
+    ostringstream oss;
+
+    oss << volume + volume;
+    EXPECT_EQ("disk(role1)[id1:path1]<SHARED>:64<2>", oss.str());
+  }
+}
+
+
 TEST(SharedResourcesTest, ScalarAdditionShared)
 {
   // Shared persistent volume.
@@ -2607,6 +2635,30 @@ TEST(SharedResourcesTest, ScalarSharedAndNonSharedOperations)
   r4 -= sharedDisk;
 
   EXPECT_EQ(r4, nonSharedDisk);
+}
+
+
+// This test verifies that shared resources can be filtered.
+TEST(SharedResourcesTest, Filter)
+{
+  Resources r1 = createDiskResource("10", "role1", "1", "path", None(), true);
+  EXPECT_EQ(r1, r1.shared());
+  EXPECT_TRUE(r1.nonShared().empty());
+
+  Resources r2 = createDiskResource(
+      "20", "role2", None(), None(), None(), false);
+
+  EXPECT_TRUE(r2.shared().empty());
+  EXPECT_EQ(r2, r2.nonShared());
+
+  EXPECT_EQ(r1, (r1 + r2).shared());
+  EXPECT_EQ(r2, (r1 + r2).nonShared());
+
+  Resources resources = Resources::parse("cpus:1;mem:512;disk:1000").get();
+  Resources sum = resources + r1 + r2;
+
+  EXPECT_EQ(r1, sum.shared());
+  EXPECT_EQ(resources + r2, sum.nonShared());
 }
 
 
