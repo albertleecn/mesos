@@ -1025,11 +1025,6 @@ MESOS_LINUX_FILES =									\
   slave/containerizer/mesos/linux_launcher.cpp						\
   slave/containerizer/mesos/isolators/appc/runtime.cpp					\
   slave/containerizer/mesos/isolators/cgroups/cgroups.cpp				\
-  slave/containerizer/mesos/isolators/cgroups/cpushare.cpp				\
-  slave/containerizer/mesos/isolators/cgroups/devices.cpp				\
-  slave/containerizer/mesos/isolators/cgroups/mem.cpp					\
-  slave/containerizer/mesos/isolators/cgroups/net_cls.cpp				\
-  slave/containerizer/mesos/isolators/cgroups/perf_event.cpp				\
   slave/containerizer/mesos/isolators/cgroups/subsystem.cpp				\
   slave/containerizer/mesos/isolators/cgroups/subsystems/cpu.cpp			\
   slave/containerizer/mesos/isolators/cgroups/subsystems/cpuacct.cpp			\
@@ -1066,11 +1061,6 @@ MESOS_LINUX_FILES +=									\
   slave/containerizer/mesos/isolators/appc/runtime.hpp					\
   slave/containerizer/mesos/isolators/cgroups/cgroups.hpp				\
   slave/containerizer/mesos/isolators/cgroups/constants.hpp				\
-  slave/containerizer/mesos/isolators/cgroups/cpushare.hpp				\
-  slave/containerizer/mesos/isolators/cgroups/devices.hpp				\
-  slave/containerizer/mesos/isolators/cgroups/mem.hpp					\
-  slave/containerizer/mesos/isolators/cgroups/net_cls.hpp				\
-  slave/containerizer/mesos/isolators/cgroups/perf_event.hpp				\
   slave/containerizer/mesos/isolators/cgroups/subsystem.hpp				\
   slave/containerizer/mesos/isolators/cgroups/subsystems/cpu.hpp			\
   slave/containerizer/mesos/isolators/cgroups/subsystems/cpuacct.hpp			\
@@ -2141,13 +2131,16 @@ mesos_tests_SOURCES =						\
   tests/common/command_utils_tests.cpp				\
   tests/common/http_tests.cpp					\
   tests/common/recordio_tests.cpp				\
+  tests/common/type_utils_tests.cpp				\
   tests/containerizer/appc_spec_tests.cpp			\
   tests/containerizer/composing_containerizer_tests.cpp		\
+  tests/containerizer/cpu_isolator_tests.cpp			\
   tests/containerizer/docker_containerizer_tests.cpp		\
   tests/containerizer/docker_spec_tests.cpp			\
   tests/containerizer/docker_tests.cpp				\
   tests/containerizer/isolator_tests.cpp			\
   tests/containerizer/launcher.cpp				\
+  tests/containerizer/memory_isolator_tests.cpp			\
   tests/containerizer/memory_test_helper.cpp			\
   tests/containerizer/mesos_containerizer_tests.cpp		\
   tests/containerizer/provisioner_appc_tests.cpp		\

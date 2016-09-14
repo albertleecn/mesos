@@ -29,6 +29,7 @@
 
 #include <stout/os/killtree.hpp>
 #include <stout/os/read.hpp>
+#include <stout/os/write.hpp>
 
 #include <process/check.hpp>
 #include <process/collect.hpp>
@@ -42,8 +43,7 @@
 #include "linux/cgroups.hpp"
 #endif // __linux__
 
-#include "slave/containerizer/mesos/isolators/cgroups/cpushare.hpp"
-#include "slave/containerizer/mesos/isolators/cgroups/mem.hpp"
+#include "slave/containerizer/mesos/isolators/cgroups/constants.hpp"
 
 #include "slave/constants.hpp"
 

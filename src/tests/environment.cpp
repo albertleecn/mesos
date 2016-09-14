@@ -48,6 +48,7 @@
 #ifdef __linux__
 #include "linux/cgroups.hpp"
 #include "linux/fs.hpp"
+#include "linux/perf.hpp"
 #endif
 
 #ifdef WITH_NETWORK_ISOLATOR
@@ -408,8 +409,9 @@ public:
     if (netCls.isError()) {
       std::cerr
         << "-------------------------------------------------------------\n"
-        << "Cannot enable NetClsIsolatorTest since we cannot determine \n"
-        << "the existence of the net_cls cgroup subsystem.\n"
+        << "Cannot enable net_cls cgroup subsystem associated test cases \n"
+        << "since we cannot determine the existence of the net_cls cgroup\n"
+        << "subsystem.\n"
         << "-------------------------------------------------------------\n";
       return;
     }
@@ -417,9 +419,10 @@ public:
     if (netCls.isSome() && !netCls.get()) {
       std::cerr
         << "-------------------------------------------------------------\n"
-        << "Cannot enable NetClsIsolatorTest since net_cls cgroup \n"
-        << "subsystem is not enabled. Check instructions for your linux\n"
-        << "distrubtion to enable the net_cls cgroups on your system.\n"
+        << "Cannot enable net_cls cgroup subsystem associated test cases \n"
+        << "since net_cls cgroup subsystem is not enabled. Check instructions\n"
+        << "for your linux distrubtion to enable the net_cls cgroup subsystem\n"
+        << "on your system.\n"
         << "-----------------------------------------------------------\n";
       return;
     }
@@ -427,18 +430,15 @@ public:
 #else
     std::cerr
         << "-----------------------------------------------------------\n"
-        << "Cannot enable NetClsIsolatorTest since this platform does\n"
-        << "not support cgroups.\n"
+        << "Cannot enable net_cls cgroup subsystem associated test cases\n"
+        << "since this platform does not support cgroups.\n"
         << "-----------------------------------------------------------\n";
 #endif
   }
 
   bool disable(const ::testing::TestInfo* test) const
   {
-    if (matches(test, "NetClsIsolatorTest")) {
-      return netClsError;
-    }
-    return false;
+    return matches(test, "NET_CLS_") && netClsError;
   }
 
 private:
@@ -556,11 +556,12 @@ public:
   PerfCPUCyclesFilter()
   {
 #ifdef __linux__
-    bool perfUnavailable = os::system("perf help >&-") != 0;
+    bool perfUnavailable = !perf::supported();
     if (perfUnavailable) {
       perfError = Error(
-          "The 'perf' command wasn't found so tests using it\n"
-          "to sample the 'cpu-cycles' hardware event will not be run.");
+          "Could not find the 'perf' command or its version lower that "
+          "2.6.39 so tests using it to sample the 'cpu-cycles' hardware "
+          "event will not be run.");
     } else {
       bool cyclesUnavailable =
         os::system("perf list hw | grep cpu-cycles >/dev/null") != 0;
@@ -589,9 +590,8 @@ public:
   {
     // Disable all tests that try to sample 'cpu-cycles' events using 'perf'.
     return (matches(test, "ROOT_CGROUPS_PERF_PerfTest") ||
-            matches(test, "ROOT_CGROUPS_PERF_Sample") ||
             matches(test, "ROOT_CGROUPS_PERF_UserCgroup") ||
-            matches(test, "CGROUPS_ROOT_PERF_RollForward") ||
+            matches(test, "ROOT_CGROUPS_PERF_RollForward") ||
             matches(test, "ROOT_CGROUPS_PERF_Sample")) && perfError.isSome();
   }
 
@@ -606,11 +606,11 @@ public:
   PerfFilter()
   {
 #ifdef __linux__
-    perfError = os::system("perf help >&-") != 0;
+    perfError = !perf::supported();
     if (perfError) {
       std::cerr
         << "-------------------------------------------------------------\n"
-        << "No 'perf' command found so no 'perf' tests will be run\n"
+        << "require 'perf' version >= 2.6.39 so no 'perf' tests will be run\n"
         << "-------------------------------------------------------------"
         << std::endl;
     }
