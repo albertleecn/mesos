@@ -833,6 +833,24 @@ TEST(ResourcesTest, PrintingExtendedAttributes)
   stream << disk;
   EXPECT_EQ("disk(alice)[hadoop:/hdfs:/data:rw]:1", stream.str());
 
+  // Disk resource with MOUNT type.
+  stream.str("");
+  disk.mutable_disk()->mutable_source()->set_type(
+      Resource::DiskInfo::Source::MOUNT);
+  disk.mutable_disk()->mutable_source()->mutable_mount()->set_root("/mnt1");
+  stream << disk;
+  EXPECT_EQ("disk(alice)[MOUNT:/mnt1,hadoop:/hdfs:/data:rw]:1", stream.str());
+  disk.mutable_disk()->clear_source();
+
+  // Disk resource with PATH type.
+  stream.str("");
+  disk.mutable_disk()->mutable_source()->set_type(
+      Resource::DiskInfo::Source::PATH);
+  disk.mutable_disk()->mutable_source()->mutable_path()->set_root("/mnt2");
+  stream << disk;
+  EXPECT_EQ("disk(alice)[PATH:/mnt2,hadoop:/hdfs:/data:rw]:1", stream.str());
+  disk.mutable_disk()->clear_source();
+
   // Disk resource with host path and dynamic reservation without labels.
   stream.str("");
   disk.mutable_reservation()->set_principal("hdfs-p");
@@ -1705,7 +1723,7 @@ TEST(ReservedResourcesTest, Equals)
   Labels labels2;
   labels2.add_labels()->CopyFrom(createLabel("foo", "baz"));
 
-  std::vector<Resources> unique = {
+  vector<Resources> unique = {
     // Unreserved.
     createReservedResource(
         "cpus", "8", "*", None()),
