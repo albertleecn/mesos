@@ -1335,6 +1335,12 @@ mesos_executor_SOURCES = 						\
 mesos_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
 mesos_executor_LDADD = libmesos.la $(LDADD)
 
+pkglibexec_PROGRAMS += mesos-default-executor
+mesos_default_executor_SOURCES =					\
+  launcher/default_executor.cpp
+mesos_default_executor_CPPFLAGS = $(MESOS_CPPFLAGS)
+mesos_default_executor_LDADD = libmesos.la $(LDADD)
+
 pkglibexec_PROGRAMS += mesos-containerizer
 mesos_containerizer_SOURCES = slave/containerizer/mesos/main.cpp
 mesos_containerizer_CPPFLAGS = $(MESOS_CPPFLAGS)
@@ -2066,6 +2072,7 @@ mesos_tests_SOURCES =						\
   tests/containerizer.cpp					\
   tests/cram_md5_authentication_tests.cpp			\
   tests/credentials_tests.cpp					\
+  tests/default_executor_tests.cpp				\
   tests/disk_quota_tests.cpp					\
   tests/dynamic_weights_tests.cpp				\
   tests/environment.cpp						\
