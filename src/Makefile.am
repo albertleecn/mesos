@@ -1002,6 +1002,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   tests/containerizer/isolator.hpp					\
   tests/containerizer/launcher.hpp					\
   tests/containerizer/memory_test_helper.hpp				\
+  tests/containerizer/mock_containerizer.hpp				\
   tests/containerizer/rootfs.hpp					\
   tests/containerizer/setns_test_helper.hpp				\
   tests/containerizer/store.hpp						\
@@ -2132,6 +2133,7 @@ mesos_tests_SOURCES =						\
   tests/script.cpp						\
   tests/slave_authorization_tests.cpp				\
   tests/slave_recovery_tests.cpp				\
+  tests/slave_validation_tests.cpp				\
   tests/slave_tests.cpp						\
   tests/sorter_tests.cpp					\
   tests/state_tests.cpp						\

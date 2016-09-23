@@ -587,7 +587,7 @@ TEST_F(SlaveTest, RemoveUnregisteredTerminatedExecutor)
 // mesos-executor args. For more details of this see MESOS-1873.
 //
 // This assumes the ability to execute '/bin/echo --author'.
-TEST_F(SlaveTest, ComamndTaskWithArguments)
+TEST_F(SlaveTest, CommandTaskWithArguments)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -1919,8 +1919,7 @@ TEST_F(SlaveTest, StatisticsEndpointGetResourceUsageFailed)
       createBasicAuthHeaders(DEFAULT_CREDENTIAL));
 
   AWAIT_READY(response);
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
-      ServiceUnavailable().status, response);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(InternalServerError().status, response);
 
   terminate(slave);
   wait(slave);

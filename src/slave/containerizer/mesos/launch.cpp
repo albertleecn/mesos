@@ -21,8 +21,7 @@
 #include <string.h>
 
 #include <iostream>
-
-#include <process/subprocess.hpp>
+#include <set>
 
 #include <stout/foreach.hpp>
 #include <stout/os.hpp>
@@ -42,10 +41,9 @@
 using std::cerr;
 using std::cout;
 using std::endl;
+using std::set;
 using std::string;
 using std::vector;
-
-using process::Subprocess;
 
 #ifdef __linux__
 using mesos::internal::capabilities::Capabilities;
@@ -230,37 +228,24 @@ int MesosContainerizerLaunch::execute()
 
       cout << "Executing pre-exec command '" << value << "'" << endl;
 
-      Try<Subprocess> s = Error("Not launched");
+      int status = 0;
 
       if (parse->shell()) {
-        s = subprocess(parse->value(), Subprocess::PATH("/dev/null"));
+        // Execute the command using the system shell.
+        status = os::system(parse->value());
       } else {
-        // Launch non-shell command as a subprocess to avoid injecting
-        // arbitrary shell commands.
+        // Directly spawn all non-shell commands to prohibit users
+        // from injecting arbitrary shell commands in the arguments.
         vector<string> args;
         foreach (const string& arg, parse->arguments()) {
           args.push_back(arg);
         }
 
-        s = subprocess(parse->value(), args, Subprocess::PATH("/dev/null"));
+        status = os::spawn(parse->value(), args);
       }
 
-      if (s.isError()) {
-        cerr << "Failed to create the pre-exec subprocess: "
-             << s.error() << endl;
-        return EXIT_FAILURE;
-      }
-
-      s->status().await();
-
-      Option<int> status = s->status().get();
-      if (status.isNone()) {
-        cerr << "Failed to reap the pre-exec subprocess "
-             << "'" << value << "'" << endl;
-        return EXIT_FAILURE;
-      } else if (status.get() != 0) {
-        cerr << "The pre-exec subprocess '" << value << "' "
-             << "failed" << endl;
+      if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
+        cerr << "Failed to execute pre-exec command '" << value << "'" << endl;
         return EXIT_FAILURE;
       }
     }
@@ -436,7 +421,7 @@ int MesosContainerizerLaunch::execute()
     }
 
     // Set up requested capabilities.
-    Set<Capability> target = capabilities::convert(requestedCapabilities.get());
+    set<Capability> target = capabilities::convert(requestedCapabilities.get());
 
     capabilities->set(capabilities::EFFECTIVE, target);
     capabilities->set(capabilities::PERMITTED, target);
@@ -474,7 +459,7 @@ int MesosContainerizerLaunch::execute()
   } else {
     // Use execvp to launch the command.
     os::execvp(command->value().c_str(),
-           os::raw::Argv(command->arguments()));
+               os::raw::Argv(command->arguments()));
   }
 
   // If we get here, the execle call failed.

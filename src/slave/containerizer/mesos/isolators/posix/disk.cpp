@@ -58,8 +58,6 @@ using std::vector;
 
 using process::Failure;
 using process::Future;
-using process::MONITOR;
-using process::NO_SETSID;
 using process::Owned;
 using process::PID;
 using process::Process;
@@ -539,7 +537,7 @@ private:
     // Add path on which 'du' must be run.
     command.push_back(entry->path);
 
-    // NOTE: The monitor watchdog will watch the parent process and kill
+    // NOTE: The supervisor childhook will watch the parent process and kill
     // the 'du' process in case that the parent die.
     Try<Subprocess> s = subprocess(
         "du",
@@ -547,13 +545,11 @@ private:
         Subprocess::PATH("/dev/null"),
         Subprocess::PIPE(),
         Subprocess::PIPE(),
-        NO_SETSID,
         nullptr,
         None(),
         None(),
-        Subprocess::Hook::None(),
-        None(),
-        MONITOR);
+        {},
+        {Subprocess::ChildHook::SUPERVISOR()});
 
     if (s.isError()) {
       entry->promise.fail("Failed to exec 'du': " + s.error());
