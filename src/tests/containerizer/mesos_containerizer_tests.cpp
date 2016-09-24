@@ -119,8 +119,7 @@ TEST(MesosContainerizerTest, NestedContainerID)
 }
 
 
-class MesosContainerizerIsolatorPreparationTest :
-  public TemporaryDirectoryTest
+class MesosContainerizerIsolatorPreparationTest : public MesosTest
 {
 public:
   // Construct a MesosContainerizer with TestIsolator(s) which use the provided
@@ -140,13 +139,8 @@ public:
       isolators.push_back(Owned<Isolator>(isolator.get()));
     }
 
-    slave::Flags flags;
-    flags.launcher_dir = getLauncherDir();
-
-    string directory = "./work_dir";
-    Try<Nothing> mkdir = os::mkdir(directory);
-    CHECK_SOME(mkdir) << "Failed to create work directory";
-    flags.work_dir = directory;
+    slave::Flags flags = CreateSlaveFlags();
+    flags.launcher = "posix";
 
     Try<Launcher*> launcher = PosixLauncher::create(flags);
     if (launcher.isError()) {
@@ -447,20 +441,14 @@ TEST_F(MesosContainerizerIsolatorPreparationTest, ExecutorEnvironmentVariable)
 }
 
 
-class MesosContainerizerExecuteTest : public TemporaryDirectoryTest {};
+class MesosContainerizerExecuteTest : public MesosTest {};
 
 
 TEST_F(MesosContainerizerExecuteTest, IoRedirection)
 {
   string directory = os::getcwd(); // We're inside a temporary sandbox.
 
-  slave::Flags flags;
-  flags.launcher_dir = getLauncherDir();
-
-  string workDirectory = "./work_dir";
-  Try<Nothing> mkdir = os::mkdir(workDirectory);
-  CHECK_SOME(mkdir) << "Failed to create work directory";
-  flags.work_dir = workDirectory;
+  slave::Flags flags = CreateSlaveFlags();
 
   Fetcher fetcher;
 
@@ -627,6 +615,7 @@ public:
 TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
 {
   slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
 
   Try<Launcher*> launcher = PosixLauncher::create(flags);
   ASSERT_SOME(launcher);
@@ -695,6 +684,7 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
 TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
 {
   slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
 
   Try<Launcher*> launcher = PosixLauncher::create(flags);
   ASSERT_SOME(launcher);
@@ -818,6 +808,7 @@ public:
 TEST_F(MesosContainerizerProvisionerTest, ProvisionFailed)
 {
   slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
 
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
@@ -912,6 +903,7 @@ TEST_F(MesosContainerizerProvisionerTest, ProvisionFailed)
 TEST_F(MesosContainerizerProvisionerTest, DestroyWhileProvisioning)
 {
   slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
 
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
@@ -1008,6 +1000,7 @@ TEST_F(MesosContainerizerProvisionerTest, DestroyWhileProvisioning)
 TEST_F(MesosContainerizerProvisionerTest, IsolatorCleanupBeforePrepare)
 {
   slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
 
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
@@ -1118,6 +1111,7 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
 {
   // Create a TestLauncher backed by PosixLauncher.
   slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
 
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
@@ -1254,6 +1248,7 @@ class MesosLauncherStatusTest : public MesosTest {};
 TEST_F(MesosLauncherStatusTest, ExecutorPIDTest)
 {
   slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
 
   Try<Launcher*> launcher = PosixLauncher::create(flags);
   ASSERT_SOME(launcher);
