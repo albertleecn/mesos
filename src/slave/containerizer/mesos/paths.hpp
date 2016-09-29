@@ -74,6 +74,28 @@ Result<int> getContainerStatus(
     const std::string& runtimeDir,
     const ContainerID& containerId);
 
+
+// The helper method to list all container IDs (including nested
+// containers) from the container runtime directory. The order of
+// returned vector is a result of pre-ordering walk (i.e., parent
+// is inserted before its children).
+Try<std::vector<ContainerID>> getContainerIds(
+    const std::string& runtimeDir);
+
+
+// The helper method to get the sandbox path.
+std::string getSandboxPath(
+    const std::string& rootSandboxPath,
+    const ContainerID& containerId);
+
+
+// The helper method parses a given 'path' and returns the container
+// ID of the container whose sandbox contains 'path'.
+Try<ContainerID> parseSandboxPath(
+    const ContainerID& rootContainerId,
+    const std::string& rootSandboxPath,
+    const std::string& path);
+
 } // namespace paths {
 } // namespace containerizer {
 } // namespace slave {

@@ -14,8 +14,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __DOCKER_RUNTIME_ISOLATOR_HPP__
-#define __DOCKER_RUNTIME_ISOLATOR_HPP__
+#ifndef __VOLUME_SANDBOX_PATH_ISOLATOR_HPP__
+#define __VOLUME_SANDBOX_PATH_ISOLATOR_HPP__
+
+#include <string>
+
+#include <stout/hashmap.hpp>
+
+#include "slave/flags.hpp"
 
 #include "slave/containerizer/mesos/isolator.hpp"
 
@@ -23,44 +29,34 @@ namespace mesos {
 namespace internal {
 namespace slave {
 
-// The docker runtime isolator is responsible for preparing mesos
-// container by merging runtime configuration specified by user
-// and docker image default configuration.
-class DockerRuntimeIsolatorProcess : public MesosIsolatorProcess
+class VolumeSandboxPathIsolatorProcess : public MesosIsolatorProcess
 {
 public:
   static Try<mesos::slave::Isolator*> create(const Flags& flags);
 
-  virtual ~DockerRuntimeIsolatorProcess();
+  virtual ~VolumeSandboxPathIsolatorProcess();
 
-  virtual bool supportsNesting();
+  virtual process::Future<Nothing> recover(
+      const std::list<mesos::slave::ContainerState>& states,
+      const hashset<ContainerID>& orphans);
 
   virtual process::Future<Option<mesos::slave::ContainerLaunchInfo>> prepare(
       const ContainerID& containerId,
       const mesos::slave::ContainerConfig& containerConfig);
 
 private:
-  DockerRuntimeIsolatorProcess(const Flags& flags);
-
-  Option<Environment> getLaunchEnvironment(
-      const ContainerID& containerId,
-      const mesos::slave::ContainerConfig& containerConfig);
-
-  Result<CommandInfo> getLaunchCommand(
-      const ContainerID& containerId,
-      const mesos::slave::ContainerConfig& containerConfig);
-
-  Option<std::string> getWorkingDirectory(
-      const mesos::slave::ContainerConfig& containerConfig);
-
-  Option<std::string> getContainerUser(
-      const mesos::slave::ContainerConfig& containerConfig);
+  VolumeSandboxPathIsolatorProcess(
+      const Flags& flags,
+      bool bindMountSupported);
 
   const Flags flags;
+  const bool bindMountSupported;
+
+  hashmap<ContainerID, std::string> sandboxes;
 };
 
 } // namespace slave {
 } // namespace internal {
 } // namespace mesos {
 
-#endif // __DOCKER_RUNTIME_ISOLATOR_HPP__
+#endif // __VOLUME_SANDBOX_PATH_ISOLATOR_HPP__

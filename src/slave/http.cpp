@@ -1917,13 +1917,24 @@ Future<Response> Slave::Http::launchNestedContainer(
   const ContainerID& containerId =
     call.launch_nested_container().container_id();
 
-  Future<Nothing> launched = slave->containerizer->launch(
+  // We do not yet support launching containers that are nested
+  // two levels beneath the executor's container.
+  if (containerId.parent().has_parent()) {
+    return NotImplemented(
+        "Only a single level of container nesting is supported currently,"
+        " but 'launch_nested_container.container_id.parent.parent' is set");
+  }
+
+  // TODO(gilbert): The sandbox directory and user are incorrect,
+  // Please update it.
+  Future<bool> launched = slave->containerizer->launch(
       containerId,
       call.launch_nested_container().command(),
       call.launch_nested_container().has_container()
         ? call.launch_nested_container().container()
         : Option<ContainerInfo>::none(),
-      call.launch_nested_container().resources());
+      None(),
+      slave->info.id());
 
   // TODO(bmahler): The containerizers currently require that
   // the caller calls destroy if the launch fails. See MESOS-6214.
@@ -1940,7 +1951,10 @@ Future<Response> Slave::Http::launchNestedContainer(
     }));
 
   return launched
-    .then([]() -> Response {
+    .then([](bool launched) -> Response {
+      if (!launched) {
+        return BadRequest("The provided ContainerInfo is not supported");
+      }
       return OK();
     });
 }

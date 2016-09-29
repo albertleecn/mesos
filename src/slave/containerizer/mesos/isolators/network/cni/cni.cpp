@@ -699,6 +699,11 @@ Future<Option<ContainerLaunchInfo>> NetworkCniIsolatorProcess::prepare(
         launchInfo.set_namespaces(CLONE_NEWNS | CLONE_NEWUTS);
       } else {
         launchInfo.set_namespaces(CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWUTS);
+
+        // This is a top-level container joining a new network
+        // namespace. Hence, set up `pre_exec_command` to bring up the
+        // loopback interface.
+        launchInfo.add_pre_exec_commands()->set_value("ifconfig lo up");
       }
     } else {
       // This is a nested container. This shares the parent's network
@@ -795,7 +800,16 @@ Future<Nothing> NetworkCniIsolatorProcess::isolate(
 
     CHECK(os::exists(rootHostsPath));
     CHECK(os::exists(rootHostnamePath));
-    CHECK(os::exists(rootResolvPath));
+
+    if (!os::exists(rootResolvPath)) {
+      // If the root container does not have its own resolv.conf it
+      // will be using the host's resolv.conf.
+      rootResolvPath = "/etc/resolv.conf";
+
+      // This is because if '/etc/resolv.conf' does not exist on the
+      // host filesystem, the launch of the root container will fail.
+      CHECK(os::exists(rootResolvPath));
+    }
 
     // Setup the required network files and the hostname in the
     // container's filesystem and UTS namespace.

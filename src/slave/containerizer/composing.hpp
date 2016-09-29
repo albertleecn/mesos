@@ -62,6 +62,13 @@ public:
       const std::map<std::string, std::string>& environment,
       bool checkpoint);
 
+  virtual process::Future<bool> launch(
+      const ContainerID& containerId,
+      const CommandInfo& commandInfo,
+      const Option<ContainerInfo>& containerInfo,
+      const Option<std::string>& user,
+      const SlaveID& slaveId);
+
   virtual process::Future<Nothing> update(
       const ContainerID& containerId,
       const Resources& resources);
