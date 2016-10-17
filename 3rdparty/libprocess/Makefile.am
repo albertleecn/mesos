@@ -304,10 +304,10 @@ BUILT_SOURCES = $(BUNDLED_DEPS)
 # See the following discussion for the workaround:
 # http://lists.gnu.org/archive/html/automake/2013-01/msg00051.html
 check-local: tests
-	./libprocess-tests
+	$(TEST_DRIVER) ./libprocess-tests
 
 tests: all $(BUNDLED_DEPS)
-	$(MAKE) $(AM_MAKEFLAGS) libprocess-tests benchmarks
+	$(MAKE) $(AM_MAKEFLAGS) $(check_PROGRAMS)
 
 # TODO(benh): Fix shared builds (tests need libglog, libev, etc).
 

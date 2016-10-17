@@ -86,7 +86,7 @@ using process::Owned;
 using process::UPID;
 
 
-class Flags : public flags::FlagsBase
+class Flags : public virtual flags::FlagsBase
 {
 public:
   Flags()
@@ -250,7 +250,7 @@ public:
         "      \"docker_volume\":\n"
         "        {\n"
         "          \"driver\": \"volume_driver\",\n"
-        "          \"docker_options\":\n"
+        "          \"driver_options\":\n"
         "            {\"parameter\":[\n"
         "              {\n"
         "                \"key\": \"key\",\n"

@@ -175,6 +175,7 @@ set(LINUX_SRC
   slave/containerizer/mesos/isolators/gpu/isolator.cpp
   slave/containerizer/mesos/isolators/gpu/nvml.cpp
   slave/containerizer/mesos/isolators/gpu/volume.cpp
+  slave/containerizer/mesos/isolators/linux/capabilities.cpp
   slave/containerizer/mesos/isolators/namespaces/pid.cpp
   slave/containerizer/mesos/isolators/network/cni/cni.cpp
   slave/containerizer/mesos/isolators/volume/image.cpp
@@ -517,6 +518,7 @@ add_subdirectory(cli/)
 add_subdirectory(docker/)
 add_subdirectory(launcher/)
 add_subdirectory(local/)
+add_subdirectory(log/)
 add_subdirectory(master/)
 add_subdirectory(slave/)
 add_subdirectory(slave/containerizer/mesos/)

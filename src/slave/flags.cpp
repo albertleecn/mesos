@@ -208,7 +208,16 @@ mesos::internal::slave::Flags::Flags()
       "is stored by an agent that it needs to persist across crashes (but\n"
       "not across reboots). This directory will be cleared on reboot.\n"
       "(Example: `/var/run/mesos`)",
-      DEFAULT_RUNTIME_DIRECTORY);
+      []() -> string {
+        Result<string> user = os::user();
+        CHECK_SOME(user);
+
+        if (user.get() == "root") {
+            return DEFAULT_ROOT_RUNTIME_DIRECTORY;
+        } else {
+            return path::join(os::temp(), "mesos", "runtime");
+        }
+      }());
 
   add(&Flags::launcher_dir, // TODO(benh): This needs a better name.
       "launcher_dir",
@@ -361,6 +370,12 @@ mesos::internal::slave::Flags::Flags()
       "the executor registered.) during recovery are ignored and as much\n"
       "state as possible is recovered.\n",
       true);
+
+  add(&Flags::max_completed_executors_per_framework,
+      "max_completed_executors_per_framework",
+      "Maximum number of completed executors per framework to store\n"
+      "in memory.\n",
+      DEFAULT_MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK);
 
 #ifdef __linux__
   add(&Flags::cgroups_hierarchy,
@@ -712,11 +727,10 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::network_cni_plugins_dir,
       "network_cni_plugins_dir",
-      "Directory path of the CNI plugin binaries. The `network/cni`\n"
-      "isolator will find CNI plugins under this directory so that\n"
+      "A search path for CNI plugin binaries. The `network/cni`\n"
+      "isolator will find CNI plugins under these set of directories so that\n"
       "it can execute the plugins to add/delete container from the CNI\n"
-      "networks. It is the operator's responsibility to install the CNI\n"
-      "plugin binaries in the specified directory.");
+      "networks.");
 
   add(&Flags::network_cni_config_dir,
       "network_cni_config_dir",

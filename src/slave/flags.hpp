@@ -35,7 +35,7 @@ namespace mesos {
 namespace internal {
 namespace slave {
 
-class Flags : public logging::Flags
+class Flags : public virtual logging::Flags
 {
 public:
   Flags();
@@ -65,6 +65,8 @@ public:
   std::string runtime_dir;
   std::string launcher_dir;
   std::string hadoop_home; // TODO(benh): Make an Option.
+  size_t max_completed_executors_per_framework;
+
 #ifndef __WINDOWS__
   bool switch_user;
 #endif // __WINDOWS__

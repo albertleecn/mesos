@@ -83,7 +83,7 @@ AC_ARG_ENABLE([debug],
 AC_ARG_ENABLE([install],
               AS_HELP_STRING([--enable-install],
                              [install stout]),
-              [AC_MSG_ERROR([stout can not currently be installed])])
+              [AC_MSG_ERROR([stout cannot currently be installed])])
 
 AC_ARG_ENABLE([optimize],
               AS_HELP_STRING([--enable-optimize],
@@ -156,8 +156,9 @@ AC_ARG_WITH([svn],
 
 
 ###############################################################################
-# Miscellaneous flags/library/tool checks
+# Miscellaneous flags/library/tool checks.
 ###############################################################################
+AC_ARG_VAR([TEST_DRIVER], [executable and arguments of a test driver])
 
 # Check for pthreads (uses m4/ax_pthread.m4).
 AX_PTHREAD([], [AC_MSG_ERROR([failed to find pthreads])])

@@ -103,7 +103,7 @@ struct LoggerFlags : public virtual flags::FlagsBase
 };
 
 
-struct Flags : public LoggerFlags
+struct Flags : public virtual LoggerFlags
 {
   Flags()
   {
@@ -194,10 +194,6 @@ public:
 
   // This is a noop.  The logrotate container logger has nothing to initialize.
   virtual Try<Nothing> initialize();
-
-  virtual process::Future<Nothing> recover(
-      const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory);
 
   virtual process::Future<mesos::slave::ContainerLogger::SubprocessInfo>
   prepare(

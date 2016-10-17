@@ -318,7 +318,14 @@ bool operator==(const DiscoveryInfo& left, const DiscoveryInfo& right)
 
 bool operator==(const ExecutorInfo& left, const ExecutorInfo& right)
 {
-  return left.executor_id() == right.executor_id() &&
+  if (left.has_type() && right.has_type()) {
+    if (left.type() != right.type()) {
+      return false;
+    }
+  }
+
+  return left.has_type() == right.has_type() &&
+    left.executor_id() == right.executor_id() &&
     left.data() == right.data() &&
     Resources(left.resources()) == Resources(right.resources()) &&
     left.command() == right.command() &&
@@ -327,6 +334,12 @@ bool operator==(const ExecutorInfo& left, const ExecutorInfo& right)
     left.source() == right.source() &&
     left.container() == right.container() &&
     left.discovery() == right.discovery();
+}
+
+
+bool operator!=(const ExecutorInfo& left, const ExecutorInfo& right)
+{
+  return !(left == right);
 }
 
 
@@ -442,6 +455,18 @@ bool operator!=(const TaskStatus& left, const TaskStatus& right)
 }
 
 
+ostream& operator<<(std::ostream& stream, const CapabilityInfo& capabilityInfo)
+{
+  return stream << JSON::protobuf(capabilityInfo);
+}
+
+
+ostream& operator<<(ostream& stream, const CommandInfo& commandInfo)
+{
+  return stream << JSON::protobuf(commandInfo);
+}
+
+
 ostream& operator<<(ostream& stream, const ContainerID& containerId)
 {
   return containerId.has_parent()
@@ -459,12 +484,6 @@ ostream& operator<<(ostream& stream, const ContainerInfo& containerInfo)
 ostream& operator<<(ostream& stream, const ExecutorID& executorId)
 {
   return stream << executorId.value();
-}
-
-
-ostream& operator<<(std::ostream& stream, const CapabilityInfo& capabilityInfo)
-{
-  return stream << stringify(JSON::protobuf(capabilityInfo));
 }
 
 

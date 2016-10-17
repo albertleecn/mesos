@@ -828,6 +828,7 @@ struct Executor
       const ExecutorInfo& info,
       const ContainerID& containerId,
       const std::string& directory,
+      const Option<std::string>& user,
       bool checkpoint);
 
   ~Executor();
@@ -909,6 +910,11 @@ struct Executor
 
   const std::string directory;
 
+  // The sandbox will be owned by this user and the executor will
+  // run as this user. This can be set to None when --switch_user
+  // is false or when compiled for Windows.
+  const Option<std::string> user;
+
   const bool checkpoint;
 
   // An Executor can either be connected via HTTP or by libprocess
@@ -973,6 +979,7 @@ struct Framework
 {
   Framework(
       Slave* slave,
+      const Flags& slaveFlags,
       const FrameworkInfo& info,
       const Option<process::UPID>& pid);
 
@@ -1017,8 +1024,8 @@ struct Framework
   // Current running executors.
   hashmap<ExecutorID, Executor*> executors;
 
-  // Up to MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK completed executors.
   boost::circular_buffer<process::Owned<Executor>> completedExecutors;
+
 private:
   Framework(const Framework&);              // No copying.
   Framework& operator=(const Framework&); // No assigning.

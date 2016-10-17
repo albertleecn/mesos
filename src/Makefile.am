@@ -828,9 +828,9 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   slave/containerizer/mesos/launcher.cpp				\
   slave/containerizer/mesos/mount.cpp					\
   slave/containerizer/mesos/paths.cpp					\
-  slave/containerizer/mesos/isolators/filesystem/posix.cpp		\
   slave/containerizer/mesos/isolators/docker/volume/driver.cpp		\
   slave/containerizer/mesos/isolators/docker/volume/paths.cpp		\
+  slave/containerizer/mesos/isolators/filesystem/posix.cpp		\
   slave/containerizer/mesos/isolators/network/cni/paths.cpp		\
   slave/containerizer/mesos/isolators/network/cni/spec.cpp		\
   slave/containerizer/mesos/isolators/posix/disk.cpp			\
@@ -1048,6 +1048,7 @@ MESOS_LINUX_FILES =									\
   slave/containerizer/mesos/isolators/gpu/isolator.cpp					\
   slave/containerizer/mesos/isolators/gpu/nvml.cpp					\
   slave/containerizer/mesos/isolators/gpu/volume.cpp					\
+  slave/containerizer/mesos/isolators/linux/capabilities.cpp				\
   slave/containerizer/mesos/isolators/namespaces/pid.cpp				\
   slave/containerizer/mesos/isolators/network/cni/cni.cpp				\
   slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/port_mapper.cpp	\
@@ -1086,6 +1087,7 @@ MESOS_LINUX_FILES +=									\
   slave/containerizer/mesos/isolators/gpu/nvidia.hpp					\
   slave/containerizer/mesos/isolators/gpu/nvml.hpp					\
   slave/containerizer/mesos/isolators/gpu/volume.hpp					\
+  slave/containerizer/mesos/isolators/linux/capabilities.hpp				\
   slave/containerizer/mesos/isolators/namespaces/pid.hpp				\
   slave/containerizer/mesos/isolators/network/cni/cni.hpp				\
   slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/port_mapper.hpp	\
@@ -2163,11 +2165,11 @@ mesos_tests_SOURCES =						\
   tests/containerizer/memory_test_helper.cpp			\
   tests/containerizer/mesos_containerizer_tests.cpp		\
   tests/containerizer/mesos_containerizer_paths_tests.cpp	\
-  tests/containerizer/nested_container_tests.cpp		\
   tests/containerizer/provisioner_appc_tests.cpp		\
   tests/containerizer/provisioner_backend_tests.cpp		\
   tests/containerizer/provisioner_docker_tests.cpp		\
   tests/containerizer/provisioner_paths_tests.cpp		\
+  tests/containerizer/volume_image_isolator_tests.cpp		\
   tests/containerizer/volume_sandbox_path_isolator_tests.cpp
 
 if ENABLE_XFS_DISK_ISOLATOR
@@ -2202,16 +2204,18 @@ mesos_tests_DEPENDENCIES =					\
 if OS_LINUX
 mesos_tests_SOURCES +=						\
   tests/ldcache_tests.cpp					\
+  tests/containerizer/linux_capabilities_isolator_tests.cpp	\
   tests/containerizer/capabilities_tests.cpp			\
   tests/containerizer/capabilities_test_helper.cpp		\
   tests/containerizer/cgroups_isolator_tests.cpp		\
   tests/containerizer/cgroups_tests.cpp				\
   tests/containerizer/cni_isolator_tests.cpp			\
   tests/containerizer/docker_volume_isolator_tests.cpp		\
-  tests/containerizer/filesystem_isolator_tests.cpp		\
+  tests/containerizer/linux_filesystem_isolator_tests.cpp	\
   tests/containerizer/fs_tests.cpp				\
   tests/containerizer/launch_tests.cpp				\
   tests/containerizer/memory_pressure_tests.cpp			\
+  tests/containerizer/nested_mesos_containerizer_tests.cpp	\
   tests/containerizer/ns_tests.cpp				\
   tests/containerizer/nvidia_gpu_isolator_tests.cpp		\
   tests/containerizer/perf_tests.cpp				\
@@ -2342,7 +2346,7 @@ uninstall-hook:
 # See the following discussion for the workaround:
 # http://lists.gnu.org/archive/html/automake/2013-01/msg00051.html
 check-local: tests
-	./mesos-tests
+	$(TEST_DRIVER) ./mesos-tests
 
 if INSTALL_TESTS
 # If we enabled test installation, we can run the tests from the

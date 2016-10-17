@@ -346,13 +346,6 @@ protected:
         executor; })
 
 
-#define CREATE_EXECUTOR_INFO(executorId, command)                       \
-      ({ ExecutorInfo executor;                                         \
-        executor.mutable_executor_id()->set_value(executorId);          \
-        executor.mutable_command()->set_value(command);                 \
-        executor; })
-
-
 #define DEFAULT_CREDENTIAL                                             \
      ({ Credential credential;                                         \
         credential.set_principal("test-principal");                    \
@@ -404,20 +397,112 @@ protected:
         containerId; })
 
 
-#define CREATE_COMMAND_INFO(command)                                  \
-  ({ CommandInfo commandInfo;                                         \
-     commandInfo.set_value(command);                                  \
-     commandInfo; })
+inline mesos::Environment createEnvironment(
+    const hashmap<std::string, std::string>& map)
+{
+  mesos::Environment environment;
+  foreachpair (const std::string& key, const std::string& value, map) {
+    mesos::Environment::Variable* variable = environment.add_variables();
+    variable->set_name(key);
+    variable->set_value(value);
+  }
+  return environment;
+}
 
 
-// TODO(jieyu): Consider making it a function to support more
-// overloads (e.g., createVolumeFromHost, createVolumeFromImage).
-#define CREATE_VOLUME(containerPath, hostPath, mode)                  \
-      ({ Volume volume;                                               \
-         volume.set_container_path(containerPath);                    \
-         volume.set_host_path(hostPath);                              \
-         volume.set_mode(mode);                                       \
-         volume; })
+inline ExecutorInfo createExecutorInfo(
+    const std::string& executorId,
+    const std::string& command,
+    const Option<std::string>& resources = None())
+{
+  ExecutorInfo executor;
+  executor.mutable_executor_id()->set_value(executorId);
+  executor.mutable_command()->set_value(command);
+  if (resources.isSome()) {
+    executor.mutable_resources()->CopyFrom(
+        Resources::parse(resources.get()).get());
+  }
+  return executor;
+}
+
+
+inline ExecutorInfo createExecutorInfo(
+    const std::string& executorId,
+    const CommandInfo& command,
+    const Option<std::string>& resources = None())
+{
+  ExecutorInfo executor;
+  executor.mutable_executor_id()->set_value(executorId);
+  executor.mutable_command()->CopyFrom(command);
+  if (resources.isSome()) {
+    executor.mutable_resources()->CopyFrom(
+        Resources::parse(resources.get()).get());
+  }
+  return executor;
+}
+
+
+inline CommandInfo createCommandInfo(const std::string& command)
+{
+  CommandInfo commandInfo;
+  commandInfo.set_value(command);
+  return commandInfo;
+}
+
+
+inline Image createDockerImage(const std::string& imageName)
+{
+  Image image;
+  image.set_type(Image::DOCKER);
+  image.mutable_docker()->set_name(imageName);
+  return image;
+}
+
+
+inline Volume createVolumeFromHostPath(
+    const std::string& containerPath,
+    const std::string& hostPath,
+    const Volume::Mode& mode)
+{
+  Volume volume;
+  volume.set_container_path(containerPath);
+  volume.set_host_path(hostPath);
+  volume.set_mode(mode);
+  return volume;
+}
+
+
+inline Volume createVolumeFromDockerImage(
+    const std::string& containerPath,
+    const std::string& imageName,
+    const Volume::Mode& mode)
+{
+  Volume volume;
+  volume.set_container_path(containerPath);
+  volume.set_mode(mode);
+  volume.mutable_image()->CopyFrom(createDockerImage(imageName));
+  return volume;
+}
+
+
+inline ContainerInfo createContainerInfo(
+    const Option<std::string> imageName = None(),
+    const vector<Volume>& volumes = {})
+{
+  ContainerInfo info;
+  info.set_type(ContainerInfo::MESOS);
+
+  if (imageName.isSome()) {
+    Image* image = info.mutable_mesos()->mutable_image();
+    image->CopyFrom(createDockerImage(imageName.get()));
+  }
+
+  foreach (const Volume& volume, volumes) {
+    info.add_volumes()->CopyFrom(volume);
+  }
+
+  return info;
+}
 
 
 // TODO(bmahler): Refactor this to make the distinction between
@@ -459,7 +544,7 @@ inline TaskInfo createTask(
   return createTask(
       slaveId,
       resources,
-      CREATE_COMMAND_INFO(command),
+      createCommandInfo(command),
       executorId,
       name,
       id);
@@ -1210,6 +1295,13 @@ protected:
   }
 
 private:
+  // TODO(bmahler): This is a shared pointer because the `Mesos`
+  // library copies the pointer into callbacks that can execute
+  // after `Mesos` is destructed. We can avoid this by ensuring
+  // that `~Mesos()` blocks until deferred callbacks are cleared
+  // (merely grabbing the `process::Mutex` lock is sufficient).
+  // The `Mesos` library can also provide a `Future<Nothing> stop()`
+  // to allow callers to wait for all events to be flushed.
   std::shared_ptr<MockHTTPExecutor<Mesos, Event>> executor;
 };
 

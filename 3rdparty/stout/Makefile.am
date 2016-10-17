@@ -27,6 +27,8 @@ endif
 # the header files during installation.
 SUBDIRS = $(MAYBE_3RDPARTY) . include
 
+PHONY_TARGETS =
+
 include ../versions.am
 
 BOOST = $(BUNDLED_DIR)/boost-$(BOOST_VERSION)
@@ -188,10 +190,12 @@ BUILT_SOURCES = $(BUNDLED_DEPS)
 # See the following discussion for the workaround:
 # http://lists.gnu.org/archive/html/automake/2013-01/msg00051.html
 check-local: tests
-	./stout-tests
+	$(TEST_DRIVER) ./stout-tests
 
 tests: $(BUNDLED_DEPS)
 	$(MAKE) $(AM_MAKEFLAGS) stout-tests
+
+PHONY_TARGETS += tests
 
 all-local: Makefile
 
@@ -213,3 +217,5 @@ dist-hook:
 if !STANDALONE_STOUT
 	cp -r $(srcdir)/3rdparty $(distdir)/
 endif
+
+.PHONY: $(PHONY_TARGETS)

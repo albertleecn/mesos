@@ -17,8 +17,6 @@
 #include <map>
 #include <ostream>
 #include <string>
-#include <tuple>
-#include <type_traits>
 #include <typeinfo> // For typeid.
 #include <vector>
 
@@ -47,7 +45,23 @@ class FlagsBase
 {
 public:
   FlagsBase() { add(&help, "help", "Prints this help message", false); }
-  virtual ~FlagsBase() {}
+  virtual ~FlagsBase() = default;
+
+  // Explicitly disable rvalue constructors and assignment operators
+  // since we plan for this class to be used in virtual inheritance
+  // scenarios. Here e.g., constructing from an rvalue will be
+  // problematic since we can potentially have multiple lineages
+  // leading to the same base class, and could then potentially use a
+  // moved from base object.
+  // All of the following functions would be implicitly generated for
+  // C++14, but in C++11 only the versions taking lvalue references
+  // should be. GCC seems to create all of these even in C++11 mode so
+  // we need to explicitly disable them.
+  FlagsBase(const FlagsBase&) = default;
+  FlagsBase(FlagsBase&&) = delete;
+  FlagsBase& operator=(const FlagsBase&) = default;
+  FlagsBase& operator=(FlagsBase&&) = delete;
+
 
   // Load any flags from the environment given the variable prefix,
   // i.e., given prefix 'STOUT_' will load a flag named 'foo' via
@@ -371,6 +385,10 @@ public:
   // do when the user asks for help.
   bool help;
 
+  // Extract environment variable "flags" with the specified prefix.
+  std::map<std::string, Option<std::string>> extract(
+      const std::string& prefix) const;
+
 protected:
   // The program's name, extracted from argv[0] by default;
   // declared 'protected' so that derived classes can alter this
@@ -384,9 +402,6 @@ protected:
   Option<std::string> usageMessage_;
 
 private:
-  // Extract environment variable "flags" with the specified prefix.
-  std::map<std::string, Option<std::string>> extract(const std::string& prefix);
-
   Try<Warnings> load(
       Multimap<std::string, Option<std::string>>& values,
       bool unknowns = false,
@@ -399,24 +414,6 @@ private:
   // Maps flag's alias to flag's name.
   std::map<std::string, std::string> aliases;
 };
-
-
-template <typename... FlagsTypes>
-class Flags : public virtual FlagsTypes...
-{
-  // Construct tuple types of sizeof...(FlagsTypes) compile-time bools to check
-  // non-recursively that all FlagsTypes derive from FlagsBase; as a helper we
-  // use is_object<FlagTypes> to construct sizeof...(FlagTypes) true types for
-  // the RHS (is_object<T> is a true type for anything one would inherit from).
-  static_assert(
-    std::is_same<
-      std::tuple<typename std::is_base_of<FlagsBase, FlagsTypes>::type...>,
-      std::tuple<typename std::is_object<FlagsTypes>::type...>>::value,
-    "Can only instantiate Flags with FlagsBase types.");
-};
-
-template <>
-class Flags<> : public virtual FlagsBase {};
 
 
 template <typename T1, typename T2, typename F>
@@ -725,7 +722,7 @@ inline void FlagsBase::add(const Flag& flag)
 
 // Extract environment variable "flags" with the specified prefix.
 inline std::map<std::string, Option<std::string>> FlagsBase::extract(
-    const std::string& prefix)
+    const std::string& prefix) const
 {
   std::map<std::string, Option<std::string>> values;
 

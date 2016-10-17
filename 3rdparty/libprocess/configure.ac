@@ -84,7 +84,7 @@ AC_ARG_ENABLE([debug],
 AC_ARG_ENABLE([install],
               AS_HELP_STRING([--enable-install],
                              [install libprocess]),
-              [AC_MSG_ERROR([libprocess can not currently be installed])])
+              [AC_MSG_ERROR([libprocess cannot currently be installed])])
 
 AC_ARG_ENABLE([libevent],
               AS_HELP_STRING([--enable-libevent],
@@ -210,6 +210,12 @@ AC_ARG_WITH([svn],
             AS_HELP_STRING([--with-svn=@<:@=DIR@:>@],
                            [specify where to locate the svn-1 library]),
             [], [])
+
+
+###############################################################################
+# Miscellaneous flags/library/tool checks.
+###############################################################################
+AC_ARG_VAR([TEST_DRIVER], [executable and arguments of a test driver])
 
 
 ###############################################################################

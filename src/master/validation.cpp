@@ -421,9 +421,6 @@ Option<Error> validateDiskInfo(const RepeatedPtrField<Resource>& resources)
       if (!resource.disk().has_volume()) {
         return Error("Expecting 'volume' to be set for persistent volume");
       }
-      if (resource.disk().volume().mode() == Volume::RO) {
-        return Error("Read-only persistent volume not supported");
-      }
       if (resource.disk().volume().has_host_path()) {
         return Error("Expecting 'host_path' to be unset for persistent volume");
       }
@@ -500,6 +497,10 @@ Option<Error> validatePersistentVolume(
       return Error("Resource " + stringify(volume) + " does not have DiskInfo");
     } else if (!volume.disk().has_persistence()) {
       return Error("'persistence' is not set in DiskInfo");
+    } else if (!volume.disk().has_volume()) {
+      return Error("Expecting 'volume' to be set for persistent volume");
+    } else if (volume.disk().volume().mode() == Volume::RO) {
+      return Error("Read-only persistent volume not supported");
     }
   }
 
@@ -1010,8 +1011,8 @@ Option<Error> validateTask(
 
   // Now do `TaskGroup` specific validation.
 
-  if (task.has_executor()) {
-    return Error("'TaskInfo.executor' must not be set");
+  if (!task.has_executor()) {
+    return Error("'TaskInfo.executor' must be set");
   }
 
   if (task.has_container()) {
@@ -1084,6 +1085,17 @@ Option<Error> validateExecutor(
   if (executor.has_container() &&
       executor.container().type() == ContainerInfo::DOCKER) {
     return Error("Docker ContainerInfo is not supported on the executor");
+  }
+
+  // Validate the `ExecutorInfo` in all tasks are same.
+
+  foreach (const TaskInfo& task, taskGroup.tasks()) {
+    if (task.has_executor() && task.executor() != executor) {
+      return Error(
+          "The `ExecutorInfo` of "
+          "task '" + stringify(task.task_id()) + "' is different from "
+          "executor '" + stringify(executor.executor_id()) + "'");
+    }
   }
 
   const Resources& executorResources = executor.resources();

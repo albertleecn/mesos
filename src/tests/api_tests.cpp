@@ -1404,6 +1404,100 @@ TEST_P(MasterAPITest, StartAndStopMaintenance)
 }
 
 
+// This test verifies that a subscriber can receive `AGENT_ADDED`
+// and `AGENT_REMOVED` events.
+TEST_P(MasterAPITest, SubscribeAgentEvents)
+{
+  ContentType contentType = GetParam();
+
+  Try<Owned<cluster::Master>> master = this->StartMaster();
+  ASSERT_SOME(master);
+
+  v1::master::Call v1Call;
+  v1Call.set_type(v1::master::Call::SUBSCRIBE);
+
+  process::http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+
+  headers["Accept"] = stringify(contentType);
+
+  Future<Response> response = process::http::streaming::post(
+      master.get()->pid,
+      "api/v1",
+      headers,
+      serialize(contentType, v1Call),
+      stringify(contentType));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+  AWAIT_EXPECT_RESPONSE_HEADER_EQ("chunked", "Transfer-Encoding", response);
+  ASSERT_EQ(Response::PIPE, response.get().type);
+  ASSERT_SOME(response->reader);
+
+  Pipe::Reader reader = response->reader.get();
+
+  auto deserializer =
+    lambda::bind(deserialize<v1::master::Event>, contentType, lambda::_1);
+
+  Reader<v1::master::Event> decoder(
+      Decoder<v1::master::Event>(deserializer), reader);
+
+  Future<Result<v1::master::Event>> event = decoder.read();
+  AWAIT_READY(event);
+
+  EXPECT_EQ(v1::master::Event::SUBSCRIBED, event.get().get().type());
+  const v1::master::Response::GetState& getState =
+      event.get().get().subscribed().get_state();
+
+  EXPECT_EQ(0u, getState.get_frameworks().frameworks_size());
+  EXPECT_EQ(0u, getState.get_agents().agents_size());
+  EXPECT_EQ(0u, getState.get_tasks().tasks_size());
+  EXPECT_EQ(0u, getState.get_executors().executors_size());
+
+  // Start one agent.
+  Future<SlaveRegisteredMessage> agentRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), master.get()->pid, _);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.hostname = "host";
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  ASSERT_SOME(slave);
+
+  AWAIT_READY(agentRegisteredMessage);
+
+  event = decoder.read();
+  AWAIT_READY(event);
+
+  SlaveID agentID = agentRegisteredMessage.get().slave_id();
+
+  {
+    ASSERT_EQ(v1::master::Event::AGENT_ADDED, event.get().get().type());
+
+    const v1::master::Response::GetAgents::Agent& agent =
+      event.get().get().agent_added().agent();
+
+    ASSERT_EQ("host", agent.agent_info().hostname());
+    ASSERT_EQ(evolve<v1::AgentID>(agentID), agent.agent_info().id());
+    ASSERT_EQ(slave.get()->pid, agent.pid());
+    ASSERT_EQ(MESOS_VERSION, agent.version());
+    ASSERT_EQ(4, agent.total_resources_size());
+  }
+
+  // Forcefully trigger a shutdown on the slave so that master will remove it.
+  slave.get()->shutdown();
+  slave->reset();
+
+  event = decoder.read();
+  AWAIT_READY(event);
+
+  {
+    ASSERT_EQ(v1::master::Event::AGENT_REMOVED, event.get().get().type());
+    ASSERT_EQ(evolve<v1::AgentID>(agentID),
+              event.get().get().agent_removed().agent_id());
+  }
+}
+
+
 // This test tries to verify that a client subscribed to the 'api/v1'
 // endpoint is able to receive `TASK_ADDED`/`TASK_UPDATED` events.
 TEST_P(MasterAPITest, Subscribe)
@@ -1556,7 +1650,12 @@ TEST_P(MasterAPITest, Subscribe)
   AWAIT_READY(event);
 
   ASSERT_EQ(v1::master::Event::TASK_UPDATED, event.get().get().type());
-  ASSERT_EQ(v1::TASK_RUNNING, event.get().get().task_updated().state());
+  ASSERT_EQ(v1::TASK_RUNNING,
+            event.get().get().task_updated().state());
+  ASSERT_EQ(v1::TASK_RUNNING,
+            event.get().get().task_updated().status().state());
+  ASSERT_EQ(internal::evolve(task.task_id()),
+            event.get().get().task_updated().status().task_id());
 
   event = decoder.read();
 
@@ -3330,31 +3429,54 @@ TEST_P(AgentAPITest, NestedContainerLaunchFalse)
 
   Clock::pause();
 
-  StandaloneMasterDetector detector;
-  MockContainerizer mockContainerizer;
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
 
-  EXPECT_CALL(mockContainerizer, recover(_))
-    .WillOnce(Return(Future<Nothing>(Nothing())));
+  Owned<MasterDetector> detector = master.get()->createDetector();
 
-  Future<Nothing> __recover = FUTURE_DISPATCH(_, &Slave::__recover);
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+  TestContainerizer containerizer(&exec);
 
   Try<Owned<cluster::Slave>> slave =
-    StartSlave(&detector, &mockContainerizer);
+    StartSlave(detector.get(), &containerizer);
 
   ASSERT_SOME(slave);
 
-  // Wait for the agent to finish recovery.
-  AWAIT_READY(__recover);
-  Clock::settle();
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .Times(1);
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(LaunchTasks(DEFAULT_EXECUTOR_INFO, 1, 0.1, 32, "*"))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  Future<Nothing> executorRegistered;
+  EXPECT_CALL(exec, registered(_, _, _, _))
+    .WillOnce(FutureSatisfy(&executorRegistered));
+
+  EXPECT_CALL(exec, launchTask(_, _))
+    .Times(1);
+
+  driver.start();
+
+  AWAIT_READY(executorRegistered);
+
+  Future<hashset<ContainerID>> containerIds = containerizer.containers();
+  AWAIT_READY(containerIds);
+  EXPECT_EQ(1u, containerIds->size());
 
   // Try to launch an "unsupported" container.
   v1::ContainerID containerId;
   containerId.set_value(UUID::random().toString());
-  containerId.mutable_parent()->set_value(UUID::random().toString());
+  containerId.mutable_parent()->set_value(containerIds->begin()->value());
 
   {
     // Return false here to indicate "unsupported".
-    EXPECT_CALL(mockContainerizer, launch(_, _, _, _, _))
+    EXPECT_CALL(containerizer, launch(_, _, _, _, _))
       .WillOnce(Return(Future<bool>(false)));
 
     v1::agent::Call call;
@@ -3373,10 +3495,11 @@ TEST_P(AgentAPITest, NestedContainerLaunchFalse)
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(BadRequest().status, response);
   }
 
-  // The destructor of `cluster::Slave` will try to clean up any
-  // remaining containers by inspecting the result of `containers()`.
-  EXPECT_CALL(mockContainerizer, containers())
-    .WillRepeatedly(Return(hashset<ContainerID>()));
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
 }
 
 
@@ -3429,32 +3552,52 @@ TEST_P(AgentAPITest, NestedContainerLaunch)
 
   Clock::pause();
 
-  StandaloneMasterDetector detector;
-  MockContainerizer mockContainerizer;
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
 
-  EXPECT_CALL(mockContainerizer, recover(_))
-    .WillOnce(Return(Future<Nothing>(Nothing())));
+  Owned<MasterDetector> detector = master.get()->createDetector();
 
-  Future<Nothing> __recover = FUTURE_DISPATCH(_, &Slave::__recover);
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+  TestContainerizer containerizer(&exec);
 
   Try<Owned<cluster::Slave>> slave =
-    StartSlave(&detector, &mockContainerizer);
+    StartSlave(detector.get(), &containerizer);
 
   ASSERT_SOME(slave);
 
-  // Wait for the agent to finish recovery.
-  AWAIT_READY(__recover);
-  Clock::settle();
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _))
+    .Times(1);
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(LaunchTasks(DEFAULT_EXECUTOR_INFO, 1, 0.1, 32, "*"))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  Future<Nothing> executorRegistered;
+  EXPECT_CALL(exec, registered(_, _, _, _))
+    .WillOnce(FutureSatisfy(&executorRegistered));
+
+  EXPECT_CALL(exec, launchTask(_, _))
+    .Times(1);
+
+  driver.start();
+
+  AWAIT_READY(executorRegistered);
+
+  Future<hashset<ContainerID>> containerIds = containerizer.containers();
+  AWAIT_READY(containerIds);
+  EXPECT_EQ(1u, containerIds->size());
 
   // Launch a nested container and wait for it to finish.
   v1::ContainerID containerId;
   containerId.set_value(UUID::random().toString());
-  containerId.mutable_parent()->set_value(UUID::random().toString());
+  containerId.mutable_parent()->set_value(containerIds->begin()->value());
 
   {
-    EXPECT_CALL(mockContainerizer, launch(_, _, _, _, _))
-      .WillOnce(Return(Future<bool>(true)));
-
     v1::agent::Call call;
     call.set_type(v1::agent::Call::LAUNCH_NESTED_CONTAINER);
 
@@ -3471,13 +3614,9 @@ TEST_P(AgentAPITest, NestedContainerLaunch)
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   }
 
-  Promise<Option<ContainerTermination>> waitPromise;
   Future<v1::agent::Response> wait;
 
   {
-    EXPECT_CALL(mockContainerizer, wait(_))
-      .WillOnce(Return(waitPromise.future()));
-
     v1::agent::Call call;
     call.set_type(v1::agent::Call::WAIT_NESTED_CONTAINER);
 
@@ -3493,9 +3632,6 @@ TEST_P(AgentAPITest, NestedContainerLaunch)
 
   // Now kill the nested container.
   {
-    EXPECT_CALL(mockContainerizer, destroy(_))
-      .WillOnce(Return(Future<bool>(true)));
-
     v1::agent::Call call;
     call.set_type(v1::agent::Call::KILL_NESTED_CONTAINER);
 
@@ -3512,19 +3648,17 @@ TEST_P(AgentAPITest, NestedContainerLaunch)
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
   }
 
-  ContainerTermination termination;
-  termination.set_status(1);
-
-  waitPromise.set(Option<ContainerTermination>::some(termination));
-
   AWAIT_READY(wait);
   ASSERT_EQ(v1::agent::Response::WAIT_NESTED_CONTAINER, wait->type());
-  EXPECT_EQ(1, wait->wait_nested_container().exit_status());
 
-  // The destructor of `cluster::Slave` will try to clean up any
-  // remaining containers by inspecting the result of `containers()`.
-  EXPECT_CALL(mockContainerizer, containers())
-    .WillRepeatedly(Return(hashset<ContainerID>()));
+  // The test containerizer sets exit status to 0 when destroyed.
+  EXPECT_EQ(0, wait->wait_nested_container().exit_status());
+
+  EXPECT_CALL(exec, shutdown(_))
+    .Times(AtMost(1));
+
+  driver.stop();
+  driver.join();
 }
 
 } // namespace tests {

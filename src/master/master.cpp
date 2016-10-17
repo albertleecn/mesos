@@ -2467,7 +2467,7 @@ void Master::_subscribe(
       }
     }
 
-    // N.B. Need to add the framework _after_ we add its tasks
+    // NOTE: Need to add the framework _after_ we add its tasks
     // (above) so that we can properly determine the resources it's
     // currently using!
     addFramework(framework);
@@ -3405,19 +3405,36 @@ Resources Master::addTask(
 
 void Master::accept(
     Framework* framework,
-    const scheduler::Call::Accept& accept)
+    scheduler::Call::Accept accept)
 {
   CHECK_NOTNULL(framework);
 
-  foreach (const Offer::Operation& operation, accept.operations()) {
-    if (operation.type() == Offer::Operation::LAUNCH) {
-      if (operation.launch().task_infos().size() > 0) {
+  for (int i = 0; i < accept.operations_size(); ++i) {
+    Offer::Operation* operation = accept.mutable_operations(i);
+
+    if (operation->type() == Offer::Operation::LAUNCH) {
+      if (operation->launch().task_infos().size() > 0) {
         ++metrics->messages_launch_tasks;
       } else {
         ++metrics->messages_decline_offers;
         LOG(WARNING) << "Implicitly declining offers: " << accept.offer_ids()
                      << " in ACCEPT call for framework " << framework->id()
                      << " as the launch operation specified no tasks";
+      }
+    } else if (operation->type() == Offer::Operation::LAUNCH_GROUP) {
+      const ExecutorInfo& executor = operation->launch_group().executor();
+
+      TaskGroupInfo* taskGroup =
+        operation->mutable_launch_group()->mutable_task_group();
+
+      // Mutate `TaskInfo` to include `ExecutorInfo` to make it easy
+      // for operator API and WebUI to get access to the corresponding
+      // executor for tasks in the task group.
+      for (int j = 0; j < taskGroup->tasks().size(); ++j) {
+        TaskInfo* task = taskGroup->mutable_tasks(j);
+        if (!task->has_executor()) {
+          task->mutable_executor()->CopyFrom(executor);
+        }
       }
     }
 
@@ -3975,6 +3992,12 @@ void Master::_accept(
           const Resources& offered = offer->resources();
           foreach (const Resource& volume, operation.destroy().volumes()) {
             if (offered.contains(volume)) {
+              allocator->recoverResources(
+                  offer->framework_id(),
+                  offer->slave_id(),
+                  offer->resources(),
+                  None());
+
               removeOffer(offer, true);
             }
           }
@@ -5542,7 +5565,19 @@ void Master::updateSlave(
   LOG(INFO) << "Received update of agent " << *slave << " with total"
             << " oversubscribed resources " <<  oversubscribedResources;
 
-  // First, rescind any outstanding offers with revocable resources.
+  // NOTE: We must *first* update the agent's resources before we
+  // recover the resources. If we recovered the resources first,
+  // an allocation could trigger between recovering resources and
+  // updating the agent in the allocator. This would lead us to
+  // re-send out the stale oversubscribed resources!
+
+  slave->totalResources =
+    slave->totalResources.nonRevocable() + oversubscribedResources.revocable();
+
+  // First update the agent's resources in the allocator.
+  allocator->updateSlave(slaveId, oversubscribedResources);
+
+  // Then rescind any outstanding offers with revocable resources.
   // NOTE: Need a copy of offers because the offers are removed inside the loop.
   foreach (Offer* offer, utils::copy(slave->offers)) {
     const Resources& offered = offer->resources();
@@ -5560,12 +5595,6 @@ void Master::updateSlave(
 
   // NOTE: We don't need to rescind inverse offers here as they are unrelated to
   // oversubscription.
-
-  slave->totalResources =
-    slave->totalResources.nonRevocable() + oversubscribedResources.revocable();
-
-  // Now, update the allocator with the new estimate.
-  allocator->updateSlave(slaveId, oversubscribedResources);
 }
 
 
@@ -5949,11 +5978,23 @@ void Master::_markUnreachable(
   // PARTITION_AWARE capability.
   foreachkey (const FrameworkID& frameworkId, utils::copy(slave->tasks)) {
     Framework* framework = getFramework(frameworkId);
-    CHECK_NOTNULL(framework);
+
+    // If the framework has not yet re-registered after master failover,
+    // its FrameworkInfo will be in the `recovered` collection. Note that
+    // if the master knows about a task, its FrameworkInfo must appear in
+    // either the `registered` or `recovered` collections.
+    FrameworkInfo frameworkInfo;
+
+    if (framework == nullptr) {
+      CHECK(frameworks.recovered.contains(frameworkId));
+      frameworkInfo = frameworks.recovered[frameworkId];
+    } else {
+      frameworkInfo = framework->info;
+    }
 
     TaskState newTaskState = TASK_UNREACHABLE;
     if (!protobuf::frameworkHasCapability(
-            framework->info, FrameworkInfo::Capability::PARTITION_AWARE)) {
+            frameworkInfo, FrameworkInfo::Capability::PARTITION_AWARE)) {
       newTaskState = TASK_LOST;
     }
 
@@ -5977,7 +6018,12 @@ void Master::_markUnreachable(
       updateTask(task, update);
       removeTask(task);
 
-      forward(update, UPID(), framework);
+      if (framework == nullptr) {
+        LOG(WARNING) << "Dropping update " << update
+                     << " for unknown framework " << frameworkId;
+      } else {
+        forward(update, UPID(), framework);
+      }
     }
   }
 
@@ -6831,9 +6877,7 @@ void Master::addFramework(Framework* framework)
   frameworks.registered[framework->id()] = framework;
 
   // Remove from 'frameworks.recovered' if necessary.
-  if (frameworks.recovered.contains(framework->id())) {
-    frameworks.recovered.erase(framework->id());
-  }
+  frameworks.recovered.erase(framework->id());
 
   if (framework->pid.isSome()) {
     link(framework->pid.get());
@@ -7172,9 +7216,7 @@ void Master::removeFramework(Framework* framework)
   allocator->removeFramework(framework->id());
 
   // Remove from 'frameworks.recovered' if necessary.
-  if (frameworks.recovered.contains(framework->id())) {
-    frameworks.recovered.erase(framework->id());
-  }
+  frameworks.recovered.erase(framework->id());
 
   // The completedFramework buffer now owns the framework pointer.
   frameworks.completed.push_back(shared_ptr<Framework>(framework));
@@ -7328,6 +7370,10 @@ void Master::addSlave(
       unavailability,
       slave->totalResources,
       slave->usedResources);
+
+  if (!subscribers.subscribed.empty()) {
+    subscribers.send(protobuf::master::event::createAgentAdded(*slave));
+  }
 }
 
 
@@ -7494,6 +7540,10 @@ void Master::_removeSlave(
 
   sendSlaveLost(slave->info);
 
+  if (!subscribers.subscribed.empty()) {
+    subscribers.send(protobuf::master::event::createAgentRemoved(slave->id));
+  }
+
   delete slave;
 }
 
@@ -7514,6 +7564,10 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
     latestState = update.latest_state();
   }
 
+  // Indicated whether we should send a notification to all subscribers if the
+  // task transitioned to a new state.
+  bool sendSubscribersUpdate = false;
+
   // Set 'terminated' to true if this is the first time the task
   // transitioned to terminal state. Also set the latest state.
   bool terminated;
@@ -7524,12 +7578,8 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
     // If the task has already transitioned to a terminal state,
     // do not update its state.
     if (!protobuf::isTerminalState(task->state())) {
-      // Send a notification to all subscribers if the task transitioned
-      // to a new state.
-      if (!subscribers.subscribed.empty() &&
-          latestState.get() != task->state()) {
-        subscribers.send(protobuf::master::event::createTaskUpdated(
-            *task, latestState.get()));
+      if (latestState.get() != task->state()) {
+        sendSubscribersUpdate = true;
       }
 
       task->set_state(latestState.get());
@@ -7542,11 +7592,8 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
     // its state. Note that we are being defensive here because this should not
     // happen unless there is a bug in the master code.
     if (!protobuf::isTerminalState(task->state())) {
-      // Send a notification to all subscribers if the task transitioned
-      // to a new state.
-      if (!subscribers.subscribed.empty() && task->state() != status.state()) {
-        subscribers.send(protobuf::master::event::createTaskUpdated(
-            *task, status.state()));
+      if (task->state() != status.state()) {
+        sendSubscribersUpdate = true;
       }
 
       task->set_state(status.state());
@@ -7567,6 +7614,11 @@ void Master::updateTask(Task* task, const StatusUpdate& update)
   // killed by OOM killer after 400 tasks have finished.
   // MESOS-1746.
   task->mutable_statuses(task->statuses_size() - 1)->clear_data();
+
+  if (sendSubscribersUpdate && !subscribers.subscribed.empty()) {
+    subscribers.send(protobuf::master::event::createTaskUpdated(
+        *task, task->state(), status));
+  }
 
   LOG(INFO) << "Updating the state of task " << task->task_id()
             << " of framework " << task->framework_id()
