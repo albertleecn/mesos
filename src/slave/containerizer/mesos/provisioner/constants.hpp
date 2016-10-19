@@ -12,43 +12,23 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
-// limitations under the License
+// limitations under the License.
 
-#include <string>
-
-#include <stout/os.hpp>
-
-#include "tests/active_user_test_helper.hpp"
-
-using std::string;
+#ifndef __MESOS_PROVISIONER_CONSTANTS_HPP__
+#define __MESOS_PROVISIONER_CONSTANTS_HPP__
 
 namespace mesos {
 namespace internal {
-namespace tests {
+namespace slave {
 
-const char ActiveUserTestHelper::NAME[] = "ActiveUser";
+// Provisioner backends.
+constexpr char AUFS_BACKEND[] = "aufs";
+constexpr char BIND_BACKEND[] = "bind";
+constexpr char COPY_BACKEND[] = "copy";
+constexpr char OVERLAY_BACKEND[] = "overlay";
 
-
-ActiveUserTestHelper::Flags::Flags()
-{
-  add(&Flags::user,
-      "user",
-      "The expected user name.");
-}
-
-
-// This test helper returns 0 if the current username equals the
-// expected username. Returns 1 otherwise.
-int ActiveUserTestHelper::execute()
-{
-  Result<string> user = os::user();
-  if (user.isSome() && user.get() == flags.user) {
-    return 0;
-  }
-
-  return 1;
-}
-
-} // namespace tests {
+} // namespace slave {
 } // namespace internal {
 } // namespace mesos {
+
+#endif  // __MESOS_PROVISIONER_CONSTANTS_HPP__
