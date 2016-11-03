@@ -14,17 +14,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# TODO(alexr): Enable this on Windows once it is supported.
+if (NOT WIN32)
 
-# MESOS HEALTH SOURCE.
-######################
-set(HEALTH_EXECUTABLE_SRC
-  ${HEALTH_EXECUTABLE_SRC}
-  main.cpp
+# THE MESOS TCP CONNECT SOURCE.
+###############################
+set(MESOS_TCP_CONNECT_SRC
+  ${MESOS_TCP_CONNECT_SRC}
+  tcp_connect.cpp
   )
 
-# INCLUDE DIRECTIVES FOR MESOS HEALTH CHECK EXECUTABLE (generates, e.g.,
+# INCLUDE DIRECTIVES FOR MESOS TCP CONNECT EXECUTABLE (generates, e.g.,
 # -I/path/to/thing on Linux).
-########################################################################
+#######################################################################
 include_directories(${AGENT_INCLUDE_DIRS})
 
 # LINKING LIBRARIES BY DIRECTORY (might generate, e.g., -L/path/to/thing on
@@ -32,15 +34,16 @@ include_directories(${AGENT_INCLUDE_DIRS})
 ###########################################################################
 link_directories(${AGENT_LIB_DIRS})
 
-# THE MESOS HELATH CHECK EXECUTABLE.
-####################################
-add_executable(${MESOS_HEALTH_CHECK} ${HEALTH_EXECUTABLE_SRC})
+# THE MESOS TCP CONNECT EXECUTABLE.
+###################################
+add_executable(${MESOS_TCP_CONNECT} ${MESOS_TCP_CONNECT_SRC})
 
 # ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
 ######################################################
-target_link_libraries(${MESOS_HEALTH_CHECK} ${AGENT_LIBS} ${MESOS_TARGET})
-
+target_link_libraries(${MESOS_TCP_CONNECT} ${AGENT_LIBS} ${MESOS_TARGET})
 
 # ADD BINARY DEPENDENCIES (tells CMake what to compile/build first).
 ####################################################################
-add_dependencies(${MESOS_HEALTH_CHECK} ${MESOS_TARGET})
+add_dependencies(${MESOS_TCP_CONNECT} ${MESOS_TARGET})
+
+endif (NOT WIN32)
