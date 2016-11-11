@@ -17,6 +17,7 @@
 #include <list>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -198,6 +199,64 @@ TEST_F(MesosContainerizerTest, Destroy)
 }
 
 
+// This test verifies that ContainerID is properly set in the
+// ContainerStatus returned from 'status()' method.
+TEST_F(MesosContainerizerTest, StatusWithContainerID)
+{
+  slave::Flags flags = CreateSlaveFlags();
+  flags.launcher = "posix";
+  flags.isolation = "posix/cpu";
+
+  Fetcher fetcher;
+
+  Try<MesosContainerizer*> create = MesosContainerizer::create(
+      flags,
+      true,
+      &fetcher);
+
+  ASSERT_SOME(create);
+
+  Owned<MesosContainerizer> containerizer(create.get());
+
+  SlaveState state;
+  state.id = SlaveID();
+
+  AWAIT_READY(containerizer->recover(state));
+
+  ContainerID containerId;
+  containerId.set_value(UUID::random().toString());
+
+  Try<string> directory = environment->mkdtemp();
+  ASSERT_SOME(directory);
+
+  Future<bool> launch = containerizer->launch(
+      containerId,
+      None(),
+      createExecutorInfo("executor", "sleep 1000", "cpus:1"),
+      directory.get(),
+      None(),
+      SlaveID(),
+      map<string, string>(),
+      true); // TODO(benh): Ever want to test not checkpointing?
+
+  AWAIT_ASSERT_TRUE(launch);
+
+  Future<ContainerStatus> status = containerizer->status(containerId);
+  AWAIT_READY(status);
+
+  EXPECT_EQ(containerId, status->container_id());
+
+  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+
+  containerizer->destroy(containerId);
+
+  AWAIT_READY(wait);
+  ASSERT_SOME(wait.get());
+  ASSERT_TRUE(wait.get()->has_status());
+  EXPECT_WTERMSIG_EQ(SIGKILL, wait.get()->status());
+}
+
+
 class MesosContainerizerIsolatorPreparationTest : public MesosTest
 {
 public:
@@ -221,18 +280,22 @@ public:
     slave::Flags flags = CreateSlaveFlags();
     flags.launcher = "posix";
 
-    Try<Launcher*> launcher = PosixLauncher::create(flags);
-    if (launcher.isError()) {
-      return Error(launcher.error());
+    Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+    if (launcher_.isError()) {
+      return Error(launcher_.error());
     }
+
+    Owned<Launcher> launcher(launcher_.get());
 
     // Create and initialize a new container logger.
-    Try<ContainerLogger*> logger =
+    Try<ContainerLogger*> logger_ =
       ContainerLogger::create(flags.container_logger);
 
-    if (logger.isError()) {
-      return Error("Failed to create container logger: " + logger.error());
+    if (logger_.isError()) {
+      return Error("Failed to create container logger: " + logger_.error());
     }
+
+    Owned<ContainerLogger> logger(logger_.get());
 
     Try<Owned<Provisioner>> provisioner = Provisioner::create(flags);
     if (provisioner.isError()) {
@@ -243,8 +306,8 @@ public:
         flags,
         false,
         fetcher,
-        Owned<ContainerLogger>(logger.get()),
-        Owned<Launcher>(launcher.get()),
+        std::move(logger),
+        std::move(launcher),
         provisioner->share(),
         isolators);
   }
@@ -705,15 +768,19 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher = PosixLauncher::create(flags);
-  ASSERT_SOME(launcher);
+  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  ASSERT_SOME(launcher_);
+
+  Owned<Launcher> launcher(launcher_.get());
 
   Fetcher fetcher;
 
-  Try<ContainerLogger*> logger =
+  Try<ContainerLogger*> logger_ =
     ContainerLogger::create(flags.container_logger);
 
-  ASSERT_SOME(logger);
+  ASSERT_SOME(logger_);
+
+  Owned<ContainerLogger> logger(logger_.get());
 
   Try<Owned<Provisioner>> provisioner = Provisioner::create(flags);
   ASSERT_SOME(provisioner);
@@ -722,8 +789,8 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhileFetching)
       flags,
       true,
       &fetcher,
-      Owned<ContainerLogger>(logger.get()),
-      Owned<Launcher>(launcher.get()),
+      std::move(logger),
+      std::move(launcher),
       provisioner->share(),
       vector<Owned<Isolator>>());
 
@@ -774,8 +841,10 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
   slave::Flags flags = CreateSlaveFlags();
   flags.launcher = "posix";
 
-  Try<Launcher*> launcher = PosixLauncher::create(flags);
-  ASSERT_SOME(launcher);
+  Try<Launcher*> launcher_ = PosixLauncher::create(flags);
+  ASSERT_SOME(launcher_);
+
+  Owned<Launcher> launcher(launcher_.get());
 
   MockIsolator* isolator = new MockIsolator();
 
@@ -789,10 +858,12 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
 
   Fetcher fetcher;
 
-  Try<ContainerLogger*> logger =
+  Try<ContainerLogger*> logger_ =
     ContainerLogger::create(flags.container_logger);
 
-  ASSERT_SOME(logger);
+  ASSERT_SOME(logger_);
+
+  Owned<ContainerLogger> logger(logger_.get());
 
   Try<Owned<Provisioner>> provisioner = Provisioner::create(flags);
   ASSERT_SOME(provisioner);
@@ -801,8 +872,8 @@ TEST_F(MesosContainerizerDestroyTest, DestroyWhilePreparing)
       flags,
       true,
       &fetcher,
-      Owned<ContainerLogger>(logger.get()),
-      Owned<Launcher>(launcher.get()),
+      std::move(logger),
+      std::move(launcher),
       provisioner->share(),
       {Owned<Isolator>(isolator)});
 
@@ -903,7 +974,7 @@ TEST_F(MesosContainerizerProvisionerTest, ProvisionFailed)
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
-  TestLauncher* launcher = new TestLauncher(Owned<Launcher>(launcher_.get()));
+  Owned<Launcher> launcher(new TestLauncher(Owned<Launcher>(launcher_.get())));
 
   MockProvisioner* provisioner = new MockProvisioner();
 
@@ -929,7 +1000,7 @@ TEST_F(MesosContainerizerProvisionerTest, ProvisionFailed)
       true,
       &fetcher,
       Owned<ContainerLogger>(logger.get()),
-      Owned<Launcher>(launcher),
+      std::move(launcher),
       Shared<Provisioner>(provisioner),
       vector<Owned<Isolator>>());
 
@@ -998,7 +1069,7 @@ TEST_F(MesosContainerizerProvisionerTest, DestroyWhileProvisioning)
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
-  TestLauncher* launcher = new TestLauncher(Owned<Launcher>(launcher_.get()));
+  Owned<Launcher> launcher(new TestLauncher(Owned<Launcher>(launcher_.get())));
 
   MockProvisioner* provisioner = new MockProvisioner();
 
@@ -1024,7 +1095,7 @@ TEST_F(MesosContainerizerProvisionerTest, DestroyWhileProvisioning)
       true,
       &fetcher,
       Owned<ContainerLogger>(logger.get()),
-      Owned<Launcher>(launcher),
+      std::move(launcher),
       Shared<Provisioner>(provisioner),
       vector<Owned<Isolator>>());
 
@@ -1095,7 +1166,7 @@ TEST_F(MesosContainerizerProvisionerTest, IsolatorCleanupBeforePrepare)
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
-  TestLauncher* launcher = new TestLauncher(Owned<Launcher>(launcher_.get()));
+  Owned<Launcher> launcher(new TestLauncher(Owned<Launcher>(launcher_.get())));
 
   MockProvisioner* provisioner = new MockProvisioner();
 
@@ -1126,7 +1197,7 @@ TEST_F(MesosContainerizerProvisionerTest, IsolatorCleanupBeforePrepare)
       true,
       &fetcher,
       Owned<ContainerLogger>(logger.get()),
-      Owned<Launcher>(launcher),
+      std::move(launcher),
       Shared<Provisioner>(provisioner),
       {Owned<Isolator>(isolator)});
 
@@ -1206,7 +1277,10 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
   Try<Launcher*> launcher_ = PosixLauncher::create(flags);
   ASSERT_SOME(launcher_);
 
-  TestLauncher* launcher = new TestLauncher(Owned<Launcher>(launcher_.get()));
+  TestLauncher* testLauncher =
+    new TestLauncher(Owned<Launcher>(launcher_.get()));
+
+  Owned<Launcher> launcher(testLauncher);
 
   Fetcher fetcher;
 
@@ -1223,7 +1297,7 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
       true,
       &fetcher,
       Owned<ContainerLogger>(logger.get()),
-      Owned<Launcher>(launcher),
+      std::move(launcher),
       provisioner->share(),
       vector<Owned<Isolator>>());
 
@@ -1238,8 +1312,8 @@ TEST_F(MesosContainerizerDestroyTest, LauncherDestroyFailure)
 
   // Destroy the container using the PosixLauncher but return a failed
   // future to the containerizer.
-  EXPECT_CALL(*launcher, destroy(_))
-    .WillOnce(DoAll(InvokeDestroyAndWait(launcher),
+  EXPECT_CALL(*testLauncher, destroy(_))
+    .WillOnce(DoAll(InvokeDestroyAndWait(testLauncher),
                     Return(Failure("Destroy failure"))));
 
   Future<bool> launch = containerizer.launch(
