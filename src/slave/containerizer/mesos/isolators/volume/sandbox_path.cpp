@@ -36,6 +36,7 @@ using process::Failure;
 using process::Future;
 using process::Owned;
 
+using mesos::slave::ContainerClass;
 using mesos::slave::ContainerConfig;
 using mesos::slave::ContainerLaunchInfo;
 using mesos::slave::ContainerState;
@@ -120,17 +121,17 @@ Future<Option<ContainerLaunchInfo>> VolumeSandboxPathIsolatorProcess::prepare(
 
   ContainerLaunchInfo launchInfo;
 
-#ifdef __linux__
-  if (bindMountSupported) {
-    launchInfo.set_namespaces(CLONE_NEWNS);
-  }
-#endif // __linux__
-
   foreach (const Volume& volume, containerInfo.volumes()) {
     if (!volume.has_source() ||
         !volume.source().has_type() ||
         volume.source().type() != Volume::Source::SANDBOX_PATH) {
       continue;
+    }
+
+    if (containerConfig.has_container_class() &&
+        containerConfig.container_class() == ContainerClass::DEBUG) {
+      return Failure(
+          "SANDBOX_PATH volume is not supported for DEBUG containers");
     }
 
     if (!volume.source().has_sandbox_path()) {

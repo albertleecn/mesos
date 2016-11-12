@@ -51,8 +51,8 @@ public:
       const process::Subprocess::IO& err,
       const flags::FlagsBase* flags,
       const Option<std::map<std::string, std::string>>& environment,
-      const Option<int>& namespaces,
-      std::vector<process::Subprocess::ParentHook> parentHooks);
+      const Option<int>& enterNamespaces,
+      const Option<int>& cloneNamespaces);
 
   virtual process::Future<Nothing> destroy(const ContainerID& containerId);
 

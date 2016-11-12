@@ -23,6 +23,18 @@ import "mesos/appc/spec.proto";
 import "mesos/docker/v1.proto";
 
 /**
+ * Some containers are launched in conjunction with a specific
+ * `ContainerClass`. These classes allow an isolator to customize
+ * their functionality based on the class of container being isolated.
+ * The classes we currently define are below.
+ */
+enum ContainerClass {
+  DEFAULT = 1;
+  DEBUG = 2;
+}
+
+
+/**
  * Information when an executor is impacted by a resource limitation
  * and should be terminated. Intended to support resources like memory
  * where the Linux kernel may invoke the OOM killer, killing some/all
@@ -105,6 +117,10 @@ message ContainerConfig {
   // Resources associated with the container during launch.
   repeated Resource resources = 13;
 
+  // The class of container being launched. Used by isolators to
+  // perform different operations depending on the class.
+  optional ContainerClass container_class = 14;
+
   // The work directory for the container in the host filesystem.
   required string directory = 3;
 
@@ -151,9 +167,13 @@ message ContainerLaunchInfo {
   // since 1.0.1.
   optional string rootfs = 3 [deprecated = true]; // Since 1.0.1.
 
-  // (Linux only) The namespaces required for the container.
+  // (Linux only) The namespaces a nested container
+  // should enter in its parent before cloning.
+  optional uint32 enter_namespaces = 9 [default = 0];
+
+  // (Linux only) The namespaces that should be cloned for the container.
   // The namespaces are created while launching the executor.
-  optional uint32 namespaces = 4 [default = 0];
+  optional uint32 clone_namespaces = 4 [default = 0];
 
   // If specified, it'll become the launch command for the custom
   // executor, or the launch command for the user task in the case of

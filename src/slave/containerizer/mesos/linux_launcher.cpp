@@ -79,8 +79,8 @@ public:
       const process::Subprocess::IO& err,
       const flags::FlagsBase* flags,
       const Option<std::map<std::string, std::string>>& environment,
-      const Option<int>& namespaces,
-      std::vector<process::Subprocess::ParentHook> parentHooks);
+      const Option<int>& enterNamespaces,
+      const Option<int>& cloneNamespaces);
 
   virtual process::Future<Nothing> destroy(const ContainerID& containerId);
 
@@ -211,8 +211,8 @@ Try<pid_t> LinuxLauncher::fork(
     const process::Subprocess::IO& err,
     const flags::FlagsBase* flags,
     const Option<map<string, string>>& environment,
-    const Option<int>& namespaces,
-    vector<Subprocess::ParentHook> parentHooks)
+    const Option<int>& enterNamespaces,
+    const Option<int>& cloneNamespaces)
 {
   return dispatch(
       process.get(),
@@ -225,8 +225,8 @@ Try<pid_t> LinuxLauncher::fork(
       err,
       flags,
       environment,
-      namespaces,
-      parentHooks).get();
+      enterNamespaces,
+      cloneNamespaces).get();
 }
 
 
@@ -388,8 +388,8 @@ Try<pid_t> LinuxLauncherProcess::fork(
     const process::Subprocess::IO& err,
     const flags::FlagsBase* flags,
     const Option<map<string, string>>& environment,
-    const Option<int>& namespaces,
-    vector<Subprocess::ParentHook> parentHooks)
+    const Option<int>& enterNamespaces,
+    const Option<int>& cloneNamespaces)
 {
   // Make sure this container (nested or not) is unique.
   if (containers.contains(containerId)) {
@@ -416,7 +416,15 @@ Try<pid_t> LinuxLauncherProcess::fork(
     target = container->pid.get();
   }
 
-  int cloneFlags = namespaces.isSome() ? namespaces.get() : 0;
+  // Ensure we didn't pass `enterNamespaces`
+  // if we aren't forking a nested contiainer.
+  if (!containerId.has_parent() && enterNamespaces.isSome()) {
+    return Error("Cannot enter parent namespaces for non-nested container");
+  }
+
+  int enterFlags = enterNamespaces.isSome() ? enterNamespaces.get() : 0;
+
+  int cloneFlags = cloneNamespaces.isSome() ? cloneNamespaces.get() : 0;
 
   LOG(INFO) << "Launching " << (target.isSome() ? "nested " : "")
             << "container " << containerId << " and cloning with namespaces "
@@ -434,6 +442,8 @@ Try<pid_t> LinuxLauncherProcess::fork(
 
   // Hook to extend the life of the child (and all of its
   // descendants) using a systemd slice.
+  vector<Subprocess::ParentHook> parentHooks;
+
   if (systemdHierarchy.isSome()) {
     parentHooks.emplace_back(Subprocess::ParentHook([](pid_t child) {
       return systemd::mesos::extendLifetime(child);
@@ -456,14 +466,11 @@ Try<pid_t> LinuxLauncherProcess::fork(
       err,
       flags,
       environment,
-      [target, cloneFlags](const lambda::function<int()>& child) {
+      [target, enterFlags, cloneFlags](const lambda::function<int()>& child) {
         if (target.isSome()) {
-          // TODO(benh): Factor out this set of namespaces that we
-          // enter and give a healthy comment for why these are the
-          // only ones we enter.
           Try<pid_t> pid = ns::clone(
               target.get(),
-              CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWPID,
+              enterFlags,
               child,
               cloneFlags);
           if (pid.isError()) {

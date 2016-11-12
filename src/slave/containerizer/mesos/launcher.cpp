@@ -87,11 +87,15 @@ Try<pid_t> PosixLauncher::fork(
     const Subprocess::IO& err,
     const flags::FlagsBase* flags,
     const Option<map<string, string>>& environment,
-    const Option<int>& namespaces,
-    vector<process::Subprocess::ParentHook> parentHooks)
+    const Option<int>& enterNamespaces,
+    const Option<int>& cloneNamespaces)
 {
-  if (namespaces.isSome() && namespaces.get() != 0) {
-    return Error("Posix launcher does not support namespaces");
+  if (enterNamespaces.isSome() && enterNamespaces.get() != 0) {
+    return Error("Posix launcher does not support entering namespaces");
+  }
+
+  if (cloneNamespaces.isSome() && cloneNamespaces.get() != 0) {
+    return Error("Posix launcher does not support cloning namespaces");
   }
 
   if (pids.contains(containerId)) {
@@ -101,6 +105,8 @@ Try<pid_t> PosixLauncher::fork(
 
   // If we are on systemd, then extend the life of the child. Any
   // grandchildren's lives will also be extended.
+  vector<process::Subprocess::ParentHook> parentHooks;
+
 #ifdef __linux__
   if (systemd::enabled()) {
     parentHooks.emplace_back(Subprocess::ParentHook(
