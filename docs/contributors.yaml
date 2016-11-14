@@ -299,6 +299,15 @@
   jira_user: nfnt
   reviewboard_user: nfnt
 
+- name: Jason Lai
+  affiliations:
+    - {organization: Uber}
+  emails:
+    - jason@jasonlai.net
+    - jlai@uber.com
+  jira_user: jasonlai
+  reviewboard_user: jasonlai
+
 - name: Jay Guo
   affiliations:
     - {organization: IBM}
@@ -514,6 +523,15 @@
     - ronald.petty@minimumdistance.com
   jira_user: ronald.petty
   reviewboard_user: ronald.petty
+
+- name: Stephen Hankinson
+  affiliations:
+    - {organization: Affinio Inc.}
+  emails:
+    - stephen@affin.io
+    - stephen@affinio.com
+  jira_user: shankinson
+  reviewboard_user: shankinson
 
 - name: Till Toenshoff
   affiliations:
