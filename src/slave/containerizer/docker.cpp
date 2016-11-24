@@ -819,6 +819,16 @@ Future<ResourceStatistics> DockerContainerizer::usage(
 }
 
 
+Future<ContainerStatus> DockerContainerizer::status(
+    const ContainerID& containerId)
+{
+  return dispatch(
+      process.get(),
+      &DockerContainerizerProcess::status,
+      containerId);
+}
+
+
 Future<Option<ContainerTermination>> DockerContainerizer::wait(
     const ContainerID& containerId)
 {
@@ -1279,7 +1289,10 @@ Future<Docker::Container> DockerContainerizerProcess::launchExecutorContainer(
   Container* container = containers_.at(containerId);
   container->state = Container::RUNNING;
 
-  return logger->prepare(container->executor, container->directory)
+  return logger->prepare(
+      container->executor,
+      container->directory,
+      container->user)
     .then(defer(
         self(),
         [=](const ContainerLogger::SubprocessInfo& subprocessInfo)
@@ -1388,7 +1401,10 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
 
   return allocateGpus
     .then(defer(self(), [=]() {
-      return logger->prepare(container->executor, container->directory);
+      return logger->prepare(
+          container->executor,
+          container->directory,
+          container->user);
     }))
     .then(defer(
         self(),
@@ -1935,6 +1951,15 @@ Try<ResourceStatistics> DockerContainerizerProcess::cgroupsStatistics(
 
   return result;
 #endif // __linux__
+}
+
+
+Future<ContainerStatus> DockerContainerizerProcess::status(
+    const ContainerID& containerId)
+{
+  ContainerStatus result;
+  result.mutable_container_id()->CopyFrom(containerId);
+  return result;
 }
 
 
