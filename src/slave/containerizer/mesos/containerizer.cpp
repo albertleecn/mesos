@@ -18,7 +18,6 @@
 
 #include <mesos/module/isolator.hpp>
 
-#include <mesos/slave/container_logger.hpp>
 #include <mesos/slave/isolator.hpp>
 
 #include <process/collect.hpp>
@@ -56,11 +55,13 @@
 #include "slave/containerizer/fetcher.hpp"
 
 #include "slave/containerizer/mesos/constants.hpp"
+#include "slave/containerizer/mesos/containerizer.hpp"
 #include "slave/containerizer/mesos/launch.hpp"
 #include "slave/containerizer/mesos/launcher.hpp"
-#include "slave/containerizer/mesos/containerizer.hpp"
 #include "slave/containerizer/mesos/paths.hpp"
 #include "slave/containerizer/mesos/utils.hpp"
+
+#include "slave/containerizer/mesos/io/switchboard.hpp"
 
 #include "slave/containerizer/mesos/isolators/filesystem/posix.hpp"
 #include "slave/containerizer/mesos/isolators/posix.hpp"
@@ -115,6 +116,8 @@ using std::set;
 using std::string;
 using std::vector;
 
+using mesos::internal::slave::IOSwitchboard;
+
 using mesos::internal::slave::state::SlaveState;
 using mesos::internal::slave::state::FrameworkState;
 using mesos::internal::slave::state::ExecutorState;
@@ -126,7 +129,6 @@ using mesos::slave::ContainerClass;
 using mesos::slave::ContainerConfig;
 using mesos::slave::ContainerLaunchInfo;
 using mesos::slave::ContainerLimitation;
-using mesos::slave::ContainerLogger;
 using mesos::slave::ContainerState;
 using mesos::slave::ContainerTermination;
 using mesos::slave::Isolator;
@@ -204,12 +206,13 @@ Try<MesosContainerizer*> MesosContainerizer::create(
 
   LOG(INFO) << "Using isolation: " << flags_.isolation;
 
-  // Create the container logger for the MesosContainerizer.
-  Try<ContainerLogger*> logger =
-    ContainerLogger::create(flags_.container_logger);
+  // Create the container io switchboard for the MesosContainerizer.
+  Try<Owned<IOSwitchboard>> ioSwitchboard =
+    IOSwitchboard::create(flags_, local);
 
-  if (logger.isError()) {
-    return Error("Failed to create container logger: " + logger.error());
+  if (ioSwitchboard.isError()) {
+    return Error("Failed to create container io switchboard:"
+                 " " + ioSwitchboard.error());
   }
 
   // Create the launcher for the MesosContainerizer.
@@ -389,9 +392,8 @@ Try<MesosContainerizer*> MesosContainerizer::create(
 
   return new MesosContainerizer(
       flags_,
-      local,
       fetcher,
-      Owned<ContainerLogger>(logger.get()),
+      ioSwitchboard.get(),
       Owned<Launcher>(launcher.get()),
       provisioner,
       isolators);
@@ -400,17 +402,15 @@ Try<MesosContainerizer*> MesosContainerizer::create(
 
 MesosContainerizer::MesosContainerizer(
     const Flags& flags,
-    bool local,
     Fetcher* fetcher,
-    const Owned<ContainerLogger>& logger,
+    const Owned<IOSwitchboard>& ioSwitchboard,
     const Owned<Launcher>& launcher,
     const Shared<Provisioner>& provisioner,
     const vector<Owned<Isolator>>& isolators)
   : process(new MesosContainerizerProcess(
       flags,
-      local,
       fetcher,
-      logger,
+      ioSwitchboard,
       launcher,
       provisioner,
       isolators))
@@ -1374,8 +1374,8 @@ Future<bool> MesosContainerizerProcess::_launch(
     environment.values[name] = value;
   }
 
-  // Determine the 'ExecutorInfo' for the logger. If launching a
-  // top level executor container, use the 'ExecutorInfo' from
+  // Determine the 'ExecutorInfo' for the io switchboard. If launching
+  // a top level executor container, use the 'ExecutorInfo' from
   // 'ContainerConfig'. If launching a nested container, use the
   // 'ExecutorInfo' from its top level parent container.
   ExecutorInfo executorInfo;
@@ -1398,13 +1398,13 @@ Future<bool> MesosContainerizerProcess::_launch(
     user = container->config.user();
   }
 
-  return logger->prepare(
+  return ioSwitchboard->prepare(
       executorInfo,
       container->config.directory(),
       user)
     .then(defer(
         self(),
-        [=](const ContainerLogger::SubprocessInfo& subprocessInfo)
+        [=](const IOSwitchboard::SubprocessInfo& subprocessInfo)
           -> Future<bool> {
     if (!containers_.contains(containerId)) {
       return Failure("Container destroyed during preparing");
@@ -1564,11 +1564,9 @@ Future<bool> MesosContainerizerProcess::_launch(
         containerId,
         path::join(flags.launcher_dir, MESOS_CONTAINERIZER),
         argv,
-        Subprocess::FD(STDIN_FILENO),
-        (local ? Subprocess::FD(STDOUT_FILENO)
-               : Subprocess::IO(subprocessInfo.out)),
-        (local ? Subprocess::FD(STDERR_FILENO)
-               : Subprocess::IO(subprocessInfo.err)),
+        Subprocess::IO(subprocessInfo.in),
+        Subprocess::IO(subprocessInfo.out),
+        Subprocess::IO(subprocessInfo.err),
         &launchFlags,
         launchEnvironment,
         // 'enterNamespaces' will be ignored by PosixLauncher.
