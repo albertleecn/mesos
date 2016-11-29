@@ -523,6 +523,13 @@ private:
   private:
     JSON::Object _flags() const;
 
+    // Continuation for `/api` endpoint that handles non-streaming requests.
+    process::Future<process::http::Response> _api(
+        const agent::Call& call,
+        ContentType contentTye,
+        ContentType acceptType,
+        const Option<std::string>& principal) const;
+
     // Make continuation for `statistics` `static` as it might
     // execute when the invoking `Http` is already destructed.
     process::http::Response _statistics(
@@ -637,6 +644,12 @@ private:
         const mesos::agent::Call& call,
         const Option<std::string>& principal,
         ContentType contentType) const;
+
+    process::Future<process::http::Response> attachContainerOutput(
+        const mesos::agent::Call& call,
+        ContentType contentType,
+        ContentType acceptType,
+        const Option<std::string>& principal) const;
 
     Slave* slave;
 
