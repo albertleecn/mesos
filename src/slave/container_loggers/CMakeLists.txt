@@ -14,30 +14,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO(josephw): Enable this on Windows after sorting out the dependencies.
+# Logrotate container logger sources.
+#####################################
+set(LOGROTATE_CONTAINER_LOGGER_SRC lib_logrotate.cpp)
+set(MESOS_LOGROTATE_LOGGER_SRC logrotate.cpp)
+
+# Build the container logger module.
+####################################
+# NOTE: Modules are not supported on Windows.
 if (NOT WIN32)
-
-set(MESOS_LOG_TARGET mesos-log
-  CACHE STRING "Utility used to interact with the replicated log.")
-
-# THE MESOS-LOG SOURCE.
-###########################
-set(MESOS_LOG_SRC
-  ${MESOS_LOG_SRC}
-  main.cpp
-  )
-
-# THE MESOS LOG.
-###########################################
-add_executable(${MESOS_LOG_TARGET} ${MESOS_LOG_SRC})
+  add_library(${LOGROTATE_CONTAINER_LOGGER_TARGET} SHARED ${LOGROTATE_CONTAINER_LOGGER_SRC})
+  add_executable(${MESOS_LOGROTATE_LOGGER_TARGET} ${MESOS_LOGROTATE_LOGGER_SRC})
+endif (NOT WIN32)
 
 # ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
 ######################################################
-target_link_libraries(${MESOS_LOG_TARGET} ${MESOS_LIBS_TARGET})
+if (NOT WIN32)
+  target_link_libraries(${LOGROTATE_CONTAINER_LOGGER_TARGET} ${MESOS_LIBS_TARGET})
+  target_link_libraries(${MESOS_LOGROTATE_LOGGER_TARGET} ${MESOS_LIBS_TARGET})
+endif (NOT WIN32)
 
 # ADD BINARY DEPENDENCIES (tells CMake what to compile/build first).
 ####################################################################
-add_dependencies(${MESOS_TARGET} ${MESOS_LOG_TARGET})
-add_dependencies(${MESOS_LOG_TARGET} ${MESOS_LIBS_TARGET})
+if (NOT WIN32)
+  add_dependencies(${MESOS_TARGET} ${LOGROTATE_CONTAINER_LOGGER_TARGET})
 
+  add_dependencies(
+    ${LOGROTATE_CONTAINER_LOGGER_TARGET}
+    ${MESOS_LIBS_TARGET}
+    ${MESOS_LOGROTATE_LOGGER_TARGET}
+    )
+
+  add_dependencies(${MESOS_LOGROTATE_LOGGER_TARGET} ${MESOS_LIBS_TARGET})
 endif (NOT WIN32)

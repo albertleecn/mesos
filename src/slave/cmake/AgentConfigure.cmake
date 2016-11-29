@@ -21,11 +21,27 @@ if (NOT WIN32)
   find_package(Svn REQUIRED)
 endif (NOT WIN32)
 
+set(LOGROTATE_CONTAINER_LOGGER_TARGET logrotate_container_logger
+  CACHE STRING "Library containing the logrotate container logger."
+  )
+
+set(MESOS_LOGROTATE_LOGGER_TARGET mesos-logrotate-logger
+  CACHE STRING "Executable used by the logrotate container logger."
+  )
+
+set(QOS_CONTROLLER_TARGET load_qos_controller
+  CACHE STRING "Library containing the load qos controller."
+  )
+
+set(RESOURCE_ESTIMATOR_TARGET fixed_resource_estimator
+  CACHE STRING "Library containing the fixed resource estimator."
+  )
+
 # Define process library dependencies. Tells the process library build targets
 # download/configure/build all third-party libraries before attempting to build.
 ################################################################################
-set(MASTER_DEPENDENCIES
-  ${MASTER_DEPENDENCIES}
+set(AGENT_DEPENDENCIES
+  ${AGENT_DEPENDENCIES}
   ${PROCESS_DEPENDENCIES}
   ${PROCESS_TARGET}
   ${ZOOKEEPER_TARGET}
@@ -37,8 +53,8 @@ set(MASTER_DEPENDENCIES
 # Define third-party include directories. Tells compiler toolchain where to get
 # headers for our third party libs (e.g., -I/path/to/glog on Linux).
 ###############################################################################
-set(MASTER_INCLUDE_DIRS
-  ${MASTER_INCLUDE_DIRS}
+set(AGENT_INCLUDE_DIRS
+  ${AGENT_INCLUDE_DIRS}
   ${MESOS_PUBLIC_INCLUDE_DIR}
   # Contains (e.g.) compiled *.pb.h files.
   ${MESOS_BIN_INCLUDE_DIR}
@@ -56,8 +72,8 @@ set(MASTER_INCLUDE_DIRS
 # toolchain where to find our third party libs (e.g., -L/path/to/glog on
 # Linux).
 ########################################################################
-set(MASTER_LIB_DIRS
-  ${MASTER_LIB_DIRS}
+set(AGENT_LIB_DIRS
+  ${AGENT_LIB_DIRS}
   ${PROCESS_LIB_DIRS}
   ${ZOOKEEPER_LIB_DIR}
   )
@@ -65,25 +81,25 @@ set(MASTER_LIB_DIRS
 # Define third-party libs. Used to generate flags that the linker uses to
 # include our third-party libs (e.g., -lglog on Linux).
 #########################################################################
-set(MASTER_LIBS
-  ${MASTER_LIBS}
+set(AGENT_LIBS
+  ${AGENT_LIBS}
   ${PROCESS_LIBS}
   ${ZOOKEEPER_LFLAG}
   ${PROCESS_TARGET}
   )
 
 if (NOT WIN32)
-  set(MASTER_LIBS
-    ${MASTER_LIBS}
+  set(AGENT_LIBS
+    ${AGENT_LIBS}
     ${LEVELDB_LFLAG}
     ${SASL_LFLAG}
     )
 endif (NOT WIN32)
 
 if (NOT ENABLE_LIBEVENT)
-  set(MASTER_LIBS ${MASTER_LIBS} ${LIBEV_LFLAG})
+  set(AGENT_LIBS ${AGENT_LIBS} ${LIBEV_LFLAG})
 elseif (ENABLE_LIBEVENT)
-  set(MASTER_LIBS ${MASTER_LIBS} ${LIBEVENT_LFLAG})
+  set(AGENT_LIBS ${AGENT_LIBS} ${LIBEVENT_LFLAG})
 endif (NOT ENABLE_LIBEVENT)
 
 
@@ -91,39 +107,39 @@ endif (NOT ENABLE_LIBEVENT)
 
 
 set(
-  PROCESS_MASTER_TARGET master
-  CACHE STRING "Master target")
+  PROCESS_AGENT_TARGET slave
+  CACHE STRING "Agent target")
 
 
-# DEFINE PROCESS MASTER LIBRARY DEPENDENCIES. Tells the process library build
+# DEFINE PROCESS AGENT LIBRARY DEPENDENCIES. Tells the process library build
 # tests target download/configure/build all third-party libraries before
 # attempting to build.
 ###########################################################################
-set(PROCESS_MASTER_DEPENDENCIES
-  ${PROCESS_MASTER_DEPENDENCIES}
+set(PROCESS_AGENT_DEPENDENCIES
+  ${PROCESS_AGENT_DEPENDENCIES}
   ${PROCESS_DEPENDENCIES}
   )
 
 if (WIN32)
-  set(PROCESS_MASTER_DEPENDENCIES
-    ${PROCESS_MASTER_DEPENDENCIES}
+  set(PROCESS_AGENT_DEPENDENCIES
+    ${PROCESS_AGENT_DEPENDENCIES}
     )
 endif (WIN32)
 
 # DEFINE THIRD-PARTY INCLUDE DIRECTORIES. Tells compiler toolchain where to get
 # headers for our third party libs (e.g., -I/path/to/glog on Linux).
 ###############################################################################
-set(PROCESS_MASTER_INCLUDE_DIRS
-  ${PROCESS_MASTER_INCLUDE_DIRS}
-  ${MASTER_INCLUDE_DIRS}
+set(PROCESS_AGENT_INCLUDE_DIRS
+  ${PROCESS_AGENT_INCLUDE_DIRS}
+  ${AGENT_INCLUDE_DIRS}
   ${PROTOBUF_INCLUDE_DIR}
   src
   )
 
 if (WIN32)
-  set(PROCESS_MASTER_INCLUDE_DIRS
-    ${PROCESS_MASTER_INCLUDE_DIRS}
-    ${MASTER_INCLUDE_DIRS}
+  set(PROCESS_AGENT_INCLUDE_DIRS
+    ${PROCESS_AGENT_INCLUDE_DIRS}
+    ${AGENT_INCLUDE_DIRS}
   )
 endif (WIN32)
 
@@ -131,7 +147,7 @@ endif (WIN32)
 # toolchain where to find our third party libs (e.g., -L/path/to/glog on
 # Linux).
 ########################################################################
-set(PROCESS_MASTER_LIB_DIRS
-  ${PROCESS_MASTER_LIB_DIRS}
-  ${MASTER_LIB_DIRS}
+set(PROCESS_AGENT_LIB_DIRS
+  ${PROCESS_AGENT_LIB_DIRS}
+  ${AGENT_LIB_DIRS}
   )
