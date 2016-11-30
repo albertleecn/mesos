@@ -66,8 +66,10 @@ using std::vector;
 using process::http::Request;
 using process::http::Response;
 
-using process::network::Address;
-using process::network::Socket;
+using process::network::inet::Address;
+using process::network::inet::Socket;
+
+using process::network::internal::SocketImpl;
 
 namespace process {
 namespace http {
@@ -1022,7 +1024,7 @@ Future<Response> convert(const Response& pipeResponse)
 class ConnectionProcess : public Process<ConnectionProcess>
 {
 public:
-  ConnectionProcess(const Socket& _socket)
+  ConnectionProcess(const network::Socket& _socket)
     : ProcessBase(ID::generate("__http_connection__")),
       socket(_socket),
       sendChain(Nothing()),
@@ -1059,7 +1061,7 @@ public:
 
     // We must chain the calls to Socket::send as it
     // otherwise interleaves data across calls.
-    Socket socket_ = socket;
+    network::Socket socket_ = socket;
 
     sendChain = sendChain
       .then([socket_, request]() {
@@ -1082,9 +1084,8 @@ public:
 
   Future<Nothing> disconnect(const Option<string>& message = None())
   {
-    Try<Nothing> shutdown = socket.shutdown();
-
-    disconnection.set(Nothing());
+    Try<Nothing> shutdown = socket.shutdown(
+        network::Socket::Shutdown::READ_WRITE);
 
     // If a response is still streaming, we send EOF to
     // the decoder in order to fail the pipe reader.
@@ -1098,6 +1099,8 @@ public:
           message.isSome() ? message.get() : "Disconnected");
       pipeline.pop();
     }
+
+    disconnection.set(Nothing());
 
     return shutdown;
   }
@@ -1122,7 +1125,7 @@ protected:
   }
 
 private:
-  static Future<Nothing> _send(Socket socket, Pipe::Reader reader)
+  static Future<Nothing> _send(network::Socket socket, Pipe::Reader reader)
   {
     return reader.read()
       .then([socket, reader](const string& data) mutable -> Future<Nothing> {
@@ -1231,7 +1234,7 @@ private:
     read();
   }
 
-  Socket socket;
+  network::Socket socket;
   StreamingResponseDecoder decoder;
   Future<Nothing> sendChain;
   Promise<Nothing> disconnection;
@@ -1260,7 +1263,7 @@ struct Connection::Data
   // on within a different execution context. More generally,
   // we should be passing Process ownership to libprocess to
   // ensure all interaction with a Process occurs through a PID.
-  Data(const Socket& s)
+  Data(const network::Socket& s)
     : process(spawn(new internal::ConnectionProcess(s), true)) {}
 
   ~Data()
@@ -1277,7 +1280,7 @@ struct Connection::Data
 };
 
 
-Connection::Connection(const Socket& s)
+Connection::Connection(const network::Socket& s)
   : data(std::make_shared<Connection::Data>(s)) {}
 
 
@@ -1310,10 +1313,24 @@ Future<Nothing> Connection::disconnected()
 }
 
 
+Future<Connection> connect(const network::Address& address)
+{
+  Try<network::Socket> socket = network::Socket::create(address.family());
+  if (socket.isError()) {
+    return Failure("Failed to create socket: " + socket.error());
+  }
+
+  return socket->connect(address)
+    .then([socket]() {
+      return Connection(socket.get());
+    });
+}
+
+
 Future<Connection> connect(const URL& url)
 {
   // TODO(bmahler): Move address resolution into the URL class?
-  Address address;
+  Address address = Address::ANY_ANY();
 
   if (url.ip.isNone() && url.domain.isNone()) {
     return Failure("Expected URL.ip or URL.domain to be set");
@@ -1338,15 +1355,20 @@ Future<Connection> connect(const URL& url)
 
   address.port = url.port.get();
 
-  Try<Socket> socket = [&url]() -> Try<Socket> {
+  // TODO(benh): Reuse `connect(address)` once it supports SSL.
+  Try<network::Socket> socket = [&url]() -> Try<network::Socket> {
     // Default to 'http' if no scheme was specified.
     if (url.scheme.isNone() || url.scheme == string("http")) {
-      return Socket::create(Socket::POLL);
+      return network::Socket::create(
+          network::Address::Family::INET,
+          SocketImpl::Kind::POLL);
     }
 
     if (url.scheme == string("https")) {
 #ifdef USE_SSL_SOCKET
-      return Socket::create(Socket::SSL);
+      return network::Socket::create(
+          network::Address::Family::INET,
+          SocketImpl::Kind::SSL);
 #else
       return Error("'https' scheme requires SSL enabled");
 #endif

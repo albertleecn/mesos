@@ -30,6 +30,7 @@
 #include <process/future.hpp>
 #include <process/owned.hpp>
 #include <process/pid.hpp>
+#include <process/socket.hpp>
 
 #include <stout/error.hpp>
 #include <stout/hashmap.hpp>
@@ -49,12 +50,7 @@ namespace process {
 template <typename T>
 class Future;
 
-namespace network {
-class Socket;
-} // namespace network {
-
 namespace http {
-
 namespace authentication {
 
 class Authenticator;
@@ -451,7 +447,7 @@ struct Request
 
   // For server requests, this contains the address of the client.
   // Note that this may correspond to a proxy or load balancer address.
-  network::Address client;
+  Option<network::Address> client;
 
   // Clients can choose to provide the entire body at once
   // via BODY or can choose to stream the body over to the
@@ -854,6 +850,7 @@ public:
 
 private:
   Connection(const network::Socket& s);
+  friend Future<Connection> connect(const network::Address& address);
   friend Future<Connection> connect(const URL&);
 
   // Forward declaration.
@@ -861,6 +858,13 @@ private:
 
   std::shared_ptr<Data> data;
 };
+
+
+// TODO(benh): Currently we don't support SSL for this version of
+// connect. We should support this, perhaps with an enum or a bool and
+// then update the `connect(URL)` variant to just call this function
+// instead.
+Future<Connection> connect(const network::Address& address);
 
 
 Future<Connection> connect(const URL& url);

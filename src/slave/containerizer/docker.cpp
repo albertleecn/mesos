@@ -1128,48 +1128,6 @@ Future<bool> DockerContainerizerProcess::launch(
   Future<Nothing> f = Nothing();
 
   if (HookManager::hooksAvailable()) {
-    // TODO(tillt): `slavePreLaunchDockerEnvironmentDecorator` is
-    // deprecated, remove this entire block after Mesos 1.2's
-    // deprecation cycle ends.
-    f = HookManager::slavePreLaunchDockerEnvironmentDecorator(
-        taskInfo,
-        executorInfo,
-        container.get()->name(),
-        container.get()->directory,
-        flags.sandbox_directory,
-        container.get()->environment)
-      .then(defer(self(), [this, taskInfo, containerId](
-          const map<string, string>& environment) -> Future<Nothing> {
-        if (!containers_.contains(containerId)) {
-          return Failure("Container is already destroyed");
-        }
-
-        Container* container = containers_.at(containerId);
-
-        if (taskInfo.isSome()) {
-          // The built-in command executors explicitly support passing
-          // environment variables from a hook into a task.
-          container->taskEnvironment = environment;
-
-          // For dockerized command executors, the flags have already been
-          // serialized into the command, albeit without these environment
-          // variables. Append the last flag to the overridden command.
-          if (container->launchesExecutorContainer) {
-            container->command.add_arguments(
-                "--task_environment=" + string(jsonify(environment)));
-          }
-        } else {
-          // For custom executors, the environment variables from a hook
-          // are passed directly into the executor.  It is up to the custom
-          // executor whether individual tasks should inherit these variables.
-          foreachpair (const string& key, const string& value, environment) {
-            container->environment[key] = value;
-          }
-        }
-
-        return Nothing();
-      }));
-
     f = HookManager::slavePreLaunchDockerTaskExecutorDecorator(
         taskInfo,
         executorInfo,
@@ -1198,14 +1156,16 @@ Future<bool> DockerContainerizerProcess::launch(
           }
         }
 
+        if (!decoratorInfo.has_taskenvironment()) {
+          return Nothing();
+        }
+
         map<string, string> taskEnvironment;
 
-        if (decoratorInfo.has_taskenvironment()) {
-          foreach (
-              const Environment::Variable& variable,
-              decoratorInfo.taskenvironment().variables()) {
-            taskEnvironment[variable.name()] = variable.value();
-          }
+        foreach (
+            const Environment::Variable& variable,
+            decoratorInfo.taskenvironment().variables()) {
+          taskEnvironment[variable.name()] = variable.value();
         }
 
         if (taskInfo.isSome()) {
@@ -1260,19 +1220,6 @@ Future<bool> DockerContainerizerProcess::_launch(
   }
 
   Container* container = containers_.at(containerId);
-
-  if (HookManager::hooksAvailable()) {
-    HookManager::slavePreLaunchDockerHook(
-        container->container,
-        container->command,
-        taskInfo,
-        executorInfo,
-        container->name(),
-        container->directory,
-        flags.sandbox_directory,
-        container->resources,
-        container->environment);
-  }
 
   if (taskInfo.isSome() && flags.docker_mesos_image.isNone()) {
     // Launching task by forking a subprocess to run docker executor.
@@ -1447,6 +1394,11 @@ Future<pid_t> DockerContainerizerProcess::launchExecutorProcess(
   const Option<string> glog = os::getenv("GLOG_v");
   if (glog.isSome()) {
     environment["GLOG_v"] = glog.get();
+  }
+
+  if (environment.count("PATH") == 0) {
+    environment["PATH"] =
+      "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
   }
 
   vector<string> argv;
