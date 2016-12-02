@@ -1501,7 +1501,7 @@ Future<Nothing> sendfile(
         os::close(fd.get());
       }
     })
-    .then([=]() mutable {
+    .then([=]() mutable -> Future<Nothing> {
       // NOTE: the file descriptor gets closed by FileEncoder.
       Encoder* encoder = new FileEncoder(fd.get(), s.st_size);
       return send(socket, encoder)
@@ -1771,7 +1771,13 @@ Future<Nothing> serve(
         // Note that we don't look at the return value of
         // `Socket::shutdown` because the socket might already be
         // shutdown!
-        socket.shutdown(network::Socket::Shutdown::READ_WRITE);
+        //
+        // CAREFUL! We can't shutdown with Shutdown::READ_WRITE
+        // because on OSX if the socket is already shutdown with READ
+        // due to the call above then the call will fail rather than
+        // just treat it like a shutdown WRITE.
+        socket.shutdown(network::Socket::Shutdown::READ);
+        socket.shutdown(network::Socket::Shutdown::WRITE);
       });
 
   std::shared_ptr<Promise<Nothing>> promise(new Promise<Nothing>());
