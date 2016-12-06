@@ -35,19 +35,25 @@
 #include <unistd.h>
 #include <utime.h>
 
+#include <sys/ioctl.h>
+
 #ifdef __linux__
 #include <linux/version.h>
 #include <sys/sysinfo.h>
 #endif // __linux__
 
+#include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
+
+#include <stout/synchronized.hpp>
 
 #include <stout/os/close.hpp>
 #include <stout/os/environment.hpp>
@@ -466,6 +472,65 @@ inline Try<Nothing> pipe(int pipe_fd[2])
   if (::pipe(pipe_fd) == -1) {
     return ErrnoError();
   }
+  return Nothing();
+}
+
+
+inline Try<Nothing> dup2(int oldFd, int newFd)
+{
+  while (::dup2(oldFd, newFd) == -1) {
+    if (errno == EINTR) {
+      continue;
+    } else {
+      return ErrnoError();
+    }
+  }
+  return Nothing();
+}
+
+
+inline Try<std::string> ptsname(int master)
+{
+  // 'ptsname' is not thread safe. Therefore, we use mutex here to
+  // make this method thread safe.
+  // TODO(jieyu): Consider using ptsname_r for linux.
+  static std::mutex* mutex = new std::mutex;
+
+  synchronized (mutex) {
+    const char* slavePath = ::ptsname(master);
+    if (slavePath == nullptr) {
+      return ErrnoError();
+    }
+    return slavePath;
+  }
+}
+
+
+inline Try<Nothing> setctty(int fd)
+{
+  if (ioctl(fd, TIOCSCTTY, nullptr) == -1) {
+    return ErrnoError();
+  }
+
+  return Nothing();
+}
+
+
+// Update the window size for
+// the terminal represented by fd.
+inline Try<Nothing> setWindowSize(
+    int fd,
+    unsigned short rows,
+    unsigned short columns)
+{
+  struct winsize winsize;
+  winsize.ws_row = rows;
+  winsize.ws_col = columns;
+
+  if (ioctl(fd, TIOCSWINSZ, &winsize) != 0) {
+    return ErrnoError();
+  }
+
   return Nothing();
 }
 

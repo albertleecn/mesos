@@ -14,6 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <stdio.h>
+#include <stdlib.h>
+
 #include <list>
 #include <map>
 #include <string>
@@ -26,8 +29,8 @@
 #include <process/future.hpp>
 #include <process/http.hpp>
 #include <process/io.hpp>
+#include <process/loop.hpp>
 #include <process/owned.hpp>
-
 #include <process/process.hpp>
 #include <process/reap.hpp>
 #include <process/subprocess.hpp>
@@ -37,6 +40,10 @@
 #include <stout/os.hpp>
 #include <stout/path.hpp>
 #include <stout/recordio.hpp>
+
+#ifndef __WINDOWS__
+#include <stout/posix/os.hpp>
+#endif // __WINDOWS__
 
 #include <mesos/http.hpp>
 #include <mesos/type_utils.hpp>
@@ -64,6 +71,7 @@ namespace unix = process::network::unix;
 
 using std::string;
 
+using process::ErrnoFailure;
 using process::Failure;
 using process::Future;
 using process::Owned;
@@ -170,7 +178,16 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   }
 #endif
 
+  bool hasTTY = containerConfig.has_container_info() &&
+                containerConfig.container_info().has_tty_info();
+
   if (!flags.io_switchboard_enable_server) {
+    // TTY support requires I/O switchboard server so that stdio can
+    // be properly redirected to logger.
+    if (hasTTY) {
+      return Failure("TTY support requires I/O switchboard server");
+    }
+
     ContainerLaunchInfo launchInfo;
 
     ContainerIO* out = launchInfo.mutable_out();
@@ -213,78 +230,191 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
                    " '" + stringify(containerId) + "'");
   }
 
+  // We start by creating a directory to hold checkpointed files
+  // related to the io switchboard server we are about to launch. The
+  // existence of this directory indicates that we intended to launch
+  // a server on behalf of a container. The lack of any expected files
+  // in this directroy during recovery/cleanup indicates that
+  // something went wrong and we need to take appropriate action.
+  string path = containerizer::paths::getContainerIOSwitchboardPath(
+      flags.runtime_dir, containerId);
+
+  Try<Nothing> mkdir = os::mkdir(path);
+  if (mkdir.isError()) {
+    return Failure("Error creating 'IOSwitchboard' checkpoint directory"
+                   " for container '" + stringify(containerId) + "':"
+                   " " + mkdir.error());
+  }
+
+  // Return the set of fds that should be sent to the
+  // container and dup'd onto its stdin/stdout/stderr.
+  ContainerLaunchInfo launchInfo;
+
   // Manually construct pipes instead of using `Subprocess::PIPE`
   // so that the ownership of the FDs is properly represented. The
   // `Subprocess` spawned below owns one end of each pipe and will
   // be solely responsible for closing that end. The ownership of
   // the other end will be passed to the caller of this function
   // and eventually passed to the container being launched.
-  int infds[2];
-  int outfds[2];
-  int errfds[2];
+  int stdinToFd = -1;
+  int stdoutFromFd = -1;
+  int stderrFromFd = -1;
 
   // A list of file decriptors we've opened so far.
-  vector<int> fds = {};
+  hashset<int> openedFds = {};
 
-  // Helper for closing the list of file
-  // descriptors we've opened so far.
-  auto close = [](const vector<int>& fds) {
+  // A list of file descriptors that will be passed to the I/O
+  // switchboard. We need to close those file descriptors once the
+  // I/O switchboard server is forked.
+  hashset<int> ioSwitchboardFds = {};
+
+  // Helper for closing a set of file descriptors.
+  auto close = [](const hashset<int>& fds) {
     foreach (int fd, fds) {
       os::close(fd);
     }
   };
 
-  Try<Nothing> pipe = os::pipe(infds);
-  if (pipe.isError()) {
-    close(fds);
-    return Failure("Failed to create stdin pipe: " + pipe.error());
+  // Setup a pseudo terminal for the container.
+  if (hasTTY) {
+    // TODO(jieyu): Consider moving all TTY related method to stout.
+    // For instance, 'stout/posix/tty.hpp'.
+
+    // Set flag 'O_NOCTTY' so that the terminal device will not become
+    // the controlling terminal for the process.
+    int master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (master == -1) {
+      return Failure("Failed to open a master pseudo terminal");
+    }
+
+    openedFds.insert(master);
+
+    Try<string> slavePath = os::ptsname(master);
+    if (slavePath.isError()) {
+      close(openedFds);
+      return Failure("Failed to get the slave pseudo terminal path: " +
+                     slavePath.error());
+    }
+
+    // Unlock the slave end of the pseudo terminal.
+    if (unlockpt(master) != 0) {
+      close(openedFds);
+      return ErrnoFailure("Failed to unlock the slave pseudo terminal");
+    }
+
+    // Set proper permission and ownership for the device.
+    if (grantpt(master) != 0) {
+      close(openedFds);
+      return ErrnoFailure("Failed to grant the slave pseudo terminal");
+    }
+
+    if (containerConfig.has_user()) {
+      Try<Nothing> chown = os::chown(
+          containerConfig.user(),
+          slavePath.get(),
+          false);
+
+      if (chown.isError()) {
+        close(openedFds);
+        return Failure("Failed to chown the slave pseudo terminal: " +
+                       chown.error());
+      }
+    }
+
+    // Open the slave end of the pseudo terminal. The opened file
+    // descriptor will be dup'ed to stdin/out/err of the container.
+    Try<int> slave = os::open(slavePath.get(), O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (slave.isError()) {
+      return Failure("Failed to open the slave pseudo terminal: " +
+                     slave.error());
+    }
+
+    openedFds.insert(slave.get());
+
+    LOG(INFO) << "Allocated pseudo terminal '" << slavePath.get()
+              << "' for container " << containerId;
+
+    stdinToFd = master;
+    stdoutFromFd = master;
+    stderrFromFd = master;
+
+    launchInfo.mutable_in()->set_type(ContainerIO::FD);
+    launchInfo.mutable_in()->set_fd(slave.get());
+
+    launchInfo.mutable_out()->set_type(ContainerIO::FD);
+    launchInfo.mutable_out()->set_fd(slave.get());
+
+    launchInfo.mutable_err()->set_type(ContainerIO::FD);
+    launchInfo.mutable_err()->set_fd(slave.get());
+
+    launchInfo.set_tty_slave_path(slavePath.get());
+  } else {
+    int infds[2];
+    int outfds[2];
+    int errfds[2];
+
+    Try<Nothing> pipe = os::pipe(infds);
+    if (pipe.isError()) {
+      close(openedFds);
+      return Failure("Failed to create stdin pipe: " + pipe.error());
+    }
+
+    openedFds.insert(infds[0]);
+    openedFds.insert(infds[1]);
+
+    pipe = os::pipe(outfds);
+    if (pipe.isError()) {
+      close(openedFds);
+      return Failure("Failed to create stdout pipe: " + pipe.error());
+    }
+
+    openedFds.insert(outfds[0]);
+    openedFds.insert(outfds[1]);
+
+    pipe = os::pipe(errfds);
+    if (pipe.isError()) {
+      close(openedFds);
+      return Failure("Failed to create stderr pipe: " + pipe.error());
+    }
+
+    openedFds.insert(errfds[0]);
+    openedFds.insert(errfds[1]);
+
+    stdinToFd = infds[1];
+    stdoutFromFd = outfds[0];
+    stderrFromFd = errfds[0];
+
+    launchInfo.mutable_in()->set_type(ContainerIO::FD);
+    launchInfo.mutable_in()->set_fd(infds[0]);
+
+    launchInfo.mutable_out()->set_type(ContainerIO::FD);
+    launchInfo.mutable_out()->set_fd(outfds[1]);
+
+    launchInfo.mutable_err()->set_type(ContainerIO::FD);
+    launchInfo.mutable_err()->set_fd(errfds[1]);
   }
 
-  fds.push_back(infds[0]);
-  fds.push_back(infds[1]);
-
-  pipe = os::pipe(outfds);
-  if (pipe.isError()) {
-    close(fds);
-    return Failure("Failed to create stdout pipe: " + pipe.error());
+  // Make sure all file descriptors opened have CLOEXEC set.
+  foreach (int fd, openedFds) {
+    Try<Nothing> cloexec = os::cloexec(fd);
+    if (cloexec.isError()) {
+      close(openedFds);
+      return Failure("Failed to set cloexec: " + cloexec.error());
+    }
   }
 
-  fds.push_back(outfds[0]);
-  fds.push_back(outfds[1]);
-
-  pipe = os::pipe(errfds);
-  if (pipe.isError()) {
-    close(fds);
-    return Failure("Failed to create stderr pipe: " + pipe.error());
-  }
-
-  fds.push_back(errfds[0]);
-  fds.push_back(errfds[1]);
-
-  Try<Nothing> cloexec = os::cloexec(infds[0]);
-  if (cloexec.isError()) {
-    close(fds);
-    return Failure("Failed to cloexec infds.read: " + cloexec.error());
-  }
-
-  cloexec = os::cloexec(outfds[1]);
-  if (cloexec.isError()) {
-    close(fds);
-    return Failure("Failed to cloexec outfds.write: " + cloexec.error());
-  }
-
-  cloexec = os::cloexec(errfds[1]);
-  if (cloexec.isError()) {
-    close(fds);
-    return Failure("Failed to cloexec errfds.write: " + cloexec.error());
-  }
+  ioSwitchboardFds.insert(stdinToFd);
+  ioSwitchboardFds.insert(stdoutFromFd);
+  ioSwitchboardFds.insert(stderrFromFd);
 
   // Set up our flags to send to the io switchboard server process.
   IOSwitchboardServerFlags switchboardFlags;
-  switchboardFlags.stdin_to_fd = infds[1];
-  switchboardFlags.stdout_from_fd = outfds[0];
+  switchboardFlags.tty = hasTTY;
+
+  // We use the default values for other file descriptor flags. Since
+  // I/O switchboard server's stdout and stderr will be redirected to
+  // the logger, we explicitly set the flags here.
   switchboardFlags.stdout_to_fd = STDOUT_FILENO;
-  switchboardFlags.stderr_from_fd = errfds[0];
   switchboardFlags.stderr_to_fd = STDERR_FILENO;
 
   if (containerConfig.container_class() == ContainerClass::DEBUG) {
@@ -314,29 +444,41 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
       map<string, string>(),
       None(),
       {},
-      {Subprocess::ChildHook::SETSID()});
+      {Subprocess::ChildHook::SETSID(),
+       Subprocess::ChildHook::DUP2(
+           stdinToFd,
+           IOSwitchboardServer::STDIN_TO_FD),
+       Subprocess::ChildHook::DUP2(
+           stdoutFromFd,
+           IOSwitchboardServer::STDOUT_FROM_FD),
+       Subprocess::ChildHook::DUP2(
+           stderrFromFd,
+           IOSwitchboardServer::STDERR_FROM_FD)});
 
   if (child.isError()) {
-    close(fds);
+    close(openedFds);
     return Failure("Failed to create io switchboard"
                    " server process: " + child.error());
   }
 
-  os::close(infds[1]);
-  os::close(outfds[0]);
-  os::close(errfds[0]);
+  close(ioSwitchboardFds);
+
+  // We remove the already closed file descriptors from 'openedFds' so
+  // that we don't close multiple times if failures happen below.
+  foreach (int fd, ioSwitchboardFds) {
+    openedFds.erase(fd);
+  }
 
   // Now that the child has come up, we checkpoint the socket
   // address we told it to bind to so we can access it later.
-  const string path =
-    containerizer::paths::getContainerIOSwitchboardSocketPath(
-        flags.runtime_dir, containerId);
+  path = containerizer::paths::getContainerIOSwitchboardSocketPath(
+      flags.runtime_dir, containerId);
 
   Try<Nothing> checkpointed = slave::state::checkpoint(
       path, switchboardFlags.socket_path);
 
   if (checkpointed.isError()) {
-    close(fds);
+    close(openedFds);
     return Failure("Failed to checkpoint container's socket path to"
                    " '" + path + "': " + checkpointed.error());
   }
@@ -345,19 +487,6 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   infos[containerId] = Owned<Info>(new Info(
     child->pid(),
     process::reap(child->pid())));
-
-  // Return the set of fds that should be sent to the
-  // container and dup'd onto its stdin/stdout/stderr.
-  ContainerLaunchInfo launchInfo;
-
-  launchInfo.mutable_in()->set_type(ContainerIO::FD);
-  launchInfo.mutable_in()->set_fd(infds[0]);
-
-  launchInfo.mutable_out()->set_type(ContainerIO::FD);
-  launchInfo.mutable_out()->set_fd(outfds[1]);
-
-  launchInfo.mutable_err()->set_type(ContainerIO::FD);
-  launchInfo.mutable_err()->set_fd(errfds[1]);
 
   return launchInfo;
 #endif // __WINDOWS__
@@ -370,6 +499,10 @@ Future<http::Connection> IOSwitchboard::connect(
 #ifdef __WINDOWS__
   return Failure("Not supported on Windows");
 #else
+  if (local) {
+    return Failure("Not supported in local mode");
+  }
+
   if (!flags.io_switchboard_enable_server) {
     return Failure("Support for running an io switchboard"
                    " server was disabled by the agent");
@@ -422,19 +555,44 @@ Future<Nothing> IOSwitchboard::cleanup(
   infos.erase(containerId);
 
   return status
-    .then([]() { return Nothing(); });
+    .then(defer(self(), [this, containerId]() {
+      // Best effort removal of the unix domain socket file created for
+      // this container's `IOSwitchboardServer`. If it hasn't been
+      // checkpointed yet, or the socket file itself hasn't been created,
+      // we simply continue without error.
+      Result<unix::Address> address =
+        containerizer::paths::getContainerIOSwitchboardAddress(
+            flags.runtime_dir, containerId);
+
+      if (address.isSome()) {
+        Try<Nothing> rm = os::rm(address->path());
+        if (rm.isError()) {
+          LOG(ERROR) << "Failed to remove unix domain socket file"
+                     << " '" << address->path() << "' for container"
+                     << " '" << containerId << "': " << rm.error();
+        }
+      }
+
+      return Nothing();
+    }));
 #endif // __WINDOWS__
 }
 
 
 #ifndef __WINDOWS__
-constexpr char IOSwitchboardServer::NAME[];
+const char IOSwitchboardServer::NAME[]          = "mesos-io-switchboard";
+const int  IOSwitchboardServer::STDIN_TO_FD     = STDERR_FILENO + 1;
+const int  IOSwitchboardServer::STDOUT_FROM_FD  = STDERR_FILENO + 2;
+const int  IOSwitchboardServer::STDERR_FROM_FD  = STDERR_FILENO + 3;
+const int  IOSwitchboardServer::STDOUT_TO_FD    = STDERR_FILENO + 4;
+const int  IOSwitchboardServer::STDERR_TO_FD    = STDERR_FILENO + 5;
 
 
 class IOSwitchboardServerProcess : public Process<IOSwitchboardServerProcess>
 {
 public:
   IOSwitchboardServerProcess(
+      bool _tty,
       int _stdinToFd,
       int _stdoutFromFd,
       int _stdoutToFd,
@@ -487,6 +645,13 @@ private:
   // with the same format we receive them in.
   Future<http::Response> handler(const http::Request& request);
 
+  // Validate `ATTACH_CONTAINER_INPUT` calls.
+  //
+  // TODO(klueska): Move this to `src/slave/validation.hpp` and make
+  // the agent validate all the calls before forwarding them to the
+  // switchboard.
+  Option<Error> validate(const agent::Call::AttachContainerInput& call);
+
   // Handle `ATTACH_CONTAINER_INPUT` calls.
   Future<http::Response> attachContainerInput(
       const Owned<recordio::Reader<agent::Call>>& reader);
@@ -500,6 +665,7 @@ private:
       const string& data,
       const agent::ProcessIO::Data::Type& type);
 
+  bool tty;
   int stdinToFd;
   int stdoutFromFd;
   int stdoutToFd;
@@ -507,16 +673,18 @@ private:
   int stderrToFd;
   unix::Socket socket;
   bool waitForConnection;
+  bool inputConnected;
   Promise<Nothing> promise;
   Promise<Nothing> startRedirect;
   // The following must be a `std::list`
   // for proper erase semantics later on.
-  list<HttpConnection> connections;
+  list<HttpConnection> outputConnections;
   Option<Failure> failure;
 };
 
 
 Try<Owned<IOSwitchboardServer>> IOSwitchboardServer::create(
+    bool tty,
     int stdinToFd,
     int stdoutFromFd,
     int stdoutToFd,
@@ -549,6 +717,7 @@ Try<Owned<IOSwitchboardServer>> IOSwitchboardServer::create(
   }
 
   return new IOSwitchboardServer(
+      tty,
       stdinToFd,
       stdoutFromFd,
       stdoutToFd,
@@ -560,6 +729,7 @@ Try<Owned<IOSwitchboardServer>> IOSwitchboardServer::create(
 
 
 IOSwitchboardServer::IOSwitchboardServer(
+    bool tty,
     int stdinToFd,
     int stdoutFromFd,
     int stdoutToFd,
@@ -568,6 +738,7 @@ IOSwitchboardServer::IOSwitchboardServer(
     const unix::Socket& socket,
     bool waitForConnection)
   : process(new IOSwitchboardServerProcess(
+        tty,
         stdinToFd,
         stdoutFromFd,
         stdoutToFd,
@@ -594,6 +765,7 @@ Future<Nothing> IOSwitchboardServer::run()
 
 
 IOSwitchboardServerProcess::IOSwitchboardServerProcess(
+    bool _tty,
     int _stdinToFd,
     int _stdoutFromFd,
     int _stdoutToFd,
@@ -601,21 +773,19 @@ IOSwitchboardServerProcess::IOSwitchboardServerProcess(
     int _stderrToFd,
     const unix::Socket& _socket,
     bool _waitForConnection)
-  : stdinToFd(_stdinToFd),
+  : tty(_tty),
+    stdinToFd(_stdinToFd),
     stdoutFromFd(_stdoutFromFd),
     stdoutToFd(_stdoutToFd),
     stderrFromFd(_stderrFromFd),
     stderrToFd(_stderrToFd),
     socket(_socket),
-    waitForConnection(_waitForConnection) {}
+    waitForConnection(_waitForConnection),
+    inputConnected(false) {}
 
 
 Future<Nothing> IOSwitchboardServerProcess::run()
 {
-  // TODO(jieyu): This silence the compiler warning of private field
-  // being not used. Remove this once it is used.
-  stdinToFd = -1;
-
   if (!waitForConnection) {
     startRedirect.set(Nothing());
   }
@@ -631,14 +801,24 @@ Future<Nothing> IOSwitchboardServerProcess::run()
                  lambda::_1,
                  agent::ProcessIO::Data::STDOUT)});
 
-      Future<Nothing> stderrRedirect = process::io::redirect(
-          stderrFromFd,
-          stderrToFd,
-          4096,
-          {defer(self(),
-                 &Self::outputHook,
-                 lambda::_1,
-                 agent::ProcessIO::Data::STDERR)});
+      // NOTE: We don't need to redirect stderr if TTY is enabled. If
+      // TTY is enabled for the container, stdout and stderr for the
+      // container will be redirected to the slave end of the pseudo
+      // terminal device. Both stdout and stderr of the container will
+      // both coming out from the master end of the pseudo terminal.
+      Future<Nothing> stderrRedirect;
+      if (tty) {
+        stderrRedirect = Nothing();
+      } else {
+        stderrRedirect = process::io::redirect(
+            stderrFromFd,
+            stderrToFd,
+            4096,
+            {defer(self(),
+                   &Self::outputHook,
+                   lambda::_1,
+                   agent::ProcessIO::Data::STDERR)});
+      }
 
       // Set the future once our IO redirects finish. On failure,
       // fail the future.
@@ -701,7 +881,7 @@ Future<Nothing> IOSwitchboardServerProcess::run()
 
 void IOSwitchboardServerProcess::finalize()
 {
-  foreach (HttpConnection& connection, connections) {
+  foreach (HttpConnection& connection, outputConnections) {
     connection.close();
   }
 
@@ -720,6 +900,7 @@ void IOSwitchboardServerProcess::acceptLoop()
       if (!socket.isReady()) {
         failure = Failure("Failed trying to accept connection");
         terminate(self(), false);
+        return;
       }
 
       // We intentionally ignore errors on the serve path, and assume
@@ -797,14 +978,21 @@ Future<http::Response> IOSwitchboardServerProcess::handler(
           [=](const Result<agent::Call>& call) -> Future<http::Response> {
             if (call.isNone()) {
               return http::BadRequest(
-                  "Received EOF while reading request body");
+                  "IOSwitchboard received EOF while reading request body");
             }
 
             if (call.isError()) {
               return Failure(call.error());
             }
 
+            // Should have already been validated by the agent.
+            CHECK(call->has_type());
             CHECK_EQ(agent::Call::ATTACH_CONTAINER_INPUT, call->type());
+            CHECK(call->has_attach_container_input());
+            CHECK_EQ(mesos::agent::Call::AttachContainerInput::CONTAINER_ID,
+                     call->attach_container_input().type());
+            CHECK(call->attach_container_input().has_container_id());
+            CHECK(call->attach_container_input().container_id().has_value());
 
             return attachContainerInput(reader);
           }));
@@ -820,6 +1008,8 @@ Future<http::Response> IOSwitchboardServerProcess::handler(
               return http::BadRequest(call.error());
             }
 
+            // Should have already been validated by the agent.
+            CHECK(call->has_type());
             CHECK_EQ(agent::Call::ATTACH_CONTAINER_OUTPUT, call->type());
 
             return attachContainerOutput(acceptType);
@@ -828,10 +1018,203 @@ Future<http::Response> IOSwitchboardServerProcess::handler(
 }
 
 
+Option<Error> IOSwitchboardServerProcess::validate(
+    const agent::Call::AttachContainerInput& call)
+{
+  switch (call.type()) {
+    case agent::Call::AttachContainerInput::UNKNOWN:
+    case agent::Call::AttachContainerInput::CONTAINER_ID: {
+        return Error(
+            "Expecting 'attach_container_input.type' to be 'PROCESS_IO'"
+             " instead of: '" + stringify(call.type()) + "'");
+    }
+    case agent::Call::AttachContainerInput::PROCESS_IO: {
+      if (!call.has_process_io()) {
+        return Error(
+            "Expecting 'attach_container_input.process_io' to be present");
+      }
+
+      const agent::ProcessIO& message = call.process_io();
+
+      if (!message.has_type()) {
+        return Error("Expecting 'process_io.type' to be present");
+      }
+
+      switch (message.type()) {
+        case agent::ProcessIO::UNKNOWN: {
+          return Error("'process_io.type' is unknown");
+        }
+        case agent::ProcessIO::CONTROL: {
+          if (!message.has_control()) {
+            return Error("Expecting 'process_io.control' to be present");
+          }
+
+          if (!message.control().has_type()) {
+            return Error("Expecting 'process_io.control.type' to be present");
+          }
+
+          switch (message.control().type()) {
+            case agent::ProcessIO::Control::UNKNOWN: {
+              return Error("'process_io.control.type' is unknown");
+            }
+            case agent::ProcessIO::Control::TTY_INFO: {
+              if (!message.control().has_tty_info()) {
+                return Error(
+                    "Expecting 'process_io.control.tty_info' to be present");
+              }
+
+              const TTYInfo& ttyInfo = message.control().tty_info();
+
+              if (!ttyInfo.has_window_size()) {
+                return Error("Expecting 'tty_info.window_size' to be present");
+              }
+            }
+          }
+
+          return None();
+        }
+        case agent::ProcessIO::DATA: {
+          if (!message.has_data()) {
+            return Error("Expecting 'process_io.data' to be present");
+          }
+
+          if (!message.data().has_type()) {
+            return Error("Expecting 'process_io.data.type' to be present");
+          }
+
+          if (message.data().type() != agent::ProcessIO::Data::STDIN) {
+            return Error("Expecting 'process_io.data.type' to be 'STDIN'");
+          }
+
+          if (!message.data().has_data()) {
+            return Error("Expecting 'process_io.data.data' to be present");
+          }
+
+          return None();
+        }
+      }
+    }
+  }
+
+  UNREACHABLE();
+}
+
+
 Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
     const Owned<recordio::Reader<agent::Call>>& reader)
 {
-  return http::NotImplemented("ATTACH_CONTAINER_INPUT");
+  // Only allow a single input connection at a time.
+  if (inputConnected) {
+    return http::Conflict("Multiple input connections are not allowed");
+  }
+
+  // We set `inputConnected` to true here and then reset it to false
+  // at the bottom of this function once our asynchronous loop has
+  // terminated. This way another connection can be established once
+  // the current one is complete.
+  inputConnected = true;
+
+  // Loop through each record and process it. Return a proper
+  // response once the last record has been fully processed.
+  Owned<http::Response> response(new http::Response());
+
+  return loop(
+      self(),
+      [=]() {
+        return reader->read();
+      },
+      [=](const Result<agent::Call>& record) -> Future<bool> {
+        if (record.isNone()) {
+          *response = http::OK();
+          return false;
+        }
+
+        if (record.isError()) {
+          *response = http::BadRequest(record.error());
+          return false;
+        }
+
+        // Should have already been validated by the agent.
+        CHECK(record->has_type());
+        CHECK_EQ(mesos::agent::Call::ATTACH_CONTAINER_INPUT, record->type());
+        CHECK(record->has_attach_container_input());
+
+        // Validate the rest of the `AttachContainerInput` message.
+        Option<Error> error = validate(record->attach_container_input());
+        if (error.isSome()) {
+          *response = http::BadRequest(error->message);
+          return false;
+        }
+
+        const agent::ProcessIO& message =
+          record->attach_container_input().process_io();
+
+        switch (message.type()) {
+          case agent::ProcessIO::CONTROL: {
+            // TODO(klueska): Return a failure if the container we are
+            // attaching to does not have a tty associated with it.
+
+            // Update the window size.
+            Try<Nothing> window = os::setWindowSize(
+                stdinToFd,
+                message.control().tty_info().window_size().rows(),
+                message.control().tty_info().window_size().columns());
+
+            if (window.isError()) {
+              *response = http::BadRequest(
+                  "Unable to set the window size: "  + window.error());
+              return false;
+            }
+
+            return true;
+          }
+          case agent::ProcessIO::DATA: {
+            // Write the STDIN data to `stdinToFd`. If there is a
+            // failure, we set the `failure` member variable and exit
+            // the loop. In the resulting `.then()` callback, we then
+            // terminate the process. We don't terminate the process
+            // here because we want to propagate an `InternalServerError`
+            // back to the client.
+            Owned<Promise<bool>> condition(new Promise<bool>());
+
+            process::io::write(stdinToFd, message.data().data())
+              .onAny(defer(self(), [this, condition, response](
+                  const Future<Nothing>& future) {
+                if (future.isReady()) {
+                  condition->set(true);
+                  return;
+                }
+
+                failure = Failure(
+                    "Failed writing to stdin:"
+                    " " + (future.isFailed() ? future.failure() : "discarded"));
+
+                *response = http::InternalServerError(failure->message);
+
+                condition->set(false);
+              }));
+
+            return condition->future();
+          }
+          default: {
+            UNREACHABLE();
+          }
+        }
+      })
+    .then(defer(self(), [this, response](
+        const Future<Nothing> future) -> http::Response {
+      // Reset `inputConnected` to allow future input connections.
+      inputConnected = false;
+
+      // We only set `failure` if writing to `stdin` failed, in which
+      // case we want to terminate ourselves (after flushing any
+      // outstanding messages from our message queue).
+      if (failure.isSome()) {
+        terminate(self(), false);
+      }
+
+      return *response;
+    }));
 }
 
 
@@ -850,7 +1233,7 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerOutput(
   // connection. If we ever detect a connection has been closed,
   // we remove it from this list.
   HttpConnection connection(pipe.writer(), acceptType);
-  auto iterator = connections.insert(connections.end(), connection);
+  auto iterator = outputConnections.insert(outputConnections.end(), connection);
 
   // We use the `startRedirect` promise to indicate when we should
   // begin reading data from our `stdoutFromFd` and `stderrFromFd`
@@ -865,7 +1248,7 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerOutput(
     .then(defer(self(), [this, iterator]() {
       // Erasing from a `std::list` only invalidates the iterator of
       // the object being erased. All other iterators remain valid.
-      connections.erase(iterator);
+      outputConnections.erase(iterator);
       return Nothing();
     }));
 
@@ -878,7 +1261,7 @@ void IOSwitchboardServerProcess::outputHook(
     const agent::ProcessIO::Data::Type& type)
 {
   // Break early if there are no connections to send the data to.
-  if (connections.size() == 0) {
+  if (outputConnections.size() == 0) {
     return;
   }
 
@@ -895,7 +1278,7 @@ void IOSwitchboardServerProcess::outputHook(
   // the `HttpConnection::closed()` call above. We might do a few
   // unnecessary writes if we have a bunch of messages queued up,
   // but that shouldn't be a problem.
-  foreach (HttpConnection& connection, connections) {
+  foreach (HttpConnection& connection, outputConnections) {
     connection.send(message);
   }
 }
