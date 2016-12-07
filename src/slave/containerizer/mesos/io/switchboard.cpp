@@ -89,7 +89,9 @@ using mesos::slave::ContainerConfig;
 using mesos::slave::ContainerClass;
 using mesos::slave::ContainerIO;
 using mesos::slave::ContainerLaunchInfo;
+using mesos::slave::ContainerLimitation;
 using mesos::slave::ContainerLogger;
+using mesos::slave::ContainerState;
 using mesos::slave::Isolator;
 
 namespace mesos {
@@ -129,6 +131,108 @@ IOSwitchboard::~IOSwitchboard() {}
 bool IOSwitchboard::supportsNesting()
 {
   return true;
+}
+
+
+Future<Nothing> IOSwitchboard::recover(
+    const list<ContainerState>& states,
+    const hashset<ContainerID>& orphans)
+{
+#ifdef __WINDOWS__
+  return Nothing();
+#else
+  if (local) {
+    return Nothing();
+  }
+
+  // Recover any active container's io switchboard info.
+  //
+  // NOTE: If a new agent is started with io switchboard server mode
+  // disabled, we will still recover the io switchboard info for
+  // containers previously launched by an agent with server mode enabled.
+  foreach (const ContainerState& state, states) {
+    const ContainerID& containerId = state.container_id();
+
+    const string path = containerizer::paths::getContainerIOSwitchboardPath(
+        flags.runtime_dir, containerId);
+
+    // If we don't have a checkpoint directory created for this
+    // container's io switchboard, there is nothing to recover. This
+    // can only happen for legacy containers, containers that were
+    // launched with `--io_switchboard_enable_server=false`.
+    if (!os::exists(path)) {
+      continue;
+    }
+
+    Result<pid_t> pid = containerizer::paths::getContainerIOSwitchboardPid(
+        flags.runtime_dir, containerId);
+
+    // For active containers that have an io switchboard directory,
+    // we should *always* have a valid pid file. If we don't that is a
+    // an error and we should fail appropriately.
+    if (!pid.isSome()) {
+      return Failure("Failed to get I/O switchboard server pid for"
+                     " '" + stringify(containerId) + "':"
+                     " " + (pid.isError() ?
+                            pid.error() :
+                            "pid file does not exist"));
+    }
+
+    infos[containerId] = Owned<Info>(new Info(
+      pid.get(),
+      process::reap(pid.get())));
+  }
+
+  // Recover the io switchboards from any orphaned containers.
+  foreach (const ContainerID& orphan, orphans) {
+    const string path = containerizer::paths::getContainerIOSwitchboardPath(
+        flags.runtime_dir, orphan);
+
+    // If we don't have a checkpoint directory created for this
+    // container's io switchboard, there is nothing to recover.
+    if (!os::exists(path)) {
+      continue;
+    }
+
+    Result<pid_t> pid = containerizer::paths::getContainerIOSwitchboardPid(
+        flags.runtime_dir, orphan);
+
+    // If we were able to retrieve the checkpointed pid, we simply
+    // populate our info struct and rely on the containerizer to
+    // destroy the orphaned container and call `cleanup()` on us later.
+    if (pid.isSome()) {
+      infos[orphan] = Owned<Info>(new Info(
+        pid.get(),
+        process::reap(pid.get())));
+    } else {
+      // If we were not able to retrieve the checkpointed pid, we
+      // still need to populate our info struct (but with a pid value
+      // of `None()`). This way when `cleanup()` is called, we still
+      // do whatever cleanup we can (we just don't wait for the pid
+      // to be reaped -- we do it immediately).
+      //
+      // We could enter this case under 4 conditions:
+      //
+      // (1) The io switchboard we are recovering was launched, but
+      //     the agent died before checkpointing its pid.
+      // (2) The io switchboard pid file was removed.
+      // (3) There was an error reading the io switchbaord pid file.
+      // (4) The io switchboard pid file was corrupted.
+      //
+      // We log an error in cases (3) and (4).
+      infos[orphan] = Owned<Info>(new Info(
+        None(),
+        Future<Option<int>>(None())));
+
+      if (pid.isError()) {
+        LOG(ERROR) << "Error retrieving the 'IOSwitchboard' pid file"
+                      " for orphan '" << orphan << "': " << pid.error();
+      }
+    }
+  }
+
+  return Nothing();
+#endif // __WINDOWS__
 }
 
 
@@ -228,22 +332,6 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   if (infos.contains(containerId)) {
     return Failure("Already prepared io switchboard server for container"
                    " '" + stringify(containerId) + "'");
-  }
-
-  // We start by creating a directory to hold checkpointed files
-  // related to the io switchboard server we are about to launch. The
-  // existence of this directory indicates that we intended to launch
-  // a server on behalf of a container. The lack of any expected files
-  // in this directroy during recovery/cleanup indicates that
-  // something went wrong and we need to take appropriate action.
-  string path = containerizer::paths::getContainerIOSwitchboardPath(
-      flags.runtime_dir, containerId);
-
-  Try<Nothing> mkdir = os::mkdir(path);
-  if (mkdir.isError()) {
-    return Failure("Error creating 'IOSwitchboard' checkpoint directory"
-                   " for container '" + stringify(containerId) + "':"
-                   " " + mkdir.error());
   }
 
   // Return the set of fds that should be sent to the
@@ -410,10 +498,9 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   // Set up our flags to send to the io switchboard server process.
   IOSwitchboardServerFlags switchboardFlags;
   switchboardFlags.tty = hasTTY;
-
-  // We use the default values for other file descriptor flags. Since
-  // I/O switchboard server's stdout and stderr will be redirected to
-  // the logger, we explicitly set the flags here.
+  switchboardFlags.stdin_to_fd = stdinToFd;
+  switchboardFlags.stdout_from_fd = stdoutFromFd;
+  switchboardFlags.stderr_from_fd = stderrFromFd;
   switchboardFlags.stdout_to_fd = STDOUT_FILENO;
   switchboardFlags.stderr_to_fd = STDERR_FILENO;
 
@@ -427,6 +514,23 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
       stringify(os::PATH_SEPARATOR),
       "tmp",
       "mesos-io-switchboard-" + UUID::random().toString());
+
+  // Just before launching our io switchboard server, we need to
+  // create a directory to hold checkpointed files related to the
+  // server. The existence of this directory indicates that we
+  // intended to launch an io switchboard server on behalf of a
+  // container. The lack of any expected files in this directroy
+  // during recovery/cleanup indicates that something went wrong and
+  // we need to take appropriate action.
+  string path = containerizer::paths::getContainerIOSwitchboardPath(
+      flags.runtime_dir, containerId);
+
+  Try<Nothing> mkdir = os::mkdir(path);
+  if (mkdir.isError()) {
+    return Failure("Error creating 'IOSwitchboard' checkpoint directory"
+                   " for container '" + stringify(containerId) + "':"
+                   " " + mkdir.error());
+  }
 
   // Launch the io switchboard server process.
   // We `dup()` the `stdout` and `stderr` passed to us by the
@@ -445,15 +549,9 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
       None(),
       {},
       {Subprocess::ChildHook::SETSID(),
-       Subprocess::ChildHook::DUP2(
-           stdinToFd,
-           IOSwitchboardServer::STDIN_TO_FD),
-       Subprocess::ChildHook::DUP2(
-           stdoutFromFd,
-           IOSwitchboardServer::STDOUT_FROM_FD),
-       Subprocess::ChildHook::DUP2(
-           stderrFromFd,
-           IOSwitchboardServer::STDERR_FROM_FD)});
+       Subprocess::ChildHook::UNSET_CLOEXEC(stdinToFd),
+       Subprocess::ChildHook::UNSET_CLOEXEC(stdoutFromFd),
+       Subprocess::ChildHook::UNSET_CLOEXEC(stderrFromFd)});
 
   if (child.isError()) {
     close(openedFds);
@@ -480,6 +578,18 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   if (checkpointed.isError()) {
     close(openedFds);
     return Failure("Failed to checkpoint container's socket path to"
+                   " '" + path + "': " + checkpointed.error());
+  }
+
+  // We also checkpoint the child's pid.
+  path = containerizer::paths::getContainerIOSwitchboardPidPath(
+      flags.runtime_dir, containerId);
+
+  checkpointed = slave::state::checkpoint(path, stringify(child->pid()));
+
+  if (checkpointed.isError()) {
+    close(openedFds);
+    return Failure("Failed to checkpoint container's io switchboard pid to"
                    " '" + path + "': " + checkpointed.error());
   }
 
@@ -529,6 +639,59 @@ Future<http::Connection> IOSwitchboard::connect(
 }
 
 
+Future<ContainerLimitation> IOSwitchboard::watch(
+    const ContainerID& containerId)
+{
+#ifdef __WINDOWS__
+  return Future<ContainerLimitation>();
+#else
+  if (local) {
+    return Future<ContainerLimitation>();
+  }
+
+  // We ignore unknown containers here because legacy containers
+  // without an io switchboard directory will not have an info struct
+  // created for during recovery. Likewise, containers launched
+  // by a previous agent with io switchboard server mode disabled will
+  // not have info structs created for them either. In both cases
+  // there is nothing to watch, so we return an unsatisfiable future.
+  if (!infos.contains(containerId)) {
+    return Future<ContainerLimitation>();
+  }
+
+  Future<Option<int>> status = infos[containerId]->status;
+
+  return status
+    .then([](const Option<int>& status) {
+      if (status.isNone()) {
+        return Future<ContainerLimitation>();
+      }
+
+      if (status.isSome() &&
+          WIFEXITED(status.get()) &&
+          WEXITSTATUS(status.get()) == 0) {
+        return Future<ContainerLimitation>();
+      }
+
+      ContainerLimitation limitation;
+      limitation.set_reason(TaskStatus::REASON_IO_SWITCHBOARD_EXITED);
+
+      if (WIFEXITED(status.get())) {
+        limitation.set_message(
+            "'IOSwitchboard' exited with status:"
+            " " + stringify(WEXITSTATUS(status.get())));
+      } else if (WIFSIGNALED(status.get())) {
+        limitation.set_message(
+            "'IOSwitchboard' exited with signal:"
+            " " + stringify(strsignal(WTERMSIG(status.get()))));
+      }
+
+      return Future<ContainerLimitation>(limitation);
+    });
+#endif // __WINDOWS__
+}
+
+
 Future<Nothing> IOSwitchboard::cleanup(
     const ContainerID& containerId)
 {
@@ -537,22 +700,39 @@ Future<Nothing> IOSwitchboard::cleanup(
   // windows yet, there is nothing to wait for here.
   return Nothing();
 #else
-  // We don't particularly care if the process gets reaped or not (it
-  // will clean itself up automatically upon process exit). We just
-  // try to wait for it to exit if we can. For now there is no need
-  // to recover info about a container's IOSwitchboard across agent
-  // restarts (so it's OK to simply return `Nothing()` if we don't
-  // know about a containerId).
-  //
-  // TODO(klueska): Add the ability to recover the `IOSwitchboard`'s
-  // pid and reap it so we can properly return its status here.
-  if (local || !infos.contains(containerId)) {
+  if (local) {
     return Nothing();
   }
 
+  // We ignore unknown containers here because legacy containers
+  // without an io switchboard directory will not have an info struct
+  // created for them during recovery. Likewise, containers launched
+  // by a previous agent with io switchboard server mode disabled will
+  // not have info structs created for them either. In both cases
+  // there is nothing to cleanup, so we simly return `Nothing()`.
+  if (!infos.contains(containerId)) {
+    return Nothing();
+  }
+
+  Option<pid_t> pid = infos[containerId]->pid;
   Future<Option<int>> status = infos[containerId]->status;
 
   infos.erase(containerId);
+
+  // If we have a pid, then we attempt to send it a SIGTERM to have it
+  // shutdown gracefully. This is best effort, as it's likely that the
+  // switchboard has already shutdown in the common case.
+  //
+  // NOTE: There is an unfortunate race condition here. If the io
+  // switchboard terminates and the pid is reused by some other
+  // process, we might be sending SIGTERM to a random process. This
+  // could be a problem under high load.
+  //
+  // TODO(klueska): Send a message over the io switchboard server's
+  // domain socket instead of using a signal.
+  if (pid.isSome()) {
+    os::kill(pid.get(), SIGTERM);
+  }
 
   return status
     .then(defer(self(), [this, containerId]() {
@@ -581,11 +761,6 @@ Future<Nothing> IOSwitchboard::cleanup(
 
 #ifndef __WINDOWS__
 const char IOSwitchboardServer::NAME[]          = "mesos-io-switchboard";
-const int  IOSwitchboardServer::STDIN_TO_FD     = STDERR_FILENO + 1;
-const int  IOSwitchboardServer::STDOUT_FROM_FD  = STDERR_FILENO + 2;
-const int  IOSwitchboardServer::STDERR_FROM_FD  = STDERR_FILENO + 3;
-const int  IOSwitchboardServer::STDOUT_TO_FD    = STDERR_FILENO + 4;
-const int  IOSwitchboardServer::STDERR_TO_FD    = STDERR_FILENO + 5;
 
 
 class IOSwitchboardServerProcess : public Process<IOSwitchboardServerProcess>
@@ -604,6 +779,8 @@ public:
   virtual void finalize();
 
   Future<Nothing> run();
+
+  Future<Nothing> unblock();
 
 private:
   class HttpConnection
@@ -764,6 +941,12 @@ Future<Nothing> IOSwitchboardServer::run()
 }
 
 
+Future<Nothing> IOSwitchboardServer::unblock()
+{
+  return dispatch(process.get(), &IOSwitchboardServerProcess::unblock);
+}
+
+
 IOSwitchboardServerProcess::IOSwitchboardServerProcess(
     bool _tty,
     int _stdinToFd,
@@ -876,6 +1059,13 @@ Future<Nothing> IOSwitchboardServerProcess::run()
   acceptLoop();
 
   return promise.future();
+}
+
+
+Future<Nothing> IOSwitchboardServerProcess::unblock()
+{
+  startRedirect.set(Nothing());
+  return Nothing();
 }
 
 
@@ -1169,6 +1359,13 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
             return true;
           }
           case agent::ProcessIO::DATA: {
+            // Receiving a `DATA` message with length 0 indicates
+            // `EOF` so we should close `stdinToFd`.
+            if (message.data().data().length() == 0) {
+              os::close(stdinToFd);
+              return true;
+            }
+
             // Write the STDIN data to `stdinToFd`. If there is a
             // failure, we set the `failure` member variable and exit
             // the loop. In the resulting `.then()` callback, we then
