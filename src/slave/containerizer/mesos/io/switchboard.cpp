@@ -29,10 +29,12 @@
 #include <process/future.hpp>
 #include <process/http.hpp>
 #include <process/io.hpp>
+#include <process/limiter.hpp>
 #include <process/loop.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/reap.hpp>
+#include <process/shared.hpp>
 #include <process/subprocess.hpp>
 
 #include <stout/hashmap.hpp>
@@ -69,21 +71,23 @@ namespace http = process::http;
 namespace unix = process::network::unix;
 #endif // __WINDOWS__
 
-using std::string;
-
-using process::ErrnoFailure;
-using process::Failure;
-using process::Future;
-using process::Owned;
-using process::PID;
-using process::Process;
-using process::Promise;
-using process::Subprocess;
-
 using std::list;
 using std::map;
 using std::string;
 using std::vector;
+
+using process::await;
+using process::ErrnoFailure;
+using process::Failure;
+using process::Future;
+using process::loop;
+using process::Owned;
+using process::PID;
+using process::Process;
+using process::Promise;
+using process::RateLimiter;
+using process::Shared;
+using process::Subprocess;
 
 using mesos::slave::ContainerConfig;
 using mesos::slave::ContainerClass;
@@ -180,7 +184,11 @@ Future<Nothing> IOSwitchboard::recover(
 
     infos[containerId] = Owned<Info>(new Info(
       pid.get(),
-      process::reap(pid.get())));
+      process::reap(pid.get()).onAny(defer(
+          PID<IOSwitchboard>(this),
+          &IOSwitchboard::reaped,
+          containerId,
+          lambda::_1))));
   }
 
   // Recover the io switchboards from any orphaned containers.
@@ -203,7 +211,11 @@ Future<Nothing> IOSwitchboard::recover(
     if (pid.isSome()) {
       infos[orphan] = Owned<Info>(new Info(
         pid.get(),
-        process::reap(pid.get())));
+        process::reap(pid.get()).onAny(defer(
+            PID<IOSwitchboard>(this),
+            &IOSwitchboard::reaped,
+            orphan,
+            lambda::_1))));
     } else {
       // If we were not able to retrieve the checkpointed pid, we
       // still need to populate our info struct (but with a pid value
@@ -532,6 +544,32 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
                    " " + mkdir.error());
   }
 
+  // Prepare the environment for the io switchboard server process.
+  // We inherit agent environment variables except for those
+  // LIBPROCESS or MESOS prefixed environment variables since io
+  // switchboard server process does not rely on those environment
+  // variables.
+  map<string, string> environment;
+  foreachpair (const string& key, const string& value, os::environment()) {
+    if (!strings::startsWith(key, "LIBPROCESS_") &&
+        !strings::startsWith(key, "MESOS_")) {
+      environment.emplace(key, value);
+    }
+  }
+
+  // TODO(jieyu): This is to make sure the libprocess of the io
+  // switchboard can properly initialize and find the IP. Since we
+  // don't need to use the TCP socket for communication, it's OK to
+  // use a local address. Consider disable TCP socket in libprocess if
+  // libprocess supports that.
+  environment.emplace("LIBPROCESS_IP", "127.0.0.1");
+
+  // TODO(jieyu): Consider making this configurable.
+  environment.emplace("LIBPROCESS_NUM_WORKER_THREADS", "8");
+
+  VLOG(1) << "Launching '" << IOSwitchboardServer::NAME << "' with flags '"
+          << switchboardFlags << "' for container " << containerId;
+
   // Launch the io switchboard server process.
   // We `dup()` the `stdout` and `stderr` passed to us by the
   // container logger over the `stdout` and `stderr` of the io
@@ -545,7 +583,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
       loggerInfo.out,
       loggerInfo.err,
       &switchboardFlags,
-      map<string, string>(),
+      environment,
       None(),
       {},
       {Subprocess::ChildHook::SETSID(),
@@ -558,6 +596,10 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
     return Failure("Failed to create io switchboard"
                    " server process: " + child.error());
   }
+
+  LOG(INFO) << "Created I/O switchboard server (pid: " << child->pid()
+            << ") listening on socket file '" << switchboardFlags.socket_path
+            << "' for container " << containerId;
 
   close(ioSwitchboardFds);
 
@@ -596,7 +638,11 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   // Build an info struct for this container.
   infos[containerId] = Owned<Info>(new Info(
     child->pid(),
-    process::reap(child->pid())));
+    process::reap(child->pid()).onAny(defer(
+        PID<IOSwitchboard>(this),
+        &IOSwitchboard::reaped,
+        containerId,
+        lambda::_1))));
 
   return launchInfo;
 #endif // __WINDOWS__
@@ -613,9 +659,8 @@ Future<http::Connection> IOSwitchboard::connect(
     return Failure("Not supported in local mode");
   }
 
-  if (!flags.io_switchboard_enable_server) {
-    return Failure("Support for running an io switchboard"
-                   " server was disabled by the agent");
+  if (!infos.contains(containerId)) {
+    return Failure("I/O switchboard server was disabled for this container");
   }
 
   // Get the io switchboard address from the `containerId`.
@@ -629,12 +674,31 @@ Future<http::Connection> IOSwitchboard::connect(
 
   if (!address.isSome()) {
     return Failure("Failed to get the io switchboard address"
-                   " " + (address.isError()
-                          ? address.error()
-                          : "No address found"));
+                   ": " + (address.isError() ? address.error() : "Not found"));
   }
 
-  return http::connect(address.get());
+  // Wait for the server to create the domain socket file.
+  Shared<RateLimiter> limiter(new RateLimiter(1, Milliseconds(10)));
+
+  return loop(
+      self(),
+      [=]() {
+        return limiter->acquire();
+      },
+      [=](const Nothing&) {
+        return infos.contains(containerId) && !os::exists(address->path());
+      })
+    .then(defer(self(), [=]() -> Future<http::Connection> {
+      if (!infos.contains(containerId)) {
+        return Failure("Container has or is being destroyed");
+      }
+
+      // TODO(jieyu): We might still get a connection refused error
+      // here because the server might not have started listening on
+      // the socket yet. Consider retrying if 'http::connect' failed
+      // with ECONNREFUSED.
+      return http::connect(address.get());
+    }));
 #endif // __WINDOWS__
 }
 
@@ -659,35 +723,7 @@ Future<ContainerLimitation> IOSwitchboard::watch(
     return Future<ContainerLimitation>();
   }
 
-  Future<Option<int>> status = infos[containerId]->status;
-
-  return status
-    .then([](const Option<int>& status) {
-      if (status.isNone()) {
-        return Future<ContainerLimitation>();
-      }
-
-      if (status.isSome() &&
-          WIFEXITED(status.get()) &&
-          WEXITSTATUS(status.get()) == 0) {
-        return Future<ContainerLimitation>();
-      }
-
-      ContainerLimitation limitation;
-      limitation.set_reason(TaskStatus::REASON_IO_SWITCHBOARD_EXITED);
-
-      if (WIFEXITED(status.get())) {
-        limitation.set_message(
-            "'IOSwitchboard' exited with status:"
-            " " + stringify(WEXITSTATUS(status.get())));
-      } else if (WIFSIGNALED(status.get())) {
-        limitation.set_message(
-            "'IOSwitchboard' exited with signal:"
-            " " + stringify(strsignal(WTERMSIG(status.get()))));
-      }
-
-      return Future<ContainerLimitation>(limitation);
-    });
+  return infos[containerId]->limitation.future();
 #endif // __WINDOWS__
 }
 
@@ -730,36 +766,96 @@ Future<Nothing> IOSwitchboard::cleanup(
   //
   // TODO(klueska): Send a message over the io switchboard server's
   // domain socket instead of using a signal.
-  if (pid.isSome()) {
+  if (pid.isSome() && status.isPending()) {
+    LOG(INFO) << "Sending SIGTERM to I/O switchboard server (pid: "
+              << pid.get() << ") since container " << containerId
+              << " is being destroyed";
+
     os::kill(pid.get(), SIGTERM);
   }
 
-  return status
-    .then(defer(self(), [this, containerId]() {
-      // Best effort removal of the unix domain socket file created for
-      // this container's `IOSwitchboardServer`. If it hasn't been
-      // checkpointed yet, or the socket file itself hasn't been created,
-      // we simply continue without error.
-      Result<unix::Address> address =
-        containerizer::paths::getContainerIOSwitchboardAddress(
-            flags.runtime_dir, containerId);
+  // NOTE: We use 'await' here so that we can handle the FAILED and
+  // DISCARDED cases as well.
+  return await(list<Future<Option<int>>>{status}).then(
+      defer(self(), [this, containerId]() -> Future<Nothing> {
+        // Best effort removal of the unix domain socket file created for
+        // this container's `IOSwitchboardServer`. If it hasn't been
+        // checkpointed yet, or the socket file itself hasn't been created,
+        // we simply continue without error.
+        Result<unix::Address> address =
+          containerizer::paths::getContainerIOSwitchboardAddress(
+              flags.runtime_dir, containerId);
 
-      if (address.isSome()) {
-        Try<Nothing> rm = os::rm(address->path());
-        if (rm.isError()) {
-          LOG(ERROR) << "Failed to remove unix domain socket file"
-                     << " '" << address->path() << "' for container"
-                     << " '" << containerId << "': " << rm.error();
+        if (address.isSome()) {
+          Try<Nothing> rm = os::rm(address->path());
+          if (rm.isError()) {
+            LOG(ERROR) << "Failed to remove unix domain socket file"
+                       << " '" << address->path() << "' for container"
+                       << " '" << containerId << "': " << rm.error();
+          }
         }
-      }
 
-      return Nothing();
-    }));
+        return Nothing();
+      }));
 #endif // __WINDOWS__
 }
 
 
 #ifndef __WINDOWS__
+void IOSwitchboard::reaped(
+    const ContainerID& containerId,
+    const Future<Option<int>>& future)
+{
+  // NOTE: If reaping of the server process failed, we simply
+  // return here because it is unknown to us whether we should
+  // destroy the container or not.
+  if (!future.isReady()) {
+    LOG(ERROR) << "Failed to reap the I/O switchboard server: "
+               << (future.isFailed() ? future.failure() : "discarded");
+    return;
+  }
+
+  const Option<int>& status = future.get();
+
+  // No need to do anything if the I/O switchboard server terminates
+  // normally, or its terminal status is unknown. Only initiate the
+  // destroy of the container if we know for sure that the I/O
+  // switchboard server terminates unexpectedly.
+  if (status.isNone()) {
+    LOG(INFO) << "I/O switchboard server process for container "
+              << containerId << " has terminated (status=N/A)";
+    return;
+  } else if (WIFEXITED(status.get()) && WEXITSTATUS(status.get()) == 0) {
+    LOG(INFO) << "I/O switchboard server process for container "
+              << containerId << " has terminated (status=0)";
+    return;
+  }
+
+  // No need to proceed if the container has or is being destroyed.
+  if (!infos.contains(containerId)) {
+    return;
+  }
+
+  ContainerLimitation limitation;
+  limitation.set_reason(TaskStatus::REASON_IO_SWITCHBOARD_EXITED);
+
+  if (WIFEXITED(status.get())) {
+    limitation.set_message(
+        "'IOSwitchboard' exited with status:"
+        " " + stringify(WEXITSTATUS(status.get())));
+  } else if (WIFSIGNALED(status.get())) {
+    limitation.set_message(
+        "'IOSwitchboard' exited with signal:"
+        " " + stringify(strsignal(WTERMSIG(status.get()))));
+  }
+
+  infos[containerId]->limitation.set(limitation);
+
+  LOG(ERROR) << "Unexpected termination of I/O switchboard server: "
+             << limitation.message() << " for container " << containerId;
+}
+
+
 const char IOSwitchboardServer::NAME[]          = "mesos-io-switchboard";
 
 
@@ -1073,6 +1169,11 @@ void IOSwitchboardServerProcess::finalize()
 {
   foreach (HttpConnection& connection, outputConnections) {
     connection.close();
+
+    // It is possible that the read end of the pipe has not yet
+    // finished processing the data. We wait here for the reader
+    // to signal that is has finished reading.
+    connection.closed().await();
   }
 
   if (failure.isSome()) {

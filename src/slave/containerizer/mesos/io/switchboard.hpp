@@ -87,6 +87,7 @@ private:
 
     Option<pid_t> pid;
     process::Future<Option<int>> status;
+    process::Promise<mesos::slave::ContainerLimitation> limitation;
   };
 
   IOSwitchboard(
@@ -98,6 +99,12 @@ private:
       const ContainerID& containerId,
       const mesos::slave::ContainerConfig& containerConfig,
       const mesos::slave::ContainerLogger::SubprocessInfo& loggerInfo);
+
+#ifndef __WINDOWS__
+  void reaped(
+      const ContainerID& containerId,
+      const process::Future<Option<int>>& future);
+#endif // __WINDOWS__
 
   Flags flags;
   bool local;
@@ -181,39 +188,47 @@ struct IOSwitchboardServerFlags : public virtual flags::FlagsBase
 
     add(&IOSwitchboardServerFlags::tty,
         "tty",
-        "If a pseudo terminal has been allocated for the container.");
+        "If a pseudo terminal has been allocated for the container.",
+         false);
 
     add(&IOSwitchboardServerFlags::stdin_to_fd,
         "stdin_to_fd",
-        "The file descriptor where incoming stdin data should be written.");
+        "The file descriptor where incoming stdin data should be written.",
+        -1);
 
     add(&IOSwitchboardServerFlags::stdout_from_fd,
         "stdout_from_fd",
-        "The file descriptor that should be read to consume stdout data.");
+        "The file descriptor that should be read to consume stdout data.",
+        -1);
 
     add(&IOSwitchboardServerFlags::stdout_to_fd,
         "stdout_to_fd",
         "A file descriptor where data read from\n"
-        "'stdout_from_fd' should be redirected to.");
+        "'stdout_from_fd' should be redirected to.",
+        -1);
 
     add(&IOSwitchboardServerFlags::stderr_from_fd,
         "stderr_from_fd",
-        "The file descriptor that should be read to consume stderr data.");
+        "The file descriptor that should be read to consume stderr data.",
+        -1);
 
     add(&IOSwitchboardServerFlags::stderr_to_fd,
         "stderr_to_fd",
         "A file descriptor where data read from\n"
-        "'stderr_from_fd' should be redirected to.");
+        "'stderr_from_fd' should be redirected to.",
+        -1);
 
     add(&IOSwitchboardServerFlags::wait_for_connection,
         "wait_for_connection",
         "A boolean indicating whether the server should wait for the\n"
-        "first connection before reading any data from the '*_from_fd's.");
+        "first connection before reading any data from the '*_from_fd's.",
+        false);
 
     add(&IOSwitchboardServerFlags::socket_path,
         "socket_address",
         "The path of the unix domain socket this\n"
-        "io switchboard should attach itself to.");
+        "io switchboard should attach itself to.",
+        "");
   }
 
   bool tty;
