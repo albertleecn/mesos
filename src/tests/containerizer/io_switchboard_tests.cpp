@@ -14,7 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <map>
 #include <string>
+#include <vector>
 
 #include <process/address.hpp>
 #include <process/future.hpp>
@@ -72,7 +74,9 @@ using process::Owned;
 
 using testing::Eq;
 
+using std::map;
 using std::string;
+using std::vector;
 
 namespace mesos {
 namespace internal {
@@ -114,7 +118,7 @@ TEST_F(IOSwitchboardServerTest, RedirectLog)
 
   string socketPath = path::join(
       sandbox.get(),
-      "mesos-io-switchboard-" + UUID::random().toString());
+      "mesos-io-switchboard");
 
   Try<Owned<IOSwitchboardServer>> server = IOSwitchboardServer::create(
       false,
@@ -222,7 +226,7 @@ TEST_F(IOSwitchboardServerTest, AttachOutput)
 
   string socketPath = path::join(
       sandbox.get(),
-      "mesos-io-switchboard-" + UUID::random().toString());
+      "mesos-io-switchboard");
 
   Try<Owned<IOSwitchboardServer>> server = IOSwitchboardServer::create(
       false,
@@ -344,7 +348,7 @@ TEST_F(IOSwitchboardServerTest, AttachInput)
 
   string socketPath = path::join(
       sandbox.get(),
-      "mesos-io-switchboard-" + UUID::random().toString());
+      "mesos-io-switchboard");
 
   Try<Owned<IOSwitchboardServer>> server = IOSwitchboardServer::create(
       false,

@@ -37,10 +37,11 @@
 #include <mesos/v1/executor/executor.hpp>
 
 #include <process/collect.hpp>
+#include <process/future.hpp>
 #include <process/help.hpp>
 #include <process/http.hpp>
-#include <process/logging.hpp>
 #include <process/limiter.hpp>
+#include <process/logging.hpp>
 #include <process/owned.hpp>
 
 #include <process/metrics/metrics.hpp>
@@ -80,6 +81,7 @@ using process::AUTHENTICATION;
 using process::AUTHORIZATION;
 using process::Clock;
 using process::DESCRIPTION;
+using process::Failure;
 using process::Future;
 using process::HELP;
 using process::Logging;
@@ -236,8 +238,19 @@ struct FrameworkWriter
     writer->field("user", framework_->info.user());
     writer->field("failover_timeout", framework_->info.failover_timeout());
     writer->field("checkpoint", framework_->info.checkpoint());
-    writer->field("role", framework_->info.role());
     writer->field("hostname", framework_->info.hostname());
+
+    // For multi-role frameworks the `role` field will be unset.
+    // Note that we could set `roles` here both both cases, which
+    // would make tooling simpler (only need to look for `roles`).
+    // However, we opted to just mirror the protobuf akin to how
+    // generic protobuf -> JSON translation works.
+    if (protobuf::frameworkHasCapability(
+            framework_->info, FrameworkInfo::Capability::MULTI_ROLE)) {
+      writer->field("roles", framework_->info.roles());
+    } else {
+      writer->field("role", framework_->info.role());
+    }
 
     writer->field("executors", [this](JSON::ArrayWriter* writer) {
       foreachvalue (Executor* executor, framework_->executors) {
@@ -381,7 +394,7 @@ Future<Response> Slave::Http::api(
         APPLICATION_STREAMING_JSON + " or "  + APPLICATION_STREAMING_PROTOBUF);
   }
 
-  CHECK_EQ(http::Request::PIPE, request.type);
+  CHECK_EQ(Request::PIPE, request.type);
   CHECK_SOME(request.reader);
 
   if (requestStreaming(contentType)) {
