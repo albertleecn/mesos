@@ -36,6 +36,7 @@
 #include <process/process.hpp>
 #include <process/reap.hpp>
 #include <process/shared.hpp>
+#include <process/socket.hpp>
 #include <process/subprocess.hpp>
 
 #include <stout/hashmap.hpp>
@@ -90,6 +91,8 @@ using process::Promise;
 using process::RateLimiter;
 using process::Shared;
 using process::Subprocess;
+
+using process::network::internal::SocketImpl;
 
 using mesos::slave::ContainerConfig;
 using mesos::slave::ContainerClass;
@@ -287,7 +290,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   // On windows, we do not yet support running an io switchboard
   // server, so we must error out if it is required.
 #ifdef __WINDOWS__
-  if (IOSwitchboardServer::isRequired(containerConfig)) {
+  if (IOSwitchboard::requiresServer(containerConfig)) {
       return Failure(
           "IO Switchboard server is not supported on windows");
   }
@@ -296,7 +299,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   bool hasTTY = containerConfig.has_container_info() &&
                 containerConfig.container_info().has_tty_info();
 
-  if (!IOSwitchboardServer::isRequired(containerConfig)) {
+  if (!IOSwitchboard::requiresServer(containerConfig)) {
     ContainerLaunchInfo launchInfo;
 
     ContainerIO* out = launchInfo.mutable_out();
@@ -501,13 +504,14 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   ioSwitchboardFds.insert(stderrFromFd);
 
   // Set up our flags to send to the io switchboard server process.
-  IOSwitchboardServerFlags switchboardFlags;
+  IOSwitchboardServer::Flags switchboardFlags;
   switchboardFlags.tty = hasTTY;
   switchboardFlags.stdin_to_fd = stdinToFd;
   switchboardFlags.stdout_from_fd = stdoutFromFd;
   switchboardFlags.stderr_from_fd = stderrFromFd;
   switchboardFlags.stdout_to_fd = STDOUT_FILENO;
   switchboardFlags.stderr_to_fd = STDERR_FILENO;
+  switchboardFlags.heartbeat_interval = flags.http_heartbeat_interval;
 
   if (containerConfig.container_class() == ContainerClass::DEBUG) {
     switchboardFlags.wait_for_connection = true;
@@ -591,7 +595,8 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
   }
 
   LOG(INFO) << "Created I/O switchboard server (pid: " << child->pid()
-            << ") listening on socket file '" << switchboardFlags.socket_path
+            << ") listening on socket file '"
+            << switchboardFlags.socket_path.get()
             << "' for container " << containerId;
 
   close(ioSwitchboardFds);
@@ -608,7 +613,7 @@ Future<Option<ContainerLaunchInfo>> IOSwitchboard::_prepare(
       flags.runtime_dir, containerId);
 
   Try<Nothing> checkpointed = slave::state::checkpoint(
-      path, switchboardFlags.socket_path);
+      path, switchboardFlags.socket_path.get());
 
   if (checkpointed.isError()) {
     close(openedFds);
@@ -690,7 +695,7 @@ Future<http::Connection> IOSwitchboard::connect(
       // here because the server might not have started listening on
       // the socket yet. Consider retrying if 'http::connect' failed
       // with ECONNREFUSED.
-      return http::connect(address.get());
+      return http::connect(address.get(), http::Scheme::HTTP);
     }));
 #endif // __WINDOWS__
 }
@@ -805,6 +810,23 @@ Future<Nothing> IOSwitchboard::cleanup(
 }
 
 
+bool IOSwitchboard::requiresServer(const ContainerConfig& containerConfig)
+{
+  if (containerConfig.has_container_info() &&
+      containerConfig.container_info().has_tty_info()) {
+    return true;
+  }
+
+  if (containerConfig.has_container_class() &&
+      containerConfig.container_class() ==
+        mesos::slave::ContainerClass::DEBUG) {
+    return true;
+  }
+
+  return false;
+}
+
+
 #ifndef __WINDOWS__
 void IOSwitchboard::reaped(
     const ContainerID& containerId,
@@ -874,7 +896,8 @@ public:
       int _stderrFromFd,
       int _stderrToFd,
       const unix::Socket& _socket,
-      bool waitForConnection);
+      bool waitForConnection,
+      Option<Duration> heartbeatInterval);
 
   virtual void finalize();
 
@@ -911,6 +934,9 @@ private:
     http::Pipe::Writer writer;
     ::recordio::Encoder<agent::ProcessIO> encoder;
   };
+
+  // Sit in a heartbeat loop forever.
+  void heartbeatLoop();
 
   // Sit in an accept loop forever.
   void acceptLoop();
@@ -950,6 +976,7 @@ private:
   int stderrToFd;
   unix::Socket socket;
   bool waitForConnection;
+  Option<Duration> heartbeatInterval;
   bool inputConnected;
   Promise<Nothing> promise;
   Promise<Nothing> startRedirect;
@@ -968,9 +995,10 @@ Try<Owned<IOSwitchboardServer>> IOSwitchboardServer::create(
     int stderrFromFd,
     int stderrToFd,
     const string& socketPath,
-    bool waitForConnection)
+    bool waitForConnection,
+    Option<Duration> heartbeatInterval)
 {
-  Try<unix::Socket> socket = unix::Socket::create();
+  Try<unix::Socket> socket = unix::Socket::create(SocketImpl::Kind::POLL);
   if (socket.isError()) {
     return Error("Failed to create socket: " + socket.error());
   }
@@ -1001,7 +1029,8 @@ Try<Owned<IOSwitchboardServer>> IOSwitchboardServer::create(
       stderrFromFd,
       stderrToFd,
       socket.get(),
-      waitForConnection);
+      waitForConnection,
+      heartbeatInterval);
 }
 
 
@@ -1013,7 +1042,8 @@ IOSwitchboardServer::IOSwitchboardServer(
     int stderrFromFd,
     int stderrToFd,
     const unix::Socket& socket,
-    bool waitForConnection)
+    bool waitForConnection,
+    Option<Duration> heartbeatInterval)
   : process(new IOSwitchboardServerProcess(
         tty,
         stdinToFd,
@@ -1022,7 +1052,8 @@ IOSwitchboardServer::IOSwitchboardServer(
         stderrFromFd,
         stderrToFd,
         socket,
-        waitForConnection))
+        waitForConnection,
+        heartbeatInterval))
 {
   spawn(process.get());
 }
@@ -1055,7 +1086,8 @@ IOSwitchboardServerProcess::IOSwitchboardServerProcess(
     int _stderrFromFd,
     int _stderrToFd,
     const unix::Socket& _socket,
-    bool _waitForConnection)
+    bool _waitForConnection,
+    Option<Duration> _heartbeatInterval)
   : tty(_tty),
     stdinToFd(_stdinToFd),
     stdoutFromFd(_stdoutFromFd),
@@ -1064,6 +1096,7 @@ IOSwitchboardServerProcess::IOSwitchboardServerProcess(
     stderrToFd(_stderrToFd),
     socket(_socket),
     waitForConnection(_waitForConnection),
+    heartbeatInterval(_heartbeatInterval),
     inputConnected(false) {}
 
 
@@ -1156,6 +1189,12 @@ Future<Nothing> IOSwitchboardServerProcess::run()
       return Nothing();
     }));
 
+  // If we have a heartbeat interval set, send a heartbeat to all of
+  // our outstanding output connections at the proper interval.
+  if (heartbeatInterval.isSome()) {
+    heartbeatLoop();
+  }
+
   acceptLoop();
 
   return promise.future();
@@ -1185,6 +1224,28 @@ void IOSwitchboardServerProcess::finalize()
   } else {
     promise.set(Nothing());
   }
+}
+
+
+void IOSwitchboardServerProcess::heartbeatLoop()
+{
+  CHECK(heartbeatInterval.isSome());
+
+  agent::ProcessIO message;
+  message.set_type(agent::ProcessIO::CONTROL);
+  message.mutable_control()->set_type(
+      agent::ProcessIO::Control::HEARTBEAT);
+  message.mutable_control()->mutable_heartbeat()
+      ->mutable_interval()->set_nanoseconds(heartbeatInterval.get().ns());
+
+  foreach (HttpConnection& connection, outputConnections) {
+    connection.send(message);
+  }
+
+  // Dispatch back to ourselves after the `heartbeatInterval`.
+  delay(heartbeatInterval.get(),
+        self(),
+        &IOSwitchboardServerProcess::heartbeatLoop);
 }
 
 
@@ -1363,10 +1424,20 @@ Option<Error> IOSwitchboardServerProcess::validate(
               if (!ttyInfo.has_window_size()) {
                 return Error("Expecting 'tty_info.window_size' to be present");
               }
+
+              return None();
+            }
+            case agent::ProcessIO::Control::HEARTBEAT: {
+              if (!message.control().has_heartbeat()) {
+                return Error(
+                    "Expecting 'process_io.control.heartbeat' to be present");
+              }
+
+              return None();
             }
           }
 
-          return None();
+          UNREACHABLE();
         }
         case agent::ProcessIO::DATA: {
           if (!message.has_data()) {
@@ -1446,22 +1517,34 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
 
         switch (message.type()) {
           case agent::ProcessIO::CONTROL: {
-            // TODO(klueska): Return a failure if the container we are
-            // attaching to does not have a tty associated with it.
+            switch (message.type()) {
+              case agent::ProcessIO::Control::TTY_INFO: {
+                // TODO(klueska): Return a failure if the container we are
+                // attaching to does not have a tty associated with it.
 
-            // Update the window size.
-            Try<Nothing> window = os::setWindowSize(
-                stdinToFd,
-                message.control().tty_info().window_size().rows(),
-                message.control().tty_info().window_size().columns());
+                // Update the window size.
+                Try<Nothing> window = os::setWindowSize(
+                    stdinToFd,
+                    message.control().tty_info().window_size().rows(),
+                    message.control().tty_info().window_size().columns());
 
-            if (window.isError()) {
-              *response = http::BadRequest(
-                  "Unable to set the window size: "  + window.error());
-              return false;
+                if (window.isError()) {
+                  *response = http::BadRequest(
+                      "Unable to set the window size: "  + window.error());
+                  return false;
+                }
+
+                return true;
+              }
+              case agent::ProcessIO::Control::HEARTBEAT: {
+                // For now, we ignore any interval information
+                // sent along with the heartbeat.
+                return true;
+              }
+              default: {
+                UNREACHABLE();
+              }
             }
-
-            return true;
           }
           case agent::ProcessIO::DATA: {
             // Receiving a `DATA` message with length 0 indicates
