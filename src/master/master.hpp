@@ -52,6 +52,7 @@
 
 #include <process/metrics/counter.hpp>
 
+#include <stout/boundedhashmap.hpp>
 #include <stout/cache.hpp>
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
@@ -1730,15 +1731,21 @@ private:
     // This collection includes agents that have gracefully shutdown,
     // as well as those that have been marked unreachable. We keep a
     // cache here to prevent this from growing in an unbounded manner.
+    //
     // TODO(bmahler): Ideally we could use a cache with set semantics.
+    //
+    // TODO(neilc): Consider storing all agent IDs that have been
+    // marked unreachable by this master.
     Cache<SlaveID, Nothing> removed;
 
     // Slaves that have been marked unreachable. We recover this from
     // the registry, so it includes slaves marked as unreachable by
-    // other instances of the master. Note that we use a linkedhashmap
+    // other instances of the master. Note that we use a LinkedHashMap
     // to ensure the order of elements here matches the order in the
     // registry's unreachable list, which matches the order in which
-    // agents are marked unreachable.
+    // agents are marked unreachable. This list is garbage collected;
+    // GC behavior is governed by the `registry_gc_interval`,
+    // `registry_max_agent_age`, and `registry_max_agent_count` flags.
     LinkedHashMap<SlaveID, TimeInfo> unreachable;
 
     // This rate limiter is used to limit the removal of slaves failing
@@ -1764,7 +1771,7 @@ private:
 
     hashmap<FrameworkID, Framework*> registered;
 
-    boost::circular_buffer<std::shared_ptr<Framework>> completed;
+    BoundedHashMap<FrameworkID, process::Owned<Framework>> completed;
 
     // Principals of frameworks keyed by PID.
     // NOTE: Multiple PIDs can map to the same principal. The
@@ -2320,8 +2327,12 @@ struct Framework
 
   void addCompletedTask(const Task& task)
   {
-    // TODO(adam-mesos): Check if completed task already exists.
-    completedTasks.push_back(std::shared_ptr<Task>(new Task(task)));
+    // TODO(neilc): We currently allow frameworks to reuse the task
+    // IDs of completed tasks (although this is discouraged). This
+    // means that there might be multiple completed tasks with the
+    // same task ID. We should consider rejecting attempts to reuse
+    // task IDs (MESOS-6779).
+    completedTasks.push_back(process::Owned<Task>(new Task(task)));
   }
 
   void removeTask(Task* task)
@@ -2589,10 +2600,10 @@ struct Framework
 
   hashmap<TaskID, Task*> tasks;
 
-  // NOTE: We use a shared pointer for Task because clang doesn't like
-  // Boost's implementation of circular_buffer with Task (Boost
-  // attempts to do some memset's which are unsafe).
-  boost::circular_buffer<std::shared_ptr<Task>> completedTasks;
+  // Tasks launched by this framework that have reached a terminal
+  // state and have had all their updates acknowledged. We only keep a
+  // fixed-size cache to avoid consuming too much memory.
+  boost::circular_buffer<process::Owned<Task>> completedTasks;
 
   hashset<Offer*> offers; // Active offers for framework.
 

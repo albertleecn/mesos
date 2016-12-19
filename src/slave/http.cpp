@@ -42,6 +42,7 @@
 #include <process/http.hpp>
 #include <process/limiter.hpp>
 #include <process/logging.hpp>
+#include <process/loop.hpp>
 #include <process/owned.hpp>
 
 #include <process/metrics/metrics.hpp>
@@ -85,6 +86,7 @@ using process::Failure;
 using process::Future;
 using process::HELP;
 using process::Logging;
+using process::loop;
 using process::Owned;
 using process::TLDR;
 
@@ -171,7 +173,7 @@ struct ExecutorWriter
     }
 
     writer->field("tasks", [this](JSON::ArrayWriter* writer) {
-      foreach (Task* task, executor_->launchedTasks.values()) {
+      foreachvalue (Task* task, executor_->launchedTasks) {
         if (!approveViewTask(taskApprover_, *task, framework_->info)) {
           continue;
         }
@@ -181,7 +183,7 @@ struct ExecutorWriter
     });
 
     writer->field("queued_tasks", [this](JSON::ArrayWriter* writer) {
-      foreach (const TaskInfo& task, executor_->queuedTasks.values()) {
+      foreachvalue (const TaskInfo& task, executor_->queuedTasks) {
         if (!approveViewTaskInfo(taskApprover_, task, framework_->info)) {
           continue;
         }
@@ -201,9 +203,7 @@ struct ExecutorWriter
 
       // NOTE: We add 'terminatedTasks' to 'completed_tasks' for
       // simplicity.
-      // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-      // supports it.
-      foreach (Task* task, executor_->terminatedTasks.values()) {
+      foreachvalue (Task* task, executor_->terminatedTasks) {
         if (!approveViewTask(taskApprover_, *task, framework_->info)) {
           continue;
         }
@@ -1242,8 +1242,8 @@ Future<Response> Slave::Http::state(
             "completed_frameworks",
             [this, &frameworksApprover, &executorsApprover, &tasksApprover](
                 JSON::ArrayWriter* writer) {
-          foreach (const Owned<Framework>& framework,
-                   slave->completedFrameworks) {
+          foreachvalue (const Owned<Framework>& framework,
+                        slave->completedFrameworks) {
             // Skip unauthorized frameworks.
             if (!approveViewFrameworkInfo(
                     frameworksApprover, framework->info)) {
@@ -1317,7 +1317,7 @@ agent::Response::GetFrameworks Slave::Http::_getFrameworks(
       ->CopyFrom(framework->info);
   }
 
-  foreach (const Owned<Framework>& framework, slave->completedFrameworks) {
+  foreachvalue (const Owned<Framework>& framework, slave->completedFrameworks) {
     // Skip unauthorized frameworks.
     if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
       continue;
@@ -1394,7 +1394,7 @@ agent::Response::GetExecutors Slave::Http::_getExecutors(
     frameworks.push_back(framework);
   }
 
-  foreach (const Owned<Framework>& framework, slave->completedFrameworks) {
+  foreachvalue (const Owned<Framework>& framework, slave->completedFrameworks) {
     // Skip unauthorized frameworks.
     if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
       continue;
@@ -1508,7 +1508,7 @@ agent::Response::GetTasks Slave::Http::_getTasks(
     frameworks.push_back(framework);
   }
 
-  foreach (const Owned<Framework>& framework, slave->completedFrameworks) {
+  foreachvalue (const Owned<Framework>& framework, slave->completedFrameworks) {
     // Skip unauthorized frameworks.
     if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
       continue;
@@ -1567,7 +1567,7 @@ agent::Response::GetTasks Slave::Http::_getTasks(
                const Framework* framework,
                executors) {
     // Queued tasks.
-    foreach (const TaskInfo& taskInfo, executor->queuedTasks.values()) {
+    foreachvalue (const TaskInfo& taskInfo, executor->queuedTasks) {
       // Skip unauthorized tasks.
       if (!approveViewTaskInfo(tasksApprover, taskInfo, framework->info)) {
         continue;
@@ -1580,7 +1580,7 @@ agent::Response::GetTasks Slave::Http::_getTasks(
     }
 
     // Launched tasks.
-    foreach (Task* task, executor->launchedTasks.values()) {
+    foreachvalue (Task* task, executor->launchedTasks) {
       CHECK_NOTNULL(task);
       // Skip unauthorized tasks.
       if (!approveViewTask(tasksApprover, *task, framework->info)) {
@@ -1591,7 +1591,7 @@ agent::Response::GetTasks Slave::Http::_getTasks(
     }
 
     // Terminated tasks.
-    foreach (Task* task, executor->terminatedTasks.values()) {
+    foreachvalue (Task* task, executor->terminatedTasks) {
       CHECK_NOTNULL(task);
       // Skip unauthorized tasks.
       if (!approveViewTask(tasksApprover, *task, framework->info)) {
@@ -2582,25 +2582,23 @@ Future<Response> Slave::Http::attachContainerInput(
 // TODO(vinod): Move this to libprocess if this is more generally useful.
 Future<Nothing> connect(Pipe::Reader reader, Pipe::Writer writer)
 {
-  return reader.read()
-    .then([reader, writer](const Future<string>& chunk) mutable
-        -> Future<Nothing> {
-      if (!chunk.isReady()) {
-        return process::Failure(
-            chunk.isFailed() ? chunk.failure() : "discarded");
-      }
+  return loop(
+      None(),
+      [=]() mutable {
+        return reader.read();
+      },
+      [=](const string& chunk) mutable -> Future<bool> {
+        if (chunk.empty()) {
+          // EOF case.
+          return false;
+        }
 
-      if (chunk->empty()) {
-        // EOF case.
-        return Nothing();
-      }
+        if (!writer.write(chunk)) {
+          return Failure("Write failed to the pipe");
+        }
 
-      if (!writer.write(chunk.get())) {
-        return process::Failure("Write failed to the pipe");
-      }
-
-      return connect(reader, writer);
-    });
+        return true;
+      });
 }
 
 

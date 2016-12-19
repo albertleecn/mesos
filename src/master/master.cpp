@@ -1727,7 +1727,9 @@ void Master::doRegistryGc()
   TimeInfo currentTime = protobuf::getCurrentTime();
   hashset<SlaveID> toRemove;
 
-  foreach (const SlaveID& slave, slaves.unreachable.keys()) {
+  foreachpair (const SlaveID& slave,
+               const TimeInfo& unreachableTime,
+               slaves.unreachable) {
     // Count-based GC.
     CHECK(toRemove.size() <= unreachableCount);
 
@@ -1738,7 +1740,6 @@ void Master::doRegistryGc()
     }
 
     // Age-based GC.
-    const TimeInfo& unreachableTime = slaves.unreachable[slave];
     Duration age = Nanoseconds(
         currentTime.nanoseconds() - unreachableTime.nanoseconds());
 
@@ -5452,10 +5453,12 @@ void Master::_reregisterSlave(
 
   ++metrics->slave_reregistrations;
 
-  // Check whether this master was the one that removed the
-  // reregistering agent from the cluster originally. This is false
-  // if the master has failed over since the agent was removed, for
-  // example.
+  // Check if this master was the one that removed the reregistering
+  // agent from the cluster originally. This is false if the master
+  // has failed over since the agent was removed, for example. Since
+  // `removed` is a cache, we might mistakenly think the master has
+  // failed over and neglect to remove non-partition-aware frameworks
+  // on reregistering agents, but that should be rare in practice.
   bool slaveWasRemoved = slaves.removed.get(slave->id).isSome();
 
   slaves.removed.erase(slave->id);
@@ -6950,7 +6953,8 @@ void Master::reconcileKnownSlave(
   //
   // TODO(vinod): Revisit this when registrar is in place. It would
   // likely involve storing this information in the registrar.
-  foreach (const shared_ptr<Framework>& framework, frameworks.completed) {
+  foreachvalue (const Owned<Framework>& framework,
+                frameworks.completed) {
     if (slaveTasks.contains(framework->id())) {
       LOG(WARNING) << "Agent " << *slave
                    << " re-registered with completed framework " << *framework
@@ -7447,8 +7451,8 @@ void Master::removeFramework(Framework* framework)
   frameworks.registered.erase(framework->id());
   allocator->removeFramework(framework->id());
 
-  // The completedFramework buffer now owns the framework pointer.
-  frameworks.completed.push_back(shared_ptr<Framework>(framework));
+  // The framework pointer is now owned by `frameworks.completed`.
+  frameworks.completed.set(framework->id(), Owned<Framework>(framework));
 }
 
 
@@ -8138,13 +8142,7 @@ void Master::removeInverseOffer(InverseOffer* inverseOffer, bool rescind)
 
 bool Master::isCompletedFramework(const FrameworkID& frameworkId)
 {
-  foreach (const shared_ptr<Framework>& framework, frameworks.completed) {
-    if (framework->id() == frameworkId) {
-      return true;
-    }
-  }
-
-  return false;
+  return frameworks.completed.contains(frameworkId);
 }
 
 

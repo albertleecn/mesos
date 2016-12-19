@@ -1407,15 +1407,15 @@ void Slave::doReliableRegistration(Duration maxBackoff)
         // unacknowledged tasks.
         // Note that for each task the latest state and status update
         // state (if any) is also included.
-        foreach (Task* task, executor->launchedTasks.values()) {
+        foreachvalue (Task* task, executor->launchedTasks) {
           message.add_tasks()->CopyFrom(*task);
         }
 
-        foreach (Task* task, executor->terminatedTasks.values()) {
+        foreachvalue (Task* task, executor->terminatedTasks) {
           message.add_tasks()->CopyFrom(*task);
         }
 
-        foreach (const TaskInfo& task, executor->queuedTasks.values()) {
+        foreachvalue (const TaskInfo& task, executor->queuedTasks) {
           message.add_tasks()->CopyFrom(protobuf::createTask(
               task, TASK_STAGING, framework->id()));
         }
@@ -1445,7 +1445,8 @@ void Slave::doReliableRegistration(Duration maxBackoff)
     }
 
     // Add completed frameworks.
-    foreach (const Owned<Framework>& completedFramework, completedFrameworks) {
+    foreachvalue (const Owned<Framework>& completedFramework,
+                  completedFrameworks) {
       VLOG(1) << "Reregistering completed framework "
                 << completedFramework->id();
 
@@ -1466,7 +1467,7 @@ void Slave::doReliableRegistration(Duration maxBackoff)
                 << " terminated tasks, " << executor->completedTasks.size()
                 << " completed tasks";
 
-        foreach (const Task* task, executor->terminatedTasks.values()) {
+        foreachvalue (const Task* task, executor->terminatedTasks) {
           VLOG(2) << "Reregistering terminated task " << task->task_id();
           completedFramework_->add_tasks()->CopyFrom(*task);
         }
@@ -1618,17 +1619,15 @@ void Slave::run(
       framework->checkpointFramework();
     }
 
-    // Is this same framework in completedFrameworks? If so, move the completed
-    // executors to this framework and remove it from that list.
-    // TODO(brenden): Consider using stout/cache.hpp instead of boost
-    // circular_buffer.
-    for (auto it = completedFrameworks.begin(); it != completedFrameworks.end();
-         ++it) {
-      if ((*it)->id() == frameworkId) {
-        framework->completedExecutors = (*it)->completedExecutors;
-        completedFrameworks.erase(it);
-        break;
-      }
+    // Does this framework ID already exist in `completedFrameworks`?
+    // If so, move the completed executors of the old framework to
+    // this new framework and remove the old completed framework.
+    if (completedFrameworks.contains(frameworkId)) {
+      Owned<Framework>& completedFramework =
+        completedFrameworks.at(frameworkId);
+
+      framework->completedExecutors = completedFramework->completedExecutors;
+      completedFrameworks.erase(frameworkId);
     }
   }
 
@@ -2068,9 +2067,7 @@ void Slave::_run(
       // upcoming tasks.
       Resources resources = executor->resources;
 
-      // TODO(jieyu): Use foreachvalue instead once LinkedHashmap
-      // supports it.
-      foreach (const TaskInfo& task, executor->queuedTasks.values()) {
+      foreachvalue (const TaskInfo& task, executor->queuedTasks) {
         resources += task.resources();
       }
 
@@ -3214,9 +3211,7 @@ void Slave::subscribe(
       // upcoming tasks.
       Resources resources = executor->resources;
 
-      // TODO(jieyu): Use foreachvalue instead once LinkedHashmap
-      // supports it.
-      foreach (const TaskInfo& task, executor->queuedTasks.values()) {
+      foreachvalue (const TaskInfo& task, executor->queuedTasks) {
         resources += task.resources();
       }
 
@@ -3224,8 +3219,10 @@ void Slave::subscribe(
       // `queuedTasks`. Hence, we need to ensure that we don't send the same
       // tasks to the executor twice.
       LinkedHashMap<TaskID, TaskInfo> queuedTasks;
-      foreach (const TaskID& taskId, executor->queuedTasks.keys()) {
-        queuedTasks[taskId] = executor->queuedTasks[taskId];
+      foreachpair (const TaskID& taskId,
+                   const TaskInfo& taskInfo,
+                   executor->queuedTasks) {
+        queuedTasks[taskId] = taskInfo;
       }
 
       foreach (const TaskGroupInfo& taskGroup, executor->queuedTaskGroups) {
@@ -3263,10 +3260,7 @@ void Slave::subscribe(
       // TODO(vinod): Consider checkpointing 'TaskInfo' instead of
       // 'Task' so that we can relaunch such tasks! Currently we don't
       // do it because 'TaskInfo.data' could be huge.
-      //
-      // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-      // supports it.
-      foreach (Task* task, executor->launchedTasks.values()) {
+      foreachvalue (Task* task, executor->launchedTasks) {
         if (task->state() == TASK_STAGING &&
             !unackedTasks.contains(task->task_id())) {
           mesos::TaskState newTaskState = TASK_DROPPED;
@@ -3439,9 +3433,7 @@ void Slave::registerExecutor(
       // upcoming tasks.
       Resources resources = executor->resources;
 
-      // TODO(jieyu): Use foreachvalue instead once LinkedHashmap
-      // supports it.
-      foreach (const TaskInfo& task, executor->queuedTasks.values()) {
+      foreachvalue (const TaskInfo& task, executor->queuedTasks) {
         resources += task.resources();
       }
 
@@ -3449,8 +3441,10 @@ void Slave::registerExecutor(
       // `queuedTasks`. Hence, we need to ensure that we don't send the same
       // tasks to the executor twice.
       LinkedHashMap<TaskID, TaskInfo> queuedTasks;
-      foreach (const TaskID& taskId, executor->queuedTasks.keys()) {
-        queuedTasks[taskId] = executor->queuedTasks[taskId];
+      foreachpair (const TaskID& taskId,
+                   const TaskInfo& taskInfo,
+                   executor->queuedTasks) {
+        queuedTasks[taskId] = taskInfo;
       }
 
       foreach (const TaskGroupInfo& taskGroup, executor->queuedTaskGroups) {
@@ -3583,10 +3577,7 @@ void Slave::reregisterExecutor(
       // TODO(vinod): Consider checkpointing 'TaskInfo' instead of
       // 'Task' so that we can relaunch such tasks! Currently we
       // don't do it because 'TaskInfo.data' could be huge.
-      //
-      // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-      // supports it.
-      foreach (Task* task, executor->launchedTasks.values()) {
+      foreachvalue (Task* task, executor->launchedTasks) {
         if (task->state() == TASK_STAGING &&
             !unackedTasks.contains(task->task_id())) {
           mesos::TaskState newTaskState = TASK_DROPPED;
@@ -4722,9 +4713,7 @@ void Slave::executorTerminated(
       // status update streams for a framework that is terminating.
       if (framework->state != Framework::TERMINATING) {
         // Transition all live launched tasks.
-        // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-        // supports it.
-        foreach (Task* task, executor->launchedTasks.values()) {
+        foreachvalue (Task* task, executor->launchedTasks) {
           if (!protobuf::isTerminalState(task->state())) {
             sendExecutorTerminatedStatusUpdate(
                 task->task_id(), termination, frameworkId, executor);
@@ -4732,9 +4721,7 @@ void Slave::executorTerminated(
         }
 
         // Transition all queued tasks.
-        // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-        // supports it.
-        foreach (const TaskInfo& task, executor->queuedTasks.values()) {
+        foreachvalue (const TaskInfo& task, executor->queuedTasks) {
           sendExecutorTerminatedStatusUpdate(
               task.task_id(), termination, frameworkId, executor);
         }
@@ -4906,7 +4893,7 @@ void Slave::removeFramework(Framework* framework)
   frameworks.erase(framework->id());
 
   // Pass ownership of the framework pointer.
-  completedFrameworks.push_back(Owned<Framework>(framework));
+  completedFrameworks.set(framework->id(), Owned<Framework>(framework));
 
   if (state == TERMINATING && frameworks.empty()) {
     terminate(self());
@@ -5827,7 +5814,7 @@ Future<ResourceUsage> Slave::usage()
       entry->mutable_container_id()->CopyFrom(executor->containerId);
 
       // We include non-terminal tasks in ResourceUsage.
-      foreach (const Task* task, executor->launchedTasks.values()) {
+      foreachvalue (const Task* task, executor->launchedTasks) {
         ResourceUsage::Executor::Task* t = entry->add_tasks();
         t->set_name(task->name());
         t->mutable_id()->CopyFrom(task->task_id());
@@ -5885,7 +5872,7 @@ double Slave::_tasks_staging()
     foreachvalue (Executor* executor, framework->executors) {
       count += executor->queuedTasks.size();
 
-      foreach (Task* task, executor->launchedTasks.values()) {
+      foreachvalue (Task* task, executor->launchedTasks) {
         if (task->state() == TASK_STAGING) {
           count++;
         }
@@ -5901,7 +5888,7 @@ double Slave::_tasks_starting()
   double count = 0.0;
   foreachvalue (Framework* framework, frameworks) {
     foreachvalue (Executor* executor, framework->executors) {
-      foreach (Task* task, executor->launchedTasks.values()) {
+      foreachvalue (Task* task, executor->launchedTasks) {
         if (task->state() == TASK_STARTING) {
           count++;
         }
@@ -5917,7 +5904,7 @@ double Slave::_tasks_running()
   double count = 0.0;
   foreachvalue (Framework* framework, frameworks) {
     foreachvalue (Executor* executor, framework->executors) {
-      foreach (Task* task, executor->launchedTasks.values()) {
+      foreachvalue (Task* task, executor->launchedTasks) {
         if (task->state() == TASK_RUNNING) {
           count++;
         }
@@ -5933,7 +5920,7 @@ double Slave::_tasks_killing()
   double count = 0.0;
   foreachvalue (Framework* framework, frameworks) {
     foreachvalue (Executor* executor, framework->executors) {
-      foreach (Task* task, executor->launchedTasks.values()) {
+      foreachvalue (Task* task, executor->launchedTasks) {
         if (task->state() == TASK_KILLING) {
           count++;
         }
@@ -6686,12 +6673,10 @@ Executor::~Executor()
   }
 
   // Delete the tasks.
-  // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-  // supports it.
-  foreach (Task* task, launchedTasks.values()) {
+  foreachvalue (Task* task, launchedTasks) {
     delete task;
   }
-  foreach (Task* task, terminatedTasks.values()) {
+  foreachvalue (Task* task, terminatedTasks) {
     delete task;
   }
 }
