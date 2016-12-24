@@ -629,11 +629,17 @@ TEST_F(MasterTest, EndpointsForHalfRemovedSlave)
   // Drop all the PONGs to simulate slave partition.
   DROP_PROTOBUFS(PongSlaveMessage(), _, _);
 
+  slave::Flags agentFlags = CreateSlaveFlags();
   Owned<MasterDetector> detector = master.get()->createDetector();
-  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get());
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), agentFlags);
   ASSERT_SOME(slave);
 
+  Future<SlaveRegisteredMessage> slaveRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+
   Clock::pause();
+  Clock::advance(agentFlags.registration_backoff_factor);
+  AWAIT_READY(slaveRegisteredMessage);
 
   // Now advance through the PINGs.
   size_t pings = 0;
@@ -2195,7 +2201,8 @@ TEST_F(MasterTest, UnreachableTaskAfterFailover)
 
   // Step 2: Start a slave.
   StandaloneMasterDetector slaveDetector(master.get()->pid);
-  Try<Owned<cluster::Slave>> slave = StartSlave(&slaveDetector);
+  slave::Flags agentFlags = CreateSlaveFlags();
+  Try<Owned<cluster::Slave>> slave = StartSlave(&slaveDetector, agentFlags);
   ASSERT_SOME(slave);
 
   // Step 3: Start a scheduler.
@@ -2293,6 +2300,7 @@ TEST_F(MasterTest, UnreachableTaskAfterFailover)
 
   slaveDetector.appoint(master.get()->pid);
 
+  Clock::advance(agentFlags.registration_backoff_factor);
   AWAIT_READY(slaveReregisteredMessage);
 
   // The task should have returned to TASK_RUNNING. This is true even
@@ -2486,6 +2494,7 @@ TEST_F(MasterTest, CancelRecoveredSlaveRemoval)
   slave = StartSlave(detector.get(), slaveFlags);
   ASSERT_SOME(slave);
 
+  Clock::advance(slaveFlags.registration_backoff_factor);
   AWAIT_READY(slaveReregisteredMessage);
 
   // Satisfy the rate limit permit. Ensure a removal does not occur!
@@ -2775,8 +2784,17 @@ TEST_F(MasterTest, RecoveredFramework)
   TestContainerizer containerizer(&exec);
   StandaloneMasterDetector detector(master.get()->pid);
 
+  // NOTE: After the master fails over, we need the agent to register
+  // before the framework retries registration. Hence, the backoff
+  // factor has to be smaller than the framework registration backoff
+  // factor, but still > 0 so that the registration backoff code
+  // paths are exercised.
+  slave::Flags agentFlags = CreateSlaveFlags();
+  agentFlags.registration_backoff_factor = Nanoseconds(10);
+
   // Start a slave.
-  Try<Owned<cluster::Slave>> slave = StartSlave(&detector, &containerizer);
+  Try<Owned<cluster::Slave>> slave =
+    StartSlave(&detector, &containerizer, agentFlags);
   ASSERT_SOME(slave);
 
   // Create a task on the slave.
@@ -2848,7 +2866,6 @@ TEST_F(MasterTest, RecoveredFramework)
 
   // Stop the master.
   PID<Master> originalPid = master.get()->pid;
-  master->reset();
 
   Future<SlaveReregisteredMessage> slaveReregisteredMessage =
     FUTURE_PROTOBUF(SlaveReregisteredMessage(), originalPid, _);
@@ -2876,6 +2893,7 @@ TEST_F(MasterTest, RecoveredFramework)
   // Simulate a new master detected event to the slave and the framework.
   detector.appoint(master.get()->pid);
 
+  Clock::advance(agentFlags.registration_backoff_factor);
   AWAIT_READY(slaveReregisteredMessage);
   AWAIT_READY(subscribeCall);
 

@@ -85,8 +85,7 @@ EXTRA_DIST =
 PHONY_TARGETS =
 LDADD =
 
-# Produce position independent executables so that we better take advantage of ASLR.
-AM_LDFLAGS = -pie
+AM_LDFLAGS =
 
 # Use -Wl,--as-needed to AM_LDFLAGS since we link against all the
 # libraries programs may depend upon, not the exact one. --as-needed
@@ -108,11 +107,11 @@ AM_CXXFLAGS += -Wformat-security
 
 # We will also have much more hardened/secured binaries and libraries.
 if ENABLE_HARDENING
+# Produce position independent executables so that we better take advantage of ASLR.
+AM_LDFLAGS += -pie
 # Protect many of the functions with stack guards
 # (either -fstack-protector-strong or -fstack-protector depending on compiler support).
 AM_CXXFLAGS += @STACK_PROTECTOR@
-# Better protect against potential buffer overflow attacks.
-AM_CXXFLAGS += -D_FORTIFY_SOURCE=2
 # Produce position independent code when appropriate.
 AM_CXXFLAGS += -fPIC -fPIE
 endif
@@ -2444,12 +2443,13 @@ endif
 #    path.
 #
 # TODO(tomxing): Remove this target once the
-# slave->agent rename is complete(MESOS-3782 & MESOS-5230).
+# slave->agent rename is complete (MESOS-3782 & MESOS-5230).
 copy-template-and-create-symlink:
-	cp $(DESTDIR)/$(pkgsysconfdir)/mesos-agent-env.sh.template \
-	  $(DESTDIR)/$(pkgsysconfdir)/mesos-slave-env.sh.template &&\
-	cd $(DESTDIR)/$(includedir)/mesos && \
-	ln -sf agent slave
+	cd $(DESTDIR)/$(pkgsysconfdir) && \
+	  $(LN_S) mesos-agent-env.sh.template mesos-slave-env.sh.template
+	cd $(DESTDIR)/$(includedir)/mesos && $(LN_S) agent slave
+
+PHONY_TARGETS += copy-template-and-create-symlink
 
 # Install compatibility symlinks for modules that used to be in $(LIBDIR)
 # but are now in $(PKGMODULEDIR). We use install-data-hook because it
