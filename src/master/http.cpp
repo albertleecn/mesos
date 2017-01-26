@@ -150,6 +150,15 @@ static void json(JSON::ObjectWriter* writer, const MasterInfo& info)
   writer->field("hostname", info.hostname());
 }
 
+
+static void json(JSON::ObjectWriter* writer, const SlaveInfo& slaveInfo)
+{
+  writer->field("id", slaveInfo.id().value());
+  writer->field("hostname", slaveInfo.hostname());
+  writer->field("port", slaveInfo.port());
+  writer->field("attributes", Attributes(slaveInfo.attributes()));
+}
+
 namespace internal {
 namespace master {
 
@@ -224,12 +233,11 @@ struct FullFrameworkWriter {
     }
 
     // For multi-role frameworks the `role` field will be unset.
-    // Note that we could set `roles` here both both cases, which
+    // Note that we could set `roles` here for both cases, which
     // would make tooling simpler (only need to look for `roles`).
     // However, we opted to just mirror the protobuf akin to how
     // generic protobuf -> JSON translation works.
-    if (protobuf::frameworkHasCapability(
-            framework_->info, FrameworkInfo::Capability::MULTI_ROLE)) {
+    if (framework_->capabilities.multiRole) {
       writer->field("roles", framework_->info.roles());
     } else {
       writer->field("role", framework_->info.role());
@@ -278,6 +286,17 @@ struct FullFrameworkWriter {
         }
 
         writer->element(*task);
+      }
+    });
+
+    writer->field("unreachable_tasks", [this](JSON::ArrayWriter* writer) {
+      foreachvalue (const Owned<Task>& task, framework_->unreachableTasks) {
+        // Skip unauthorized tasks.
+        if (!approveViewTask(taskApprover_, *task.get(), framework_->info)) {
+          continue;
+        }
+
+        writer->element(*task.get());
       }
     });
 
@@ -340,9 +359,9 @@ static void json(JSON::ObjectWriter* writer, const Summary<Slave>& summary)
 {
   const Slave& slave = summary;
 
-  writer->field("id", slave.id.value());
+  json(writer, slave.info);
+
   writer->field("pid", string(slave.pid));
-  writer->field("hostname", slave.info.hostname());
   writer->field("registered_time", slave.registeredTime.secs());
 
   if (slave.reregisteredTime.isSome()) {
@@ -356,7 +375,6 @@ static void json(JSON::ObjectWriter* writer, const Summary<Slave>& summary)
   writer->field("reserved_resources", totalResources.reservations());
   writer->field("unreserved_resources", totalResources.unreserved());
 
-  writer->field("attributes", Attributes(slave.info.attributes()));
   writer->field("active", slave.active);
   writer->field("version", slave.version);
 }
@@ -388,7 +406,7 @@ static void json(JSON::ObjectWriter* writer, const Summary<Framework>& summary)
   writer->field("capabilities", framework.info.capabilities());
   writer->field("hostname", framework.info.hostname());
   writer->field("webui_url", framework.info.webui_url());
-  writer->field("active", framework.active);
+  writer->field("active", framework.active());
   writer->field("connected", framework.connected());
   writer->field("recovered", framework.recovered());
 }
@@ -572,6 +590,9 @@ Future<Response> Master::Http::api(
     case mesos::master::Call::GET_MASTER:
       return getMaster(call, principal, acceptType);
 
+    case mesos::master::Call::SUBSCRIBE:
+      return subscribe(call, principal, acceptType);
+
     case mesos::master::Call::RESERVE_RESOURCES:
       return reserveResources(call, principal, acceptType);
 
@@ -607,9 +628,6 @@ Future<Response> Master::Http::api(
 
     case mesos::master::Call::REMOVE_QUOTA:
       return quotaHandler.remove(call, principal);
-
-    case mesos::master::Call::SUBSCRIBE:
-      return subscribe(call, principal, acceptType);
   }
 
   UNREACHABLE();
@@ -1394,7 +1412,7 @@ mesos::master::Response::GetFrameworks::Framework model(
 
   _framework.mutable_framework_info()->CopyFrom(framework.info);
 
-  _framework.set_active(framework.active);
+  _framework.set_active(framework.active());
   _framework.set_connected(framework.connected());
   _framework.set_recovered(framework.recovered());
 
@@ -2212,15 +2230,16 @@ string Master::Http::SLAVES_HELP()
 {
   return HELP(
     TLDR(
-        "Information about registered agents."),
+        "Information about agents."),
     DESCRIPTION(
         "Returns 200 OK when the request was processed successfully.",
         "Returns 307 TEMPORARY_REDIRECT redirect to the leading master when",
         "current master is not the leader.",
         "Returns 503 SERVICE_UNAVAILABLE if the leading master cannot be",
         "found.",
-        "This endpoint shows information about the agents registered in",
-        "this master formatted as a JSON object."),
+        "This endpoint shows information about the agents which are registered",
+        "in this master or recovered from registry, formatted as a JSON",
+        "object."),
     AUTHENTICATION(true));
 }
 
@@ -2286,6 +2305,15 @@ Future<Response> Master::Http::slaves(
         });
       };
     });
+
+    // Model all of the recovered slaves.
+    writer->field("recovered_slaves", [this](JSON::ArrayWriter* writer) {
+      foreachvalue (const SlaveInfo& slaveInfo, master->slaves.recovered) {
+        writer->element([&slaveInfo](JSON::ObjectWriter* writer) {
+          json(writer, slaveInfo);
+        });
+      }
+    });
   };
 
   return OK(jsonify(slaves), request.url.query.get("jsonp"));
@@ -2314,6 +2342,10 @@ mesos::master::Response::GetAgents Master::Http::_getAgents() const
   foreachvalue (const Slave* slave, master->slaves.registered) {
     mesos::master::Response::GetAgents::Agent* agent = getAgents.add_agents();
     agent->CopyFrom(protobuf::master::event::createAgentResponse(*slave));
+  }
+
+  foreachvalue (const SlaveInfo& slaveInfo, master->slaves.recovered) {
+    getAgents.add_recovered_agents()->CopyFrom(slaveInfo);
   }
 
   return getAgents;
@@ -2610,6 +2642,7 @@ Future<Response> Master::Http::state(
         writer->field("hostname", master->info().hostname());
         writer->field("activated_slaves", master->_slaves_active());
         writer->field("deactivated_slaves", master->_slaves_inactive());
+        writer->field("unreachable_slaves", master->_slaves_unreachable());
 
         // TODO(haosdent): Deprecated this in favor of `leader_info` below.
         if (master->leader.isSome()) {
@@ -2646,10 +2679,19 @@ Future<Response> Master::Http::state(
             });
         }
 
-        // Model all of the slaves.
+        // Model all of the registered slaves.
         writer->field("slaves", [this](JSON::ArrayWriter* writer) {
           foreachvalue (Slave* slave, master->slaves.registered) {
             writer->element(Full<Slave>(*slave));
+          }
+        });
+
+        // Model all of the recovered slaves.
+        writer->field("recovered_slaves", [this](JSON::ArrayWriter* writer) {
+          foreachvalue (const SlaveInfo& slaveInfo, master->slaves.recovered) {
+            writer->element([&slaveInfo](JSON::ObjectWriter* writer) {
+              json(writer, slaveInfo);
+            });
           }
         });
 
@@ -2823,6 +2865,11 @@ public:
         slavesToFrameworks[task->slave_id()].insert(frameworkId);
       }
 
+      foreachvalue (const Owned<Task>& task, framework->unreachableTasks) {
+        frameworksToSlaves[frameworkId].insert(task->slave_id());
+        slavesToFrameworks[task->slave_id()].insert(frameworkId);
+      }
+
       foreach (const Owned<Task>& task, framework->completedTasks) {
         frameworksToSlaves[frameworkId].insert(task->slave_id());
         slavesToFrameworks[task->slave_id()].insert(frameworkId);
@@ -2939,6 +2986,11 @@ public:
         slaveTaskSummaries[task->slave_id()].count(*task);
       }
 
+      foreachvalue (const Owned<Task>& task, framework->unreachableTasks) {
+        frameworkTaskSummaries[frameworkId].count(*task.get());
+        slaveTaskSummaries[task->slave_id()].count(*task.get());
+      }
+
       foreach (const Owned<Task>& task, framework->completedTasks) {
         frameworkTaskSummaries[frameworkId].count(*task.get());
         slaveTaskSummaries[task->slave_id()].count(*task.get());
@@ -2959,6 +3011,7 @@ public:
     return iterator != slaveTaskSummaries.end() ?
       iterator->second : TaskStateSummary::EMPTY;
   }
+
 private:
   hashmap<FrameworkID, TaskStateSummary> frameworkTaskSummaries;
   hashmap<SlaveID, TaskStateSummary> slaveTaskSummaries;
@@ -3056,7 +3109,11 @@ Future<Response> Master::Http::stateSummary(
               const TaskStateSummary& summary =
                 taskStateSummaries.slave(slave->id);
 
-              // TODO(neilc): Update for new PARTITION_AWARE task statuses.
+              // Certain per-agent status totals will always be zero
+              // (e.g., TASK_ERROR, TASK_UNREACHABLE). We report them
+              // here anyway, for completeness.
+              //
+              // TODO(neilc): Update for TASK_GONE and TASK_GONE_BY_OPERATOR.
               writer->field("TASK_STAGING", summary.staging);
               writer->field("TASK_STARTING", summary.starting);
               writer->field("TASK_RUNNING", summary.running);
@@ -3066,6 +3123,7 @@ Future<Response> Master::Http::stateSummary(
               writer->field("TASK_FAILED", summary.failed);
               writer->field("TASK_LOST", summary.lost);
               writer->field("TASK_ERROR", summary.error);
+              writer->field("TASK_UNREACHABLE", summary.unreachable);
 
               // Add the ids of all the frameworks running on this slave.
               const hashset<FrameworkID>& frameworks =
@@ -3110,7 +3168,7 @@ Future<Response> Master::Http::stateSummary(
               const TaskStateSummary& summary =
                 taskStateSummaries.framework(frameworkId);
 
-              // TODO(neilc): Update for new PARTITION_AWARE task statuses.
+              // TODO(neilc): Update for TASK_GONE and TASK_GONE_BY_OPERATOR.
               writer->field("TASK_STAGING", summary.staging);
               writer->field("TASK_STARTING", summary.starting);
               writer->field("TASK_RUNNING", summary.running);
@@ -3120,6 +3178,7 @@ Future<Response> Master::Http::stateSummary(
               writer->field("TASK_FAILED", summary.failed);
               writer->field("TASK_LOST", summary.lost);
               writer->field("TASK_ERROR", summary.error);
+              writer->field("TASK_UNREACHABLE", summary.unreachable);
 
               // Add the ids of all the slaves running this framework.
               const hashset<SlaveID>& slaves =
@@ -3664,6 +3723,16 @@ Future<Response> Master::Http::tasks(
 
           tasks.push_back(task);
         }
+
+        foreachvalue (const Owned<Task>& task, framework->unreachableTasks) {
+          // Skip unauthorized tasks.
+          if (!approveViewTask(tasksApprover, *task.get(), framework->info)) {
+            continue;
+          }
+
+          tasks.push_back(task.get());
+        }
+
         foreach (const Owned<Task>& task, framework->completedTasks) {
           // Skip unauthorized tasks.
           if (!approveViewTask(tasksApprover, *task.get(), framework->info)) {
@@ -3800,6 +3869,16 @@ mesos::master::Response::GetTasks Master::Http::_getTasks(
       }
 
       getTasks.add_tasks()->CopyFrom(*task);
+    }
+
+    // Unreachable tasks.
+    foreachvalue (const Owned<Task>& task, framework->unreachableTasks) {
+      // Skip unauthorized tasks.
+      if (!approveViewTask(tasksApprover, *task.get(), framework->info)) {
+        continue;
+      }
+
+      getTasks.add_unreachable_tasks()->CopyFrom(*task);
     }
 
     // Completed tasks.

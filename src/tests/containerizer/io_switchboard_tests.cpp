@@ -462,7 +462,8 @@ TEST_F(IOSwitchboardServerTest, SendHeartbeat)
 }
 
 
-TEST_F(IOSwitchboardServerTest, AttachInput)
+// TODO(alexr): Enable this test once MESOS-6912 is resolved.
+TEST_F(IOSwitchboardServerTest, DISABLED_AttachInput)
 {
   // We use a pipe in this test to prevent the switchboard from
   // reading EOF on its `stdoutFromFd` until we are ready for the
@@ -1033,7 +1034,7 @@ TEST_F(IOSwitchboardTest, RecoverThenKillSwitchboardContainerDestroyed)
   // Kill the io switchboard for the task.
   Future<hashset<ContainerID>> containers = containerizer.get()->containers();
   AWAIT_READY(containers);
-  EXPECT_EQ(1u, containers.get().size());
+  ASSERT_EQ(1u, containers.get().size());
 
   Result<pid_t> pid = paths::getContainerIOSwitchboardPid(
         flags.runtime_dir, *containers->begin());

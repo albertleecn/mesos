@@ -14,7 +14,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <algorithm>
+#include "master/validation.hpp"
+
 #include <string>
 #include <vector>
 
@@ -30,12 +31,13 @@
 #include <stout/none.hpp>
 #include <stout/stringify.hpp>
 
-#include "common/protobuf_utils.hpp"
+#include "checks/checker.hpp"
+#include "checks/health_checker.hpp"
 
-#include "health-check/health_checker.hpp"
+#include "common/protobuf_utils.hpp"
+#include "common/validation.hpp"
 
 #include "master/master.hpp"
-#include "master/validation.hpp"
 
 using std::string;
 using std::vector;
@@ -46,15 +48,6 @@ namespace mesos {
 namespace internal {
 namespace master {
 namespace validation {
-
-// A helper function which returns true if the given character is not
-// suitable for an ID.
-static bool invalidCharacter(char c)
-{
-  return iscntrl(c) || c == '/' || c == '\\';
-}
-
-
 namespace master {
 namespace call {
 
@@ -140,6 +133,9 @@ Option<Error> validate(
     case mesos::master::Call::GET_MASTER:
       return None();
 
+    case mesos::master::Call::SUBSCRIBE:
+      return None();
+
     case mesos::master::Call::RESERVE_RESOURCES: {
       if (!call.has_reserve_resources()) {
         return Error("Expecting 'reserve_resources' to be present");
@@ -219,9 +215,6 @@ Option<Error> validate(
       if (!call.has_remove_quota()) {
         return Error("Expecting 'remove_quota' to be present");
       }
-      return None();
-
-    case mesos::master::Call::SUBSCRIBE:
       return None();
   }
 
@@ -506,12 +499,12 @@ Option<Error> validateDiskInfo(const RepeatedPtrField<Resource>& resources)
         return Error("Expecting 'host_path' to be unset for persistent volume");
       }
 
-      // Ensure persistence ID does not have invalid characters.
-      //
-      // TODO(bmahler): Validate against empty id!
-      string id = resource.disk().persistence().id();
-      if (std::any_of(id.begin(), id.end(), invalidCharacter)) {
-        return Error("Persistence ID '" + id + "' contains invalid characters");
+      // Ensure persistence ID meets common ID requirements.
+      Option<Error> error =
+        common::validation::validateID(resource.disk().persistence().id());
+      if (error.isSome()) {
+        return Error("Invalid persistence ID for persistent volume: " +
+                     error->message);
       }
     } else if (resource.disk().has_volume()) {
       return Error("Non-persistent volume not supported");
@@ -619,6 +612,14 @@ Option<Error> validate(const RepeatedPtrField<Resource>& resources)
 
 namespace executor {
 namespace internal {
+
+Option<Error> validateExecutorID(const ExecutorInfo& executor)
+{
+  // Delegate to the common ExecutorID validation. Here we wrap
+  // around it to be consistent with other executor validators.
+  return common::validation::validateExecutorID(executor.executor_id());
+}
+
 
 Option<Error> validateType(const ExecutorInfo& executor)
 {
@@ -753,6 +754,7 @@ Option<Error> validate(
 
   vector<lambda::function<Option<Error>()>> validators = {
     lambda::bind(internal::validateType, executor),
+    lambda::bind(internal::validateExecutorID, executor),
     lambda::bind(internal::validateFrameworkID, executor, framework),
     lambda::bind(internal::validateShutdownGracePeriod, executor),
     lambda::bind(internal::validateResources, executor),
@@ -778,29 +780,30 @@ namespace task {
 
 namespace internal {
 
-// Validates that a task id is valid, i.e., contains only valid
-// characters.
 Option<Error> validateTaskID(const TaskInfo& task)
 {
-  const string& id = task.task_id().value();
-
-  // TODO(bmahler): Validate against empty id!
-  if (std::any_of(id.begin(), id.end(), invalidCharacter)) {
-    return Error("TaskID '" + id + "' contains invalid characters");
-  }
-
-  return None();
+  // Delegate to the common TaskID validation. Here we wrap
+  // around it to be consistent with other task validators.
+  return common::validation::validateTaskID(task.task_id());
 }
 
 
-// Validates that the TaskID does not collide with any existing tasks
-// for the framework.
+// Validates that the TaskID does not collide with the ID of a running
+// or unreachable task for this framework.
 Option<Error> validateUniqueTaskID(const TaskInfo& task, Framework* framework)
 {
   const TaskID& taskId = task.task_id();
 
   if (framework->tasks.contains(taskId)) {
     return Error("Task has duplicate ID: " + taskId.value());
+  }
+
+  // TODO(neilc): `unreachableTasks` is a fixed-size cache and is not
+  // preserved across master failover, so we cannot avoid all possible
+  // task ID collisions (MESOS-6785).
+  if (framework->unreachableTasks.contains(taskId)) {
+    return Error("Task reuses the ID of an unreachable task: " +
+                 taskId.value());
   }
 
   return None();
@@ -833,10 +836,23 @@ Option<Error> validateKillPolicy(const TaskInfo& task)
 }
 
 
+Option<Error> validateCheck(const TaskInfo& task)
+{
+  if (task.has_check()) {
+    Option<Error> error = checks::validation::checkInfo(task.check());
+    if (error.isSome()) {
+      return Error("Task uses invalid check: " + error->message);
+    }
+  }
+
+  return None();
+}
+
+
 Option<Error> validateHealthCheck(const TaskInfo& task)
 {
   if (task.has_health_check()) {
-    Option<Error> error = health::validation::healthCheck(task.health_check());
+    Option<Error> error = checks::validation::healthCheck(task.health_check());
     if (error.isSome()) {
       return Error("Task uses invalid health check: " + error->message);
     }
@@ -919,6 +935,7 @@ Option<Error> validateTask(
     lambda::bind(internal::validateUniqueTaskID, task, framework),
     lambda::bind(internal::validateSlaveID, task, slave),
     lambda::bind(internal::validateKillPolicy, task),
+    lambda::bind(internal::validateCheck, task),
     lambda::bind(internal::validateHealthCheck, task),
     lambda::bind(internal::validateResources, task)
   };
@@ -1327,8 +1344,8 @@ Try<FrameworkID> getFrameworkId(Master* master, const OfferID& offerId)
 
 
 Option<Error> validateOfferIds(
-    Master* master,
-    const RepeatedPtrField<OfferID>& offerIds)
+    const RepeatedPtrField<OfferID>& offerIds,
+    Master* master)
 {
   foreach (const OfferID& offerId, offerIds) {
     Offer* offer = getOffer(master, offerId);
@@ -1342,8 +1359,8 @@ Option<Error> validateOfferIds(
 
 
 Option<Error> validateInverseOfferIds(
-    Master* master,
-    const RepeatedPtrField<OfferID>& offerIds)
+    const RepeatedPtrField<OfferID>& offerIds,
+    Master* master)
 {
   foreach (const OfferID& offerId, offerIds) {
     InverseOffer* inverseOffer = getInverseOffer(master, offerId);
@@ -1451,7 +1468,7 @@ Option<Error> validate(
 
   vector<lambda::function<Option<Error>()>> validators = {
     lambda::bind(validateUniqueOfferID, offerIds),
-    lambda::bind(validateOfferIds, master, offerIds),
+    lambda::bind(validateOfferIds, offerIds, master),
     lambda::bind(validateFramework, offerIds, master, framework),
     lambda::bind(validateSlave, offerIds, master)
   };
@@ -1477,7 +1494,7 @@ Option<Error> validateInverseOffers(
 
   vector<lambda::function<Option<Error>()>> validators = {
     lambda::bind(validateUniqueOfferID, offerIds),
-    lambda::bind(validateInverseOfferIds, master, offerIds),
+    lambda::bind(validateInverseOfferIds, offerIds, master),
     lambda::bind(validateFramework, offerIds, master, framework),
     lambda::bind(validateSlave, offerIds, master)
   };

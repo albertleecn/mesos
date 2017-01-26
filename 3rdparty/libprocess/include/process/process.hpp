@@ -99,7 +99,7 @@ protected:
    * Invoked when a process is terminated.
    *
    * **NOTE**: this does not get invoked automatically if
-   * `process::ProcessBase::visit(const TerminateEvent&)` is overriden.
+   * `process::ProcessBase::visit(const TerminateEvent&)` is overridden.
    */
   virtual void finalize() {}
 
@@ -526,8 +526,11 @@ bool initialize(
 
 /**
  * Clean up the library.
+ *
+ * @param finalize_wsa Whether the Windows socket stack should be cleaned
+ *     up for the entire process. Has no effect outside of Windows.
  */
-void finalize();
+void finalize(bool finalize_wsa = false);
 
 
 /**

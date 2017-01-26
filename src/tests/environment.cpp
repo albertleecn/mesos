@@ -493,7 +493,7 @@ private:
 class SupportedFilesystemTestFilter : public TestFilter
 {
 public:
-  explicit SupportedFilesystemTestFilter(const string fsname)
+  explicit SupportedFilesystemTestFilter(const string& fsname)
   {
 #ifdef __linux__
     Try<bool> check = fs::supported(fsname);
@@ -796,16 +796,9 @@ Environment::Environment(const Flags& _flags) : flags(_flags)
 void Environment::SetUp()
 {
   // Clear any MESOS_ environment variables so they don't affect our tests.
-  char** env = os::raw::environment();
-  for (int i = 0; env[i] != nullptr; i++) {
-    string variable = env[i];
-    if (variable.find("MESOS_") == 0) {
-      string key;
-      size_t eq = variable.find_first_of("=");
-      if (eq == string::npos) {
-        continue; // Not expecting a missing '=', but ignore anyway.
-      }
-      os::unsetenv(variable.substr(strlen("MESOS_"), eq - strlen("MESOS_")));
+  foreachkey (const string& key, os::environment()) {
+    if (key.find("MESOS_") == 0) {
+      os::unsetenv(key);
     }
   }
 
@@ -826,7 +819,7 @@ void Environment::SetUp()
   if (!GTEST_IS_THREADSAFE) {
     EXIT(EXIT_FAILURE) << "Testing environment is not thread safe, bailing!";
   }
-#endif // !__WINDOWS__
+#endif // __WINDOWS__
 }
 
 
@@ -905,7 +898,16 @@ Try<string> Environment::TemporaryDirectoryEventListener::mkdtemp()
   const string tmpdir = os::temp();
 
   const string& path =
+#ifndef __WINDOWS__
     path::join(tmpdir, strings::join("_", testCase, testName, "XXXXXX"));
+#else
+    // TODO(hausdorff): When we resolve MESOS-5849, we should change
+    // this back to the same path as the Unix version. This is
+    // currently necessary to make the sandbox path short enough to
+    // avoid the infamous Windows path length errors, which would
+    // normally cause many of our tests to fail.
+    path::join(tmpdir, "XXXXXX");
+#endif // __WINDOWS__
 
   Try<string> mkdtemp = os::mkdtemp(path);
   if (mkdtemp.isSome()) {

@@ -503,11 +503,13 @@ inline TExecutorInfo createExecutorInfo(
 
 template <typename TCommandInfo>
 inline TCommandInfo createCommandInfo(
-    const std::string& value,
+    const Option<std::string>& value = None(),
     const std::vector<std::string>& arguments = {})
 {
   TCommandInfo commandInfo;
-  commandInfo.set_value(value);
+  if (value.isSome()) {
+    commandInfo.set_value(value.get());
+  }
   if (!arguments.empty()) {
     commandInfo.set_shell(false);
     foreach (const std::string& arg, arguments) {
@@ -558,7 +560,7 @@ inline TVolume createVolumeFromDockerImage(
 
 template <typename TContainerInfo, typename TVolume, typename TImage>
 inline TContainerInfo createContainerInfo(
-    const Option<std::string> imageName = None(),
+    const Option<std::string>& imageName = None(),
     const std::vector<TVolume>& volumes = {})
 {
   TContainerInfo info;
@@ -1057,7 +1059,7 @@ inline ExecutorInfo createExecutorInfo(Args&&... args)
 
 // We specify the argument to allow brace initialized construction.
 inline CommandInfo createCommandInfo(
-    const std::string& value,
+    const Option<std::string>& value = None(),
     const std::vector<std::string>& arguments = {})
 {
   return common::createCommandInfo<CommandInfo>(value, arguments);
@@ -1088,7 +1090,7 @@ inline Volume createVolumeFromDockerImage(Args&&... args)
 
 // We specify the argument to allow brace initialized construction.
 inline ContainerInfo createContainerInfo(
-    const Option<std::string> imageName = None(),
+    const Option<std::string>& imageName = None(),
     const std::vector<Volume>& volumes = {})
 {
   return common::createContainerInfo<ContainerInfo, Volume, Image>(
@@ -1259,7 +1261,7 @@ inline mesos::v1::ExecutorInfo createExecutorInfo(Args&&... args)
 
 // We specify the argument to allow brace initialized construction.
 inline mesos::v1::CommandInfo createCommandInfo(
-    const std::string& value,
+    const Option<std::string>& value = None(),
     const std::vector<std::string>& arguments = {})
 {
   return common::createCommandInfo<mesos::v1::CommandInfo>(value, arguments);
@@ -1292,7 +1294,7 @@ inline mesos::v1::Volume createVolumeFromDockerImage(Args&&... args)
 
 // We specify the argument to allow brace initialized construction.
 inline mesos::v1::ContainerInfo createContainerInfo(
-    const Option<std::string> imageName = None(),
+    const Option<std::string>& imageName = None(),
     const std::vector<mesos::v1::Volume>& volumes = {})
 {
   return common::createContainerInfo<

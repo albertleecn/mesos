@@ -367,6 +367,8 @@ public:
       const FrameworkID& frameworkId,
       const ExecutorID& executorId);
 
+  Executor* getExecutor(const ContainerID& containerId) const;
+
   // Returns an ExecutorInfo for a TaskInfo (possibly
   // constructing one if the task has a CommandInfo).
   ExecutorInfo getExecutorInfo(
@@ -466,8 +468,6 @@ private:
       const Option<std::string>& principal,
       const FrameworkID& frameworkId,
       const ExecutorID& executorId);
-
-  Executor* locateExecutor(const ContainerID& containerId) const;
 
   // Inner class used to namespace HTTP route handlers (see
   // slave/http.cpp for implementations).
@@ -1068,6 +1068,8 @@ struct Framework
   Slave* slave;
 
   const FrameworkInfo info;
+
+  protobuf::framework::Capabilities capabilities;
 
   // Frameworks using the scheduler driver will have a 'pid',
   // which allows us to send executor messages directly to the

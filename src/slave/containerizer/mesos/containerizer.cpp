@@ -160,7 +160,7 @@ Try<MesosContainerizer*> MesosContainerizer::create(
     flags_.isolation = "posix/cpu,posix/mem";
 #else
     flags_.isolation = "windows/cpu";
-#endif // !__WINDOWS__
+#endif // __WINDOWS__
   } else if (flags.isolation == "cgroups") {
     LOG(WARNING) << "The 'cgroups' isolation flag is deprecated, "
                  << "please update your flags to"
@@ -181,7 +181,7 @@ Try<MesosContainerizer*> MesosContainerizer::create(
     flags_.isolation += ",filesystem/posix";
 #else
     flags_.isolation += ",filesystem/windows";
-#endif // !__WINDOWS__
+#endif // __WINDOWS__
   }
 
   if (strings::contains(flags_.isolation, "posix/disk")) {
@@ -683,7 +683,7 @@ Future<Nothing> MesosContainerizerProcess::recover(
   // Recover the executor containers from 'SlaveState'.
   hashset<ContainerID> alive;
   foreach (const ContainerState& state, recoverable) {
-    ContainerID containerId = state.container_id();
+    const ContainerID& containerId = state.container_id();
     alive.insert(containerId);
 
     // Contruct the structure for containers from the 'SlaveState'
@@ -746,7 +746,8 @@ Future<Nothing> MesosContainerizerProcess::recover(
     // Determine the sandbox if this is a nested container.
     Option<string> directory;
     if (containerId.has_parent()) {
-      const ContainerID& rootContainerId = getRootContainerId(containerId);
+      const ContainerID& rootContainerId =
+        protobuf::getRootContainerId(containerId);
       CHECK(containers_.contains(rootContainerId));
 
       if (containers_[rootContainerId]->directory.isSome()) {
@@ -783,7 +784,7 @@ Future<Nothing> MesosContainerizerProcess::recover(
     // on other types of containers, we may need duplicate this logic
     // elsewhere.
     if (containerId.has_parent() &&
-        alive.contains(getRootContainerId(containerId)) &&
+        alive.contains(protobuf::getRootContainerId(containerId)) &&
         pid.isSome() &&
         !containerizer::paths::getContainerForceDestroyOnRecovery(
             flags.runtime_dir, containerId)) {
@@ -1011,7 +1012,7 @@ Future<bool> MesosContainerizerProcess::launch(
       containerInfo->CopyFrom(taskInfo->container());
 
       if (taskInfo->container().mesos().has_image()) {
-        // For command tasks, We need to set the command executor user
+        // For command tasks, we need to set the command executor user
         // as root as it needs to perform chroot (even when
         // switch_user is set to false).
         containerConfig.mutable_command_info()->set_user("root");
@@ -1603,12 +1604,12 @@ Future<bool> MesosContainerizerProcess::_launch(
 
   // Fork the child using launcher.
   vector<string> argv(2);
-  argv[0] = MESOS_CONTAINERIZER;
+  argv[0] = path::join(flags.launcher_dir, MESOS_CONTAINERIZER);
   argv[1] = MesosContainerizerLaunch::NAME;
 
   Try<pid_t> forked = launcher->fork(
       containerId,
-      path::join(flags.launcher_dir, MESOS_CONTAINERIZER),
+      argv[0],
       argv,
       in.isSome() ? in.get() : Subprocess::FD(STDIN_FILENO),
       out.isSome() ? out.get() : Subprocess::FD(STDOUT_FILENO),
@@ -1806,7 +1807,7 @@ Future<bool> MesosContainerizerProcess::launch(
 
   LOG(INFO) << "Starting nested container " << containerId;
 
-  const ContainerID rootContainerId = getRootContainerId(containerId);
+  const ContainerID rootContainerId = protobuf::getRootContainerId(containerId);
 
   CHECK(containers_.contains(rootContainerId));
   if (containers_[rootContainerId]->directory.isNone()) {
@@ -2118,7 +2119,7 @@ Future<bool> MesosContainerizerProcess::destroy(
   LOG(INFO) << "Destroying container " << containerId << " in "
             << container->state << " state";
 
-  // NOTE: We save the preivous state so that '_destroy' can properly
+  // NOTE: We save the previous state so that '_destroy' can properly
   // cleanup based on the previous state of the container.
   State previousState = container->state;
 

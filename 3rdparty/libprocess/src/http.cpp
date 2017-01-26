@@ -54,6 +54,7 @@
 #include <stout/strings.hpp>
 #include <stout/synchronized.hpp>
 #include <stout/try.hpp>
+#include <stout/unreachable.hpp>
 
 #include "decoder.hpp"
 #include "encoder.hpp"
@@ -191,7 +192,7 @@ Try<URL> URL::parse(const string& urlString)
 {
   // TODO(tnachen): Consider using C++11 regex support instead.
 
-  size_t schemePos = urlString.find_first_of("://");
+  size_t schemePos = urlString.find("://");
   if (schemePos == string::npos) {
     return Error("Missing scheme in url string");
   }
@@ -199,7 +200,7 @@ Try<URL> URL::parse(const string& urlString)
   const string scheme = strings::lower(urlString.substr(0, schemePos));
   const string urlPath = urlString.substr(schemePos + 3);
 
-  size_t pathPos = urlPath.find_first_of("/");
+  size_t pathPos = urlPath.find_first_of('/');
   if (pathPos == 0) {
     return Error("Host not found in url");
   }
@@ -427,26 +428,22 @@ Future<string> Pipe::Reader::read()
 
 Future<string> Pipe::Reader::readAll()
 {
+  Pipe::Reader reader = *this;
+
   std::shared_ptr<string> buffer(new string());
 
-  return _readAll(*this, buffer);
-}
-
-
-Future<string> Pipe::Reader::_readAll(
-    Pipe::Reader reader,
-    const std::shared_ptr<string>& buffer)
-{
-  return reader.read()
-    .then([reader, buffer](const string& read) -> Future<string> {
-      if (read.empty()) { // EOF.
-        return std::move(*buffer);
-      }
-
-      buffer->append(read);
-
-      return _readAll(reader, buffer);
-    });
+  return loop(
+      None(),
+      [=]() mutable {
+        return reader.read();
+      },
+      [=](const string& data) -> ControlFlow<string> {
+        if (data.empty()) { // EOF.
+          return Break(std::move(*buffer));
+        }
+        buffer->append(data);
+        return Continue();
+      });
 }
 
 
@@ -766,25 +763,24 @@ Try<vector<Response>> decodeResponses(const string& s)
 {
   ResponseDecoder decoder;
 
-  deque<http::Response*> responses = decoder.decode(s.data(), s.length());
+  vector<Response> result;
 
-  if (decoder.failed()) {
+  auto appendResult = [&result](const deque<http::Response*>& responses) {
     foreach (Response* response, responses) {
+      result.push_back(*response);
       delete response;
     }
+  };
 
+  appendResult(decoder.decode(s.data(), s.length()));
+  appendResult(decoder.decode("", 0));
+
+  if (decoder.failed()) {
     return Error("Decoding failed");
   }
 
-  if (responses.empty()) {
+  if (result.empty()) {
     return Error("No response decoded");
-  }
-
-  vector<Response> result;
-
-  foreach (Response* response, responses) {
-    result.push_back(*response);
-    delete response;
   }
 
   return result;
@@ -1396,34 +1392,37 @@ namespace internal {
 
 Future<Nothing> send(network::Socket socket, Encoder* encoder)
 {
-  size_t* size = new size_t();
-  return [=]() {
-    switch (encoder->kind()) {
-      case Encoder::DATA: {
-        const char* data = static_cast<DataEncoder*>(encoder)->next(size);
-        return socket.send(data, *size);
-      }
-      case Encoder::FILE: {
-        off_t offset = 0;
-        int fd = static_cast<FileEncoder*>(encoder)->next(&offset, size);
-        return socket.sendfile(fd, offset, *size);
-      }
-    }
-  }()
-  .then([=](size_t length) -> Future<Nothing> {
-    // Update the encoder with the amount sent.
-    encoder->backup(*size - length);
+  size_t* size = new size_t(0);
+  return loop(
+      None(),
+      [=]() {
+        switch (encoder->kind()) {
+          case Encoder::DATA: {
+            const char* data = static_cast<DataEncoder*>(encoder)->next(size);
+            return socket.send(data, *size);
+          }
+          case Encoder::FILE: {
+            off_t offset = 0;
+            int fd = static_cast<FileEncoder*>(encoder)->next(&offset, size);
+            return socket.sendfile(fd, offset, *size);
+          }
+        }
+        UNREACHABLE();
+      },
+      [=](size_t length) -> ControlFlow<Nothing> {
+        // Update the encoder with the amount sent.
+        encoder->backup(*size - length);
 
-    // See if there is any more of the message to send.
-    if (encoder->remaining() != 0) {
-      return send(socket, encoder);
-    }
+        // See if there is any more of the message to send.
+        if (encoder->remaining() != 0) {
+          return Continue();
+        }
 
-    return Nothing();
-  })
-  .onAny([=]() {
-    delete size;
-  });
+        return Break();
+      })
+    .onAny([=]() {
+      delete size;
+    });
 }
 
 
@@ -1515,36 +1514,40 @@ Future<Nothing> stream(
     const network::Socket& socket,
     http::Pipe::Reader reader)
 {
-  return reader.read()
-    .then([=](const string& data) mutable {
-      bool finished = false;
+  return loop(
+      None(),
+      [=]() mutable {
+        return reader.read();
+      },
+      [=](const string& data) mutable {
+        bool finished = false;
 
-      ostringstream out;
+        ostringstream out;
 
-      if (data.empty()) {
-        // Finished reading.
-        out << "0\r\n" << "\r\n";
-        finished = true;
-      } else {
-        out << std::hex << data.size() << "\r\n";
-        out << data;
-        out << "\r\n";
-      }
+        if (data.empty()) {
+          // Finished reading.
+          out << "0\r\n" << "\r\n";
+          finished = true;
+        } else {
+          out << std::hex << data.size() << "\r\n";
+          out << data;
+          out << "\r\n";
+        }
 
-      Encoder* encoder = new DataEncoder(out.str());
+        Encoder* encoder = new DataEncoder(out.str());
 
-      return send(socket, encoder)
-        .onAny([=]() {
-          delete encoder;
-        })
-        .then([=]() mutable -> Future<Nothing> {
-          if (!finished) {
-            return stream(socket, reader);
-          }
+        return send(socket, encoder)
+          .onAny([=]() {
+            delete encoder;
+          })
+          .then([=]() mutable -> ControlFlow<Nothing> {
+            if (!finished) {
+              return Continue();
+            }
 
-          return Nothing();
-        });
-    });
+            return Break();
+          });
+      });
 }
 
 
@@ -1607,9 +1610,9 @@ Future<Nothing> send(
       [=]() mutable {
         return pipeline.get();
       },
-      [=](const Option<Item>& item) -> Future<bool> {
+      [=](const Option<Item>& item) -> Future<ControlFlow<Nothing>> {
         if (item.isNone()) {
-          return false;
+          return Break();
         }
 
         Request* request = item->request;
@@ -1637,8 +1640,9 @@ Future<Nothing> send(
                 case Response::BODY:
                 case Response::NONE: return send(socket, response, request);
               }
+              UNREACHABLE();
             }()
-            .then([=]() {
+            .then([=]() -> ControlFlow<Nothing> {
               // Persist the connection if the request expects it and
               // the response doesn't include 'Connection: close'.
               bool persist = request->keepAlive;
@@ -1647,7 +1651,10 @@ Future<Nothing> send(
                   persist = false;
                 }
               }
-              return persist;
+              if (persist) {
+                return Continue();
+              }
+              return Break();
             });
           })
           .onAny([=]() {
@@ -1678,9 +1685,9 @@ Future<Nothing> receive(
       [=]() {
         return socket.recv(data, size);
       },
-      [=](size_t length) mutable -> Future<bool> {
+      [=](size_t length) mutable -> Future<ControlFlow<Nothing>> {
         if (length == 0) {
-          return false;
+          return Break();
         }
 
         // Decode as much of the data as possible into HTTP requests.
@@ -1706,7 +1713,7 @@ Future<Nothing> receive(
           pipeline.put(Item{request, f(*request)});
         }
 
-        return true; // Keep looping!
+        return Continue(); // Keep looping!
       })
     .onAny([=]() {
       delete decoder;
@@ -1794,15 +1801,15 @@ Future<Nothing> serve(
              [=]() mutable {
                return pipeline.get();
              },
-             [=](Option<Item> item) {
+             [=](Option<Item> item) -> ControlFlow<Nothing> {
                if (item.isNone()) {
-                 return false;
+                 return Break();
                }
                delete item->request;
                if (promise->future().hasDiscard()) {
                  item->response.discard();
                }
-               return true;
+               return Continue();
              });
       }
 

@@ -100,7 +100,7 @@ INSTANTIATE_TEST_CASE_P(
 
 
 // This test verifies that the default executor can launch a task group.
-TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, TaskRunning)
+TEST_P(DefaultExecutorTest, TaskRunning)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -177,7 +177,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, TaskRunning)
   const SlaveID slaveId = devolve(offer.agent_id());
 
   v1::TaskInfo taskInfo =
-    evolve(createTask(slaveId, resources, "sleep 1000"));
+    evolve(createTask(slaveId, resources, SLEEP_COMMAND(1000)));
 
   v1::TaskGroupInfo taskGroup;
   taskGroup.add_tasks()->CopyFrom(taskInfo);
@@ -242,7 +242,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, TaskRunning)
 // This test verifies that if the default executor is asked
 // to kill a task from a task group, it kills all tasks in
 // the group and sends TASK_KILLED updates for them.
-TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, KillTask)
+TEST_P(DefaultExecutorTest, KillTask)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -321,10 +321,10 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, KillTask)
   const SlaveID slaveId = devolve(offer.agent_id());
 
   v1::TaskInfo taskInfo1 =
-    evolve(createTask(slaveId, resources, "sleep 1000"));
+    evolve(createTask(slaveId, resources, SLEEP_COMMAND(1000)));
 
   v1::TaskInfo taskInfo2 =
-    evolve(createTask(slaveId, resources, "sleep 1000"));
+    evolve(createTask(slaveId, resources, SLEEP_COMMAND(1000)));
 
   v1::TaskGroupInfo taskGroup;
   taskGroup.add_tasks()->CopyFrom(taskInfo1);
@@ -439,9 +439,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, KillTask)
 // This test verifies that if the default executor receives a
 // non-zero exit status code for a task in the task group, it
 // kills all the other tasks (default restart policy).
-TEST_P_TEMP_DISABLED_ON_WINDOWS(
-    DefaultExecutorTest,
-    KillTaskGroupOnTaskFailure)
+TEST_P(DefaultExecutorTest, KillTaskGroupOnTaskFailure)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -523,7 +521,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
     evolve(createTask(slaveId, resources, "exit 1"));
 
   v1::TaskInfo taskInfo2 =
-    evolve(createTask(slaveId, resources, "sleep 1000"));
+    evolve(createTask(slaveId, resources, SLEEP_COMMAND(1000)));
 
   const hashset<v1::TaskID> tasks{taskInfo1.task_id(), taskInfo2.task_id()};
 
@@ -628,7 +626,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
 
 // Verifies that a task in a task group with an executor is accepted
 // during `TaskGroupInfo` validation.
-TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, TaskUsesExecutor)
+TEST_P(DefaultExecutorTest, TaskUsesExecutor)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -705,7 +703,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, TaskUsesExecutor)
   const SlaveID slaveId = devolve(offer.agent_id());
 
   v1::TaskInfo taskInfo =
-    evolve(createTask(slaveId, resources, "sleep 1000"));
+    evolve(createTask(slaveId, resources, SLEEP_COMMAND(1000)));
 
   taskInfo.mutable_executor()->CopyFrom(evolve(executorInfo));
 
@@ -806,12 +804,12 @@ TEST_P(DefaultExecutorTest, ROOT_ContainerStatusForTask)
   v1::TaskInfo task1 = v1::createTask(
       offer.agent_id(),
       v1::Resources::parse("cpus:0.1;mem:32;disk:32").get(),
-      v1::createCommandInfo("sleep 1000"));
+      v1::createCommandInfo(SLEEP_COMMAND(1000)));
 
   v1::TaskInfo task2 = v1::createTask(
       offer.agent_id(),
       v1::Resources::parse("cpus:0.1;mem:32;disk:32").get(),
-      v1::createCommandInfo("sleep 1000"));
+      v1::createCommandInfo(SLEEP_COMMAND(1000)));
 
   Future<Event::Update> updateRunning1;
   Future<Event::Update> updateRunning2;
@@ -854,6 +852,146 @@ TEST_P(DefaultExecutorTest, ROOT_ContainerStatusForTask)
   EXPECT_NE(status1.container_id(), status2.container_id());
   EXPECT_EQ(status1.container_id().parent(),
             status2.container_id().parent());
+}
+
+
+// This test verifies that the default executor commits suicide when the only
+// task in the task group exits with a non-zero status code.
+TEST_P_TEMP_DISABLED_ON_WINDOWS(DefaultExecutorTest, CommitSuicideOnTaskFailure)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  auto scheduler = std::make_shared<v1::MockHTTPScheduler>();
+
+  Resources resources =
+    Resources::parse("cpus:0.1;mem:32;disk:32").get();
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+
+  ExecutorInfo executorInfo;
+  executorInfo.set_type(ExecutorInfo::DEFAULT);
+
+  executorInfo.mutable_executor_id()->CopyFrom(DEFAULT_EXECUTOR_ID);
+  executorInfo.mutable_resources()->CopyFrom(resources);
+
+  // Disable AuthN on the agent.
+  slave::Flags flags = CreateSlaveFlags();
+  flags.authenticate_http_readwrite = false;
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  ASSERT_SOME(slave);
+
+  Future<Nothing> connected;
+  EXPECT_CALL(*scheduler, connected(_))
+    .WillOnce(FutureSatisfy(&connected));
+
+  v1::scheduler::TestMesos mesos(
+      master.get()->pid,
+      ContentType::PROTOBUF,
+      scheduler);
+
+  AWAIT_READY(connected);
+
+  Future<v1::scheduler::Event::Subscribed> subscribed;
+  EXPECT_CALL(*scheduler, subscribed(_, _))
+    .WillOnce(FutureArg<1>(&subscribed));
+
+  Future<v1::scheduler::Event::Offers> offers;
+  EXPECT_CALL(*scheduler, offers(_, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return());
+
+  EXPECT_CALL(*scheduler, heartbeat(_))
+    .WillRepeatedly(Return()); // Ignore heartbeats.
+
+  {
+    Call call;
+    call.set_type(Call::SUBSCRIBE);
+    Call::Subscribe* subscribe = call.mutable_subscribe();
+    subscribe->mutable_framework_info()->CopyFrom(evolve(frameworkInfo));
+
+    mesos.send(call);
+  }
+
+  AWAIT_READY(subscribed);
+
+  v1::FrameworkID frameworkId(subscribed->framework_id());
+
+  // Update `executorInfo` with the subscribed `frameworkId`.
+  executorInfo.mutable_framework_id()->CopyFrom(devolve(frameworkId));
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0, offers->offers().size());
+
+  Future<v1::scheduler::Event::Update> runningUpdate;
+  Future<v1::scheduler::Event::Update> failedUpdate;
+  EXPECT_CALL(*scheduler, update(_, _))
+    .WillOnce(FutureArg<1>(&runningUpdate))
+    .WillOnce(FutureArg<1>(&failedUpdate));
+
+  const v1::Offer& offer = offers->offers(0);
+  const SlaveID slaveId = devolve(offer.agent_id());
+
+  // The task exits with a non-zero status code.
+  v1::TaskInfo taskInfo1 =
+    evolve(createTask(slaveId, resources, "exit 1"));
+
+  v1::TaskGroupInfo taskGroup;
+  taskGroup.add_tasks()->CopyFrom(taskInfo1);
+
+  Future<Nothing> executorFailure;
+  EXPECT_CALL(*scheduler, failure(_, _))
+    .WillOnce(FutureSatisfy(&executorFailure));
+
+  {
+    Call call;
+    call.mutable_framework_id()->CopyFrom(frameworkId);
+    call.set_type(Call::ACCEPT);
+
+    Call::Accept* accept = call.mutable_accept();
+    accept->add_offer_ids()->CopyFrom(offer.id());
+
+    v1::Offer::Operation* operation = accept->add_operations();
+    operation->set_type(v1::Offer::Operation::LAUNCH_GROUP);
+
+    v1::Offer::Operation::LaunchGroup* launchGroup =
+      operation->mutable_launch_group();
+
+    launchGroup->mutable_executor()->CopyFrom(evolve(executorInfo));
+    launchGroup->mutable_task_group()->CopyFrom(taskGroup);
+
+    mesos.send(call);
+  }
+
+  AWAIT_READY(runningUpdate);
+  ASSERT_EQ(TASK_RUNNING, runningUpdate->status().state());
+
+  // Acknowledge the TASK_RUNNING update to receive the next update.
+
+  {
+    Call call;
+    call.mutable_framework_id()->CopyFrom(frameworkId);
+    call.set_type(Call::ACKNOWLEDGE);
+
+    Call::Acknowledge* acknowledge = call.mutable_acknowledge();
+
+    acknowledge->mutable_task_id()->CopyFrom(
+        runningUpdate->status().task_id());
+
+    acknowledge->mutable_agent_id()->CopyFrom(offer.agent_id());
+    acknowledge->set_uuid(runningUpdate->status().uuid());
+
+    mesos.send(call);
+  }
+
+  AWAIT_READY(failedUpdate);
+  ASSERT_EQ(TASK_FAILED, failedUpdate->status().state());
+
+  // The executor should commit suicide when the task exits with
+  // a non-zero status code.
+  AWAIT_READY(executorFailure);
 }
 
 } // namespace tests {

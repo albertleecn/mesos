@@ -12,6 +12,15 @@ Additional API Changes:
     changes to FrameworkInfo were only enforced after framework
     failover, not master failover.
 
+  * [MESOS-6286] - If an agent restarts but fails to complete recovery
+    within `agent_reregister_timeout`, the master will now mark the
+    agent as unreachable. This mainly changes behavior in two
+    situations: (a) the master will now be more robust if agent recovery
+    hangs indefinitely (e.g., due to a container being in a bad state),
+    and (b) if agent recovery takes a very long time (e.g., because the
+    agent's work directory contains a large number of completed tasks),
+    the master might now mark an agent unreachable that would previously
+    have been able to eventually recover successfully.
 
 Release Notes - Mesos - Version 1.1.1 (WIP)
 -------------------------------------------
@@ -20,6 +29,7 @@ Release Notes - Mesos - Version 1.1.1 (WIP)
 All Issues:
 ** Bug
   * [MESOS-6002] - The whiteout file cannot be removed correctly using aufs backend.
+  * [MESOS-6010] - Docker registry puller shows decode error "No response decoded".
   * [MESOS-6142] - Frameworks may RESERVE for an arbitrary role.
   * [MESOS-6360] - The handling of whiteout files in provisioner is not correct.
   * [MESOS-6411] - Add documentation for CNI port-mapper plugin.
@@ -28,6 +38,9 @@ All Issues:
   * [MESOS-6597] - Include v1 Operator API protos in generated JAR and python packages.
   * [MESOS-6621] - SSL downgrade path will CHECK-fail when using both temporary and persistent sockets.
   * [MESOS-6676] - Always re-link with scheduler during re-registration.
+  * [MESOS-6848] - The default executor does not exit if a single task pod fails.
+  * [MESOS-6852] - Nested container's launch command is not set correctly in docker/runtime isolator.
+  * [MESOS-6917] - Segfault when the executor sets an invalid UUID when sending a status update.
 
 
 Release Notes - Mesos - Version 1.1.0
@@ -447,7 +460,11 @@ Release Notes - Mesos - Version 1.0.3
 
 All Issues:
 ** Bug
+    * [MESOS-6052] - Unable to launch containers on CNI networks on CoreOS
     * [MESOS-6142] - Frameworks may RESERVE for an arbitrary role.
+    * [MESOS-6621] - SSL downgrade path will CHECK-fail when using both temporary and persistent sockets
+    * [MESOS-6676] - Always re-link with scheduler during re-registration.
+    * [MESOS-6917] - Segfault when the executor sets an invalid UUID when sending a status update.
 
 
 Release Notes - Mesos - Version 1.0.2

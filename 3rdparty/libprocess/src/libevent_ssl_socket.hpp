@@ -49,10 +49,14 @@ public:
   virtual Future<std::shared_ptr<SocketImpl>> accept();
   virtual SocketImpl::Kind kind() const { return SocketImpl::Kind::SSL; }
 
-  // This call is used to do the equivalent of shutting down the read
-  // end. This means finishing the future of any outstanding read
-  // request.
-  virtual Try<Nothing> shutdown();
+  // Shuts down the socket.
+  //
+  // NOTE: Although this method accepts an integer which specifies the
+  // shutdown mode, this parameter is ignored because SSL connections
+  // do not have a concept of read/write-only shutdown. If either end
+  // of the socket is closed, then the futures of any outstanding read
+  // requests will be completed (possibly as failures).
+  virtual Try<Nothing> shutdown(int how) override;
 
   // We need a post-initializer because 'shared_from_this()' is not
   // valid until the constructor has finished.
@@ -149,6 +153,11 @@ private:
   Owned<RecvRequest> recv_request;
   Owned<SendRequest> send_request;
   Owned<ConnectRequest> connect_request;
+
+  // Indicates whether or not an EOF has been received on this socket.
+  // Our accesses to this member are not synchronized because they all
+  // occur within the event loop, which runs on a single thread.
+  bool received_eof = false;
 
   // This is a weak pointer to 'this', i.e., ourselves, this class
   // instance. We need this for our event loop callbacks because it's

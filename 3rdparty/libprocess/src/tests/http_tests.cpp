@@ -52,7 +52,6 @@
 #include "encoder.hpp"
 
 namespace authentication = process::http::authentication;
-namespace ID = process::ID;
 namespace http = process::http;
 #ifndef __WINDOWS__
 namespace unix = process::network::unix;
@@ -62,6 +61,7 @@ using authentication::Authenticator;
 using authentication::AuthenticationResult;
 using authentication::BasicAuthenticator;
 
+using process::Failure;
 using process::Future;
 using process::Owned;
 using process::PID;
@@ -1598,6 +1598,7 @@ TEST(URLTest, ParseUrls)
 
   // Missing scheme.
   EXPECT_ERROR(URL::parse("mesos.com"));
+  EXPECT_ERROR(URL::parse("http/abcdef"));
   // Unknown scheme with no port.
   EXPECT_ERROR(URL::parse("abc://abc.com"));
   // Invalid urls.
@@ -2078,8 +2079,11 @@ TEST_F(HttpServeTest, Unix)
 
   Future<Nothing> serve = http::serve(
     socket,
-    [](const http::Request& request) {
-      CHECK_SOME(request.reader);
+    [](const http::Request& request) -> Future<http::Response> {
+      if (request.reader.isNone()) {
+        return Failure("Request reader is not set");
+      }
+
       http::Pipe::Reader reader = request.reader.get(); // Remove const.
 
       return reader.readAll()

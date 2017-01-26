@@ -35,6 +35,13 @@ message(STATUS "    BitMode:  ${BIT_MODE}")
 message(STATUS "    BuildID:  ${BUILDID}")
 message(STATUS "************************************************************")
 
+# CMAKE OPTIONS.
+################
+# NOTE: This silences a warning from CMake policy CMP0042.
+# By default, `CMAKE_MACOSX_RPATH` is ON, but CMake will continue to warn
+# unless the value is set explicitly in the build files.
+set(CMAKE_MACOSX_RPATH ON)
+
 # SET UP TESTING INFRASTRUCTURE.
 ################################
 enable_testing()
@@ -140,6 +147,10 @@ if (NOT WIN32)
   set(
     MESOS_IO_SWITCHBOARD mesos-io-switchboard
     CACHE STRING "Target for the IO switchboard")
+
+  set(
+    MESOS_CNI_PORT_MAPPER mesos-cni-port-mapper
+    CACHE STRING "Target for the CNI port-mapper plugin")
 endif (NOT WIN32)
 
 set(

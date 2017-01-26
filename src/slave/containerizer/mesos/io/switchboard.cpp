@@ -59,6 +59,7 @@
 
 #include "common/http.hpp"
 #include "common/recordio.hpp"
+#include "common/status_utils.hpp"
 
 #include "slave/flags.hpp"
 #include "slave/state.hpp"
@@ -79,6 +80,9 @@ using std::string;
 using std::vector;
 
 using process::await;
+using process::Break;
+using process::Continue;
+using process::ControlFlow;
 using process::Clock;
 using process::ErrnoFailure;
 using process::Failure;
@@ -683,12 +687,15 @@ Future<http::Connection> IOSwitchboard::connect(
       [=]() {
         return limiter->acquire();
       },
-      [=](const Nothing&) {
-        return infos.contains(containerId) && !os::exists(address->path());
+      [=](const Nothing&) -> ControlFlow<Nothing> {
+        if (infos.contains(containerId) && !os::exists(address->path())) {
+          return Continue();
+        }
+        return Break();
       })
     .then(defer(self(), [=]() -> Future<http::Connection> {
       if (!infos.contains(containerId)) {
-        return Failure("Container has or is being destroyed");
+        return Failure("I/O switchboard has shutdown");
       }
 
       // TODO(jieyu): We might still get a connection refused error
@@ -751,8 +758,6 @@ Future<Nothing> IOSwitchboard::cleanup(
   Option<pid_t> pid = infos[containerId]->pid;
   Future<Option<int>> status = infos[containerId]->status;
 
-  infos.erase(containerId);
-
   // If we have a pid, then we attempt to send it a SIGTERM to have it
   // shutdown gracefully. This is best effort, as it's likely that the
   // switchboard has already shutdown in the common case.
@@ -787,6 +792,19 @@ Future<Nothing> IOSwitchboard::cleanup(
   // DISCARDED cases as well.
   return await(list<Future<Option<int>>>{status}).then(
       defer(self(), [this, containerId]() -> Future<Nothing> {
+        // We only remove the 'containerId from our info struct once
+        // we are sure that the I/O switchboard has shutdown. If we
+        // removed it any earlier, attempts to connect to the I/O
+        // switchboard would fail.
+        //
+        // NOTE: One caveat of this approach is that this lambda will
+        // be invoked multiple times if `cleanup()` is called multiple
+        // times before the first instance of it is triggered. This is
+        // OK for now because the logic below has no side effects. If
+        // the logic below gets more complicated, we may need to
+        // revisit this approach.
+        infos.erase(containerId);
+
         // Best effort removal of the unix domain socket file created for
         // this container's `IOSwitchboardServer`. If it hasn't been
         // checkpointed yet, or the socket file itself hasn't been created,
@@ -851,7 +869,7 @@ void IOSwitchboard::reaped(
     LOG(INFO) << "I/O switchboard server process for container "
               << containerId << " has terminated (status=N/A)";
     return;
-  } else if (WIFEXITED(status.get()) && WEXITSTATUS(status.get()) == 0) {
+  } else if (WSUCCEEDED(status.get())) {
     LOG(INFO) << "I/O switchboard server process for container "
               << containerId << " has terminated (status=0)";
     return;
@@ -864,16 +882,7 @@ void IOSwitchboard::reaped(
 
   ContainerLimitation limitation;
   limitation.set_reason(TaskStatus::REASON_IO_SWITCHBOARD_EXITED);
-
-  if (WIFEXITED(status.get())) {
-    limitation.set_message(
-        "'IOSwitchboard' exited with status:"
-        " " + stringify(WEXITSTATUS(status.get())));
-  } else if (WIFSIGNALED(status.get())) {
-    limitation.set_message(
-        "'IOSwitchboard' exited with signal:"
-        " " + stringify(strsignal(WTERMSIG(status.get()))));
-  }
+  limitation.set_message("'IOSwitchboard' " + WSTRINGIFY(status.get()));
 
   infos[containerId]->limitation.set(limitation);
 
@@ -978,6 +987,7 @@ private:
   bool waitForConnection;
   Option<Duration> heartbeatInterval;
   bool inputConnected;
+  Future<unix::Socket> accept;
   Promise<Nothing> promise;
   Promise<Nothing> startRedirect;
   // The following must be a `std::list`
@@ -1111,7 +1121,7 @@ Future<Nothing> IOSwitchboardServerProcess::run()
       Future<Nothing> stdoutRedirect = process::io::redirect(
           stdoutFromFd,
           stdoutToFd,
-          4096,
+          process::io::BUFFERED_READ_SIZE,
           {defer(self(),
                  &Self::outputHook,
                  lambda::_1,
@@ -1129,7 +1139,7 @@ Future<Nothing> IOSwitchboardServerProcess::run()
         stderrRedirect = process::io::redirect(
             stderrFromFd,
             stderrToFd,
-            4096,
+            process::io::BUFFERED_READ_SIZE,
             {defer(self(),
                    &Self::outputHook,
                    lambda::_1,
@@ -1210,6 +1220,10 @@ Future<Nothing> IOSwitchboardServerProcess::unblock()
 
 void IOSwitchboardServerProcess::finalize()
 {
+  // Discard the server socket's `accept` future so that we do not
+  // maintain a reference to the socket, which would cause a leak.
+  accept.discard();
+
   foreach (HttpConnection& connection, outputConnections) {
     connection.close();
 
@@ -1251,7 +1265,10 @@ void IOSwitchboardServerProcess::heartbeatLoop()
 
 void IOSwitchboardServerProcess::acceptLoop()
 {
-  socket.accept()
+  // Store the server socket's `accept` future so that we can discard
+  // it during process finalization. Otherwise, we would maintain a
+  // reference to the socket, causing a leak.
+  accept = socket.accept()
     .onAny(defer(self(), [this](const Future<unix::Socket>& socket) {
       if (!socket.isReady()) {
         failure = Failure("Failed trying to accept connection");
@@ -1482,22 +1499,19 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
 
   // Loop through each record and process it. Return a proper
   // response once the last record has been fully processed.
-  Owned<http::Response> response(new http::Response());
-
   return loop(
       self(),
       [=]() {
         return reader->read();
       },
-      [=](const Result<agent::Call>& record) -> Future<bool> {
+      [=](const Result<agent::Call>& record)
+          -> Future<ControlFlow<http::Response>> {
         if (record.isNone()) {
-          *response = http::OK();
-          return false;
+          return Break(http::OK());
         }
 
         if (record.isError()) {
-          *response = http::BadRequest(record.error());
-          return false;
+          return Break(http::BadRequest(record.error()));
         }
 
         // Should have already been validated by the agent.
@@ -1508,8 +1522,7 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
         // Validate the rest of the `AttachContainerInput` message.
         Option<Error> error = validate(record->attach_container_input());
         if (error.isSome()) {
-          *response = http::BadRequest(error->message);
-          return false;
+          return Break(http::BadRequest(error->message));
         }
 
         const agent::ProcessIO& message =
@@ -1529,17 +1542,16 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
                     message.control().tty_info().window_size().columns());
 
                 if (window.isError()) {
-                  *response = http::BadRequest(
-                      "Unable to set the window size: "  + window.error());
-                  return false;
+                  return Break(http::BadRequest(
+                      "Unable to set the window size: " + window.error()));
                 }
 
-                return true;
+                return Continue();
               }
               case agent::ProcessIO::Control::HEARTBEAT: {
                 // For now, we ignore any interval information
                 // sent along with the heartbeat.
-                return true;
+                return Continue();
               }
               default: {
                 UNREACHABLE();
@@ -1552,7 +1564,7 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
             // If tty is enabled, the client is expected to send `EOT` instead.
             if (!tty && message.data().data().length() == 0) {
               os::close(stdinToFd);
-              return true;
+              return Continue();
             }
 
             // Write the STDIN data to `stdinToFd`. If there is a
@@ -1561,34 +1573,32 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
             // terminate the process. We don't terminate the process
             // here because we want to propagate an `InternalServerError`
             // back to the client.
-            Owned<Promise<bool>> condition(new Promise<bool>());
-
-            process::io::write(stdinToFd, message.data().data())
-              .onAny(defer(self(), [this, condition, response](
-                  const Future<Nothing>& future) {
-                if (future.isReady()) {
-                  condition->set(true);
-                  return;
-                }
-
+            return process::io::write(stdinToFd, message.data().data())
+              .then(defer(self(), [=](const Nothing&)
+                  -> ControlFlow<http::Response> {
+                return Continue();
+              }))
+              // TODO(benh):
+              // .recover(defer(self(), [=](...) {
+              //   failure = Failure("Failed writing to stdin: discarded");
+              //   return Break(http::InternalServerError(failure->message));
+              // }))
+              .repair(defer(self(), [=](
+                  const Future<ControlFlow<http::Response>>& future)
+                  -> ControlFlow<http::Response> {
                 failure = Failure(
-                    "Failed writing to stdin:"
-                    " " + (future.isFailed() ? future.failure() : "discarded"));
-
-                *response = http::InternalServerError(failure->message);
-
-                condition->set(false);
+                    "Failed writing to stdin: " + future.failure());
+                return Break(http::InternalServerError(failure->message));
               }));
-
-            return condition->future();
           }
           default: {
             UNREACHABLE();
           }
         }
       })
-    .then(defer(self(), [this, response](
-        const Future<Nothing> future) -> http::Response {
+    // We explicitly specify the return type to avoid a type deduction
+    // issue in some versions of clang. See MESOS-2943.
+    .then(defer(self(), [=](const http::Response& response) -> http::Response {
       // Reset `inputConnected` to allow future input connections.
       inputConnected = false;
 
@@ -1599,7 +1609,7 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
         terminate(self(), false);
       }
 
-      return *response;
+      return response;
     }));
 }
 

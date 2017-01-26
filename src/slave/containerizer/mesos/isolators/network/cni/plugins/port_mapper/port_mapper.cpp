@@ -25,7 +25,6 @@
 #include "slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/port_mapper.hpp"
 
 namespace io = process::io;
-namespace spec = mesos::internal::slave::cni::spec;
 
 using std::cerr;
 using std::endl;
@@ -511,8 +510,7 @@ Result<spec::NetworkInfo> PortMapper::delegate(const string& command)
   if (value.isSome()) {
     environment["PATH"] = value.get();
   } else {
-    environment["PATH"] =
-      "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+    environment["PATH"] = os::host_default_path();
   }
 
   Try<string> temp = os::mktemp();

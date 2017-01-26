@@ -16,8 +16,8 @@
 #include <direct.h>
 #include <io.h>
 #include <Psapi.h>
-#include <shlobj.h>
 #include <TlHelp32.h>
+#include <Userenv.h>
 
 #include <sys/utime.h>
 
@@ -32,10 +32,12 @@
 #include <stout/nothing.hpp>
 #include <stout/option.hpp>
 #include <stout/path.hpp>
+#include <stout/strings.hpp>
 #include <stout/try.hpp>
 #include <stout/windows.hpp>
 
 #include <stout/os/os.hpp>
+#include <stout/os/getenv.hpp>
 #include <stout/os/process.hpp>
 #include <stout/os/read.hpp>
 
@@ -724,27 +726,24 @@ inline Try<Nothing> kill_job(pid_t pid)
 
 inline Try<std::string> var()
 {
-  wchar_t* var_folder = nullptr;
-
-  // Retrieves the directory of `ProgramData` using the default options.
-  // NOTE: The location of `ProgramData` is fixed and so does not
-  // depend on the current user.
-  if (::SHGetKnownFolderPath(
-          FOLDERID_ProgramData,
-          KF_FLAG_DEFAULT,
-          nullptr,
-          &var_folder) // `PWSTR` is `typedef wchar_t*`.
-      != S_OK) {
-    return WindowsError("os::var: Call to `SHGetKnownFolderPath` failed");
+  // Get the `ProgramData` path. First, find the size of the output buffer.
+  // This size includes the null-terminating character.
+  DWORD size = 0;
+  if (::GetAllUsersProfileDirectoryW(nullptr, &size)) {
+    // The expected behavior here is for the function to "fail"
+    // and return `false`, and `size` receives necessary buffer size.
+    return WindowsError(
+        "os::var: `GetAllUsersProfileDirectory` succeeded unexpectedly");
   }
 
-  // Convert `wchar_t*` to `wstring`.
-  std::wstring wvar_folder(var_folder);
+  std::vector<wchar_t> var_folder(size);
+  if (!::GetAllUsersProfileDirectoryW(&var_folder[0], &size)) {
+    return WindowsError(
+        "os::var: `GetAllUsersProfileDirectory` failed");
+  }
 
-  // Free the buffer allocated by `SHGetKnownFolderPath`.
-  CoTaskMemFree(static_cast<void*>(var_folder));
-
-  // Convert UTF-16 `wstring` to UTF-8 `string`.
+  // Convert UTF-16 `wchar[]` to UTF-8 `string`.
+  std::wstring wvar_folder(&var_folder[0]);
   std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
   return converter.to_bytes(wvar_folder);
 }
@@ -803,6 +802,22 @@ inline intptr_t fd_to_handle(int in)
 inline int handle_to_fd(intptr_t in, int flags)
 {
   return ::_open_osfhandle(in, flags);
+}
+
+
+// Returns a host-specific default for the `PATH` environment variable, based
+// on the configuration of the host.
+inline std::string host_default_path()
+{
+  // NOTE: On Windows, this code must run on the host where we are
+  // expecting to `exec` the task, because the value of
+  // `%SYSTEMROOT%` is not identical on all platforms.
+  const Option<std::string> systemRootEnv = os::getenv("SYSTEMROOT");
+  const std::string systemRoot = systemRootEnv.isSome()
+    ? systemRootEnv.get()
+    : "C:\\WINDOWS";
+
+  return strings::join(";", systemRoot, path::join(systemRoot, "system32"));
 }
 
 } // namespace os {

@@ -50,11 +50,6 @@
 #error "Mesos doesn't currently support the `_UNICODE` Windows header constant"
 #endif // _UNICODE
 
-// Similarly, the Windows API uses `PWSTR` to mean `wchar_t*`,
-// but rather than assuming this is true, it should be asserted.
-static_assert(std::is_same<PWSTR, wchar_t*>::value,
-              "Expected `PWSTR` to be of type `wchar_t*`.");
-
 // An RAII `HANDLE`.
 class SharedHandle : public std::shared_ptr<void>
 {
@@ -146,9 +141,7 @@ inline BOOL GetMessage(
 #define O_APPEND _O_APPEND
 #define O_CLOEXEC _O_NOINHERIT
 
-// TODO(hausdorff): (MESOS-3398) Not defined on Windows. This value is
-// temporary.
-#define MAXHOSTNAMELEN 64
+#define MAXHOSTNAMELEN NI_MAXHOST
 
 #define PATH_MAX _MAX_PATH
 
