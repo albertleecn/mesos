@@ -57,6 +57,7 @@
 #include "tests/allocator.hpp"
 #include "tests/containerizer.hpp"
 #include "tests/mesos.hpp"
+#include "tests/resources_utils.hpp"
 
 #include "tests/containerizer/mock_containerizer.hpp"
 
@@ -894,8 +895,11 @@ TEST_P(MasterAPITest, GetRoles)
   ASSERT_EQ(2, v1Response->get_roles().roles().size());
   EXPECT_EQ("role1", v1Response->get_roles().roles(1).name());
   EXPECT_EQ(2.5, v1Response->get_roles().roles(1).weight());
-  ASSERT_EQ(v1::Resources::parse(slaveFlags.resources.get()).get(),
-            v1Response->get_roles().roles(1).resources());
+  ASSERT_EQ(
+      allocatedResources(
+          devolve(v1::Resources::parse(slaveFlags.resources.get()).get()),
+          "role1"),
+      devolve(v1Response->get_roles().roles(1).resources()));
 
   driver.stop();
   driver.join();
@@ -973,7 +977,8 @@ TEST_P(MasterAPITest, ReserveResources)
   ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
-  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
+  EXPECT_TRUE(Resources(offer.resources()).contains(
+      allocatedResources(unreserved, frameworkInfo.role())));
 
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
@@ -1006,7 +1011,8 @@ TEST_P(MasterAPITest, ReserveResources)
   ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
-  EXPECT_TRUE(Resources(offer.resources()).contains(dynamicallyReserved));
+  EXPECT_TRUE(Resources(offer.resources()).contains(
+      allocatedResources(dynamicallyReserved, frameworkInfo.role())));
 
   driver.stop();
   driver.join();
@@ -1083,7 +1089,8 @@ TEST_P(MasterAPITest, UnreserveResources)
   ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
-  EXPECT_TRUE(Resources(offer.resources()).contains(dynamicallyReserved));
+  EXPECT_TRUE(Resources(offer.resources()).contains(
+      allocatedResources(dynamicallyReserved, frameworkInfo.role())));
 
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers));
@@ -1116,7 +1123,8 @@ TEST_P(MasterAPITest, UnreserveResources)
   offer = offers.get()[0];
 
   // Verifies if the resources are unreserved.
-  EXPECT_TRUE(Resources(offer.resources()).contains(unreserved));
+  EXPECT_TRUE(Resources(offer.resources()).contains(
+      allocatedResources(unreserved, frameworkInfo.role())));
 
   driver.stop();
   driver.join();
@@ -1466,7 +1474,7 @@ TEST_P(MasterAPITest, SubscribeAgentEvents)
 
 // This test verifies that recovered but yet to reregister agents are returned
 // in `recovered_agents` field of `GetAgents` response.
-TEST_P(MasterAPITest, GetRecoveredAgents)
+TEST_P_TEMP_DISABLED_ON_WINDOWS(MasterAPITest, GetRecoveredAgents)
 {
   master::Flags masterFlags = CreateMasterFlags();
   masterFlags.registry = "replicated_log";
@@ -2022,7 +2030,8 @@ TEST_P(MasterAPITest, CreateAndDestroyVolumes)
   EXPECT_NE(0u, offers.get().size());
   Offer offer = offers.get()[0];
 
-  EXPECT_TRUE(Resources(offer.resources()).contains(volume));
+  EXPECT_TRUE(Resources(offer.resources()).contains(
+      allocatedResources(volume, frameworkInfo.role())));
 
   Resources taskResources = Resources::parse(
       "disk:256",
@@ -4097,6 +4106,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentAPITest, LaunchNestedContainerSession)
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
   ASSERT_EQ(stringify(contentType), response->headers.at("Content-Type"));
+  ASSERT_NONE(response->headers.get(MESSAGE_CONTENT_TYPE));
   ASSERT_EQ(http::Response::PIPE, response->type);
 
   ASSERT_SOME(response->reader);
@@ -4502,10 +4512,14 @@ TEST_F(AgentAPITest, AttachContainerInputFailure)
   call.mutable_attach_container_input()->mutable_container_id()
     ->set_value(containerIds->begin()->value());
 
-  ContentType contentType = ContentType::STREAMING_PROTOBUF;
+  ContentType contentType = ContentType::RECORDIO;
+  ContentType messageContentType = ContentType::PROTOBUF;
+
+  http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+  headers[MESSAGE_CONTENT_TYPE] = stringify(messageContentType);
 
   ::recordio::Encoder<v1::agent::Call> encoder(lambda::bind(
-        serialize, contentType, lambda::_1));
+      serialize, messageContentType, lambda::_1));
 
   EXPECT_CALL(containerizer, attach(_))
     .WillOnce(Return(process::Failure("Unsupported")));
@@ -4513,7 +4527,7 @@ TEST_F(AgentAPITest, AttachContainerInputFailure)
   Future<http::Response> response = http::post(
     slave.get()->pid,
     "api/v1",
-    createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+    headers,
     encoder.encode(call),
     stringify(contentType));
 
@@ -4544,6 +4558,12 @@ TEST_F(AgentAPITest, AttachContainerInputValidation)
   AWAIT_READY(__recover);
   Clock::settle();
 
+  ContentType contentType = ContentType::RECORDIO;
+  ContentType messageContentType = ContentType::PROTOBUF;
+
+  http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+  headers[MESSAGE_CONTENT_TYPE] = stringify(messageContentType);
+
   // Missing 'attach_container_input.container_id'.
   {
     v1::agent::Call call;
@@ -4552,15 +4572,13 @@ TEST_F(AgentAPITest, AttachContainerInputValidation)
     call.mutable_attach_container_input()->set_type(
         v1::agent::Call::AttachContainerInput::CONTAINER_ID);
 
-    ContentType contentType = ContentType::STREAMING_PROTOBUF;
-
     ::recordio::Encoder<v1::agent::Call> encoder(lambda::bind(
-        serialize, contentType, lambda::_1));
+        serialize, messageContentType, lambda::_1));
 
     Future<http::Response> response = http::post(
         slave.get()->pid,
         "api/v1",
-        createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+        headers,
         encoder.encode(call),
         stringify(contentType));
 
@@ -4576,19 +4594,137 @@ TEST_F(AgentAPITest, AttachContainerInputValidation)
     call.mutable_attach_container_input()->set_type(
         v1::agent::Call::AttachContainerInput::PROCESS_IO);
 
-    ContentType contentType = ContentType::STREAMING_PROTOBUF;
+    ::recordio::Encoder<v1::agent::Call> encoder(lambda::bind(
+        serialize, messageContentType, lambda::_1));
+
+    Future<http::Response> response = http::post(
+        slave.get()->pid,
+        "api/v1",
+        headers,
+        encoder.encode(call),
+        stringify(contentType));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::BadRequest().status, response);
+  }
+}
+
+
+// This test verifies that any missing headers or unsupported media
+// types in the request result in a 4xx response.
+TEST_F(AgentAPITest, HeaderValidation)
+{
+  Clock::pause();
+
+  Future<Nothing> __recover = FUTURE_DISPATCH(_, &Slave::__recover);
+
+  StandaloneMasterDetector detector;
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(&detector);
+
+  ASSERT_SOME(slave);
+
+  // Wait for the agent to finish recovery.
+  AWAIT_READY(__recover);
+  Clock::settle();
+
+  // Missing 'Message-Content-Type' header for a streaming request.
+  {
+    v1::agent::Call call;
+    call.set_type(v1::agent::Call::ATTACH_CONTAINER_INPUT);
+
+    call.mutable_attach_container_input()->set_type(
+        v1::agent::Call::AttachContainerInput::CONTAINER_ID);
 
     ::recordio::Encoder<v1::agent::Call> encoder(lambda::bind(
-        serialize, contentType, lambda::_1));
+        serialize, ContentType::PROTOBUF, lambda::_1));
 
     Future<http::Response> response = http::post(
         slave.get()->pid,
         "api/v1",
         createBasicAuthHeaders(DEFAULT_CREDENTIAL),
         encoder.encode(call),
-        stringify(contentType));
+        stringify(ContentType::RECORDIO));
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::BadRequest().status, response);
+  }
+
+  // Unsupported 'Message-Content-Type' media type for a streaming request.
+  {
+    v1::agent::Call call;
+    call.set_type(v1::agent::Call::ATTACH_CONTAINER_INPUT);
+
+    call.mutable_attach_container_input()->set_type(
+        v1::agent::Call::AttachContainerInput::CONTAINER_ID);
+
+    ::recordio::Encoder<v1::agent::Call> encoder(lambda::bind(
+        serialize, ContentType::PROTOBUF, lambda::_1));
+
+    http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+    headers[MESSAGE_CONTENT_TYPE] = "unsupported/media-type";
+
+    Future<http::Response> response = http::post(
+        slave.get()->pid,
+        "api/v1",
+        headers,
+        encoder.encode(call),
+        stringify(ContentType::RECORDIO));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::UnsupportedMediaType().status,
+                                    response);
+  }
+
+  // Unsupported 'Message-Accept' media type for a streaming response.
+  {
+    v1::agent::Call call;
+    call.set_type(v1::agent::Call::ATTACH_CONTAINER_OUTPUT);
+
+    v1::ContainerID containerId;
+    containerId.set_value(UUID::random().toString());
+
+    call.mutable_attach_container_output()->mutable_container_id()
+      ->CopyFrom(containerId);
+
+    ContentType contentType = ContentType::PROTOBUF;
+
+    http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+    headers["Accept"] = stringify(ContentType::RECORDIO);
+    headers[MESSAGE_ACCEPT] = "unsupported/media-type";
+
+    Future<http::Response> response = http::post(
+        slave.get()->pid,
+        "api/v1",
+        headers,
+        serialize(contentType, call),
+        stringify(contentType));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::NotAcceptable().status, response);
+  }
+
+  // Setting 'Message-Content-Type' header for a non-streaming request.
+  {
+    v1::ContainerID containerId;
+    containerId.set_value(UUID::random().toString());
+
+    v1::agent::Call call;
+    call.set_type(v1::agent::Call::ATTACH_CONTAINER_OUTPUT);
+
+    call.mutable_attach_container_output()->mutable_container_id()
+      ->CopyFrom(containerId);
+
+    ContentType contentType = ContentType::PROTOBUF;
+
+    http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
+    headers[MESSAGE_CONTENT_TYPE] = stringify(ContentType::PROTOBUF);
+
+    Future<http::Response> response = http::streaming::post(
+        slave.get()->pid,
+        "api/v1",
+        headers,
+        serialize(contentType, call),
+        stringify(contentType));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::UnsupportedMediaType().status,
+                                    response);
   }
 }
 
@@ -4640,7 +4776,7 @@ INSTANTIATE_TEST_CASE_P(
     ContentType,
     AgentAPIStreamingTest,
     ::testing::Values(
-        ContentType::STREAMING_PROTOBUF, ContentType::STREAMING_JSON));
+        ContentType::PROTOBUF, ContentType::JSON));
 
 
 // This test launches a child container with TTY and the 'cat' command
@@ -4735,7 +4871,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentAPIStreamingTest,
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
   }
 
-  ContentType contentType = GetParam();
+  ContentType messageContentType = GetParam();
 
   Option<http::Pipe::Reader> output;
 
@@ -4747,14 +4883,14 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentAPIStreamingTest,
       ->CopyFrom(containerId);
 
     http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
-    headers["Accept"] = stringify(contentType);
+    headers["Accept"] = stringify(messageContentType);
 
     Future<http::Response> response = http::streaming::post(
         slave.get()->pid,
         "api/v1",
         headers,
-        serialize(ContentType::PROTOBUF, call),
-        stringify(ContentType::PROTOBUF));
+        serialize(messageContentType, call),
+        stringify(messageContentType));
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
     ASSERT_SOME(response->reader);
@@ -4779,7 +4915,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentAPIStreamingTest,
   http::Pipe::Reader reader = pipe.reader();
 
   ::recordio::Encoder<v1::agent::Call> encoder(lambda::bind(
-      serialize, contentType, lambda::_1));
+      serialize, messageContentType, lambda::_1));
 
   // Prepare the data that needs to be streamed to the entrypoint
   // of the container.
@@ -4854,8 +4990,8 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentAPIStreamingTest,
     http::Connection connection = _connection.get(); // Remove const.
 
     http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
-    headers["Accept"] = stringify(contentType);
-    headers["Content-Type"] = stringify(contentType);
+    headers["Content-Type"] = stringify(ContentType::RECORDIO);
+    headers[MESSAGE_CONTENT_TYPE] = stringify(messageContentType);
 
     http::Request request;
     request.url = agent;
@@ -4871,7 +5007,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentAPIStreamingTest,
   ASSERT_SOME(output);
 
   Future<tuple<string, string>> received =
-    getProcessIOData(contentType, output.get());
+    getProcessIOData(messageContentType, output.get());
 
   AWAIT_READY(received);
 
@@ -4892,11 +5028,9 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(AgentAPIStreamingTest,
 // entrypoint and verifies that any data streamed to the container via
 // an ATTACH_CONTAINER_INPUT call is received by the client on the
 // output stream.
-//
-// TODO(alexr): Enable this test once MESOS-6913 is resolved.
 TEST_P_TEMP_DISABLED_ON_WINDOWS(
     AgentAPIStreamingTest,
-    DISABLED_AttachInputToNestedContainerSession)
+    AttachInputToNestedContainerSession)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -4953,7 +5087,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
   containerId.set_value(UUID::random().toString());
   containerId.mutable_parent()->set_value(containerIds->begin()->value());
 
-  ContentType contentType = GetParam();
+  ContentType messageContentType = GetParam();
 
   Future<http::Response> sessionResponse;
 
@@ -4970,14 +5104,15 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
       ->CopyFrom(v1::createCommandInfo("cat"));
 
     http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
-    headers["Accept"] = stringify(contentType);
+    headers["Accept"] = stringify(ContentType::RECORDIO);
+    headers[MESSAGE_ACCEPT] = stringify(messageContentType);
 
     sessionResponse = http::streaming::post(
         slave.get()->pid,
         "api/v1",
         headers,
-        serialize(ContentType::PROTOBUF, call),
-        stringify(ContentType::PROTOBUF));
+        serialize(messageContentType, call),
+        stringify(messageContentType));
 
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, sessionResponse);
   }
@@ -5002,7 +5137,7 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
   http::Pipe::Reader reader = pipe.reader();
 
   ::recordio::Encoder<v1::agent::Call> encoder(lambda::bind(
-      serialize, contentType, lambda::_1));
+      serialize, messageContentType, lambda::_1));
 
   {
     v1::agent::Call call;
@@ -5074,8 +5209,8 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
     http::Connection connection = _connection.get(); // Remove const.
 
     http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
-    headers["Accept"] = stringify(contentType);
-    headers["Content-Type"] = stringify(contentType);
+    headers["Content-Type"] = stringify(ContentType::RECORDIO);
+    headers[MESSAGE_CONTENT_TYPE] = stringify(messageContentType);
 
     http::Request request;
     request.url = agent;
@@ -5092,13 +5227,12 @@ TEST_P_TEMP_DISABLED_ON_WINDOWS(
   ASSERT_SOME(sessionResponse->reader);
 
   Option<http::Pipe::Reader> output = sessionResponse->reader.get();
-    ASSERT_SOME(output);
+  ASSERT_SOME(output);
 
   Future<tuple<string, string>> received =
-    getProcessIOData(contentType, output.get());
+    getProcessIOData(messageContentType, output.get());
 
   AWAIT_READY(received);
-
 
   string stdoutReceived;
   string stderrReceived;

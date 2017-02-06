@@ -1124,6 +1124,7 @@ MESOS_LINUX_FILES =									\
   linux/cgroups.cpp									\
   linux/fs.cpp										\
   linux/ldcache.cpp									\
+  linux/ldd.cpp										\
   linux/perf.cpp									\
   linux/systemd.cpp									\
   slave/containerizer/mesos/linux_launcher.cpp						\
@@ -1164,6 +1165,7 @@ MESOS_LINUX_FILES +=									\
   linux/cgroups.hpp									\
   linux/fs.hpp										\
   linux/ldcache.hpp									\
+  linux/ldd.hpp										\
   linux/ns.hpp										\
   linux/perf.hpp									\
   linux/sched.hpp									\
@@ -1205,10 +1207,10 @@ MESOS_LINUX_FILES +=									\
   slave/containerizer/mesos/provisioner/backends/overlay.hpp
 
 if ENABLE_XFS_DISK_ISOLATOR
-MESOS_LINUX_FILES +=                                                    \
-  slave/containerizer/mesos/isolators/xfs/utils.cpp                     \
-  slave/containerizer/mesos/isolators/xfs/utils.hpp                     \
-  slave/containerizer/mesos/isolators/xfs/disk.cpp                      \
+MESOS_LINUX_FILES +=							\
+  slave/containerizer/mesos/isolators/xfs/utils.cpp			\
+  slave/containerizer/mesos/isolators/xfs/utils.hpp			\
+  slave/containerizer/mesos/isolators/xfs/disk.cpp			\
   slave/containerizer/mesos/isolators/xfs/disk.hpp
 endif
 
@@ -2281,6 +2283,7 @@ mesos_tests_SOURCES =						\
   tests/common/type_utils_tests.cpp				\
   tests/containerizer/appc_spec_tests.cpp			\
   tests/containerizer/composing_containerizer_tests.cpp		\
+  tests/containerizer/containerizer_tests.cpp			\
   tests/containerizer/cpu_isolator_tests.cpp			\
   tests/containerizer/docker_containerizer_tests.cpp		\
   tests/containerizer/docker_spec_tests.cpp			\
@@ -2297,7 +2300,6 @@ mesos_tests_SOURCES =						\
   tests/containerizer/provisioner_backend_tests.cpp		\
   tests/containerizer/provisioner_docker_tests.cpp		\
   tests/containerizer/provisioner_paths_tests.cpp		\
-  tests/containerizer/volume_image_isolator_tests.cpp		\
   tests/containerizer/volume_sandbox_path_isolator_tests.cpp
 
 if ENABLE_XFS_DISK_ISOLATOR
@@ -2332,6 +2334,7 @@ mesos_tests_DEPENDENCIES =					\
 if OS_LINUX
 mesos_tests_SOURCES +=						\
   tests/ldcache_tests.cpp					\
+  tests/ldd_tests.cpp						\
   tests/containerizer/linux_capabilities_isolator_tests.cpp	\
   tests/containerizer/capabilities_tests.cpp			\
   tests/containerizer/capabilities_test_helper.cpp		\
@@ -2346,9 +2349,11 @@ mesos_tests_SOURCES +=						\
   tests/containerizer/ns_tests.cpp				\
   tests/containerizer/nvidia_gpu_isolator_tests.cpp		\
   tests/containerizer/perf_tests.cpp				\
+  tests/containerizer/rootfs.cpp				\
   tests/containerizer/runtime_isolator_tests.cpp		\
   tests/containerizer/sched_tests.cpp				\
-  tests/containerizer/setns_test_helper.cpp
+  tests/containerizer/setns_test_helper.cpp			\
+  tests/containerizer/volume_image_isolator_tests.cpp
 endif
 
 if WITH_NETWORK_ISOLATOR

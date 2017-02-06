@@ -1526,7 +1526,7 @@ e.g., <code>APPC,DOCKER</code>.
   </td>
   <td>
 Strategy for provisioning container rootfs from images, e.g., <code>aufs</code>,
-<code>bind</code>, <code>copy</code>, <code>overlay</code>. (default: copy)
+<code>bind</code>, <code>copy</code>, <code>overlay</code>.
   </td>
 </tr>
 <tr>
@@ -1763,6 +1763,17 @@ Example JSON:
 Run containers with revocable CPU at a lower priority than
 normal containers (non-revocable cpu). Currently only
 supported by the cgroups/cpu isolator. (default: true)
+  </td>
+</tr>
+<tr>
+  <td>
+    --runtime_dir
+  </td>
+  <td>
+Path of the agent runtime directory. This is where runtime data
+is stored by an agent that it needs to persist across crashes (but
+not across reboots). This directory will be cleared on reboot.
+(Example: <code>/var/run/mesos</code>)
   </td>
 </tr>
 <tr>

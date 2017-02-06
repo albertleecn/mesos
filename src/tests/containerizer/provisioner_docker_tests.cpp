@@ -44,7 +44,9 @@
 #include "tests/mesos.hpp"
 #include "tests/utils.hpp"
 
+#ifdef __linux__
 #include "tests/containerizer/docker_archive.hpp"
+#endif // __linux__
 
 namespace master = mesos::internal::master;
 namespace paths = mesos::internal::slave::docker::paths;
@@ -91,12 +93,12 @@ public:
     const string layerPath1 = paths::getImageLayerRootfsPath(
         flags.docker_store_dir,
         "123",
-        flags.image_provisioner_backend);
+        COPY_BACKEND);
 
     const string layerPath2 = paths::getImageLayerRootfsPath(
         flags.docker_store_dir,
         "456",
-        flags.image_provisioner_backend);
+        COPY_BACKEND);
 
     EXPECT_TRUE(os::exists(layerPath1));
     EXPECT_TRUE(os::exists(layerPath2));
@@ -182,14 +184,10 @@ protected:
 // stored in the proper locations accessible to the Docker provisioner.
 TEST_F(ProvisionerDockerLocalStoreTest, LocalStoreTestWithTar)
 {
-  const string archivesDir = path::join(os::getcwd(), "images");
-  const string image = path::join(archivesDir, "abc");
-  ASSERT_SOME(os::mkdir(archivesDir));
-  ASSERT_SOME(os::mkdir(image));
-
   slave::Flags flags;
-  flags.docker_registry = archivesDir;
+  flags.docker_registry = path::join(os::getcwd(), "images");
   flags.docker_store_dir = path::join(os::getcwd(), "store");
+  flags.image_provisioner_backend = COPY_BACKEND;
 
   Try<Owned<slave::Store>> store = slave::docker::Store::create(flags);
   ASSERT_SOME(store);
@@ -198,7 +196,9 @@ TEST_F(ProvisionerDockerLocalStoreTest, LocalStoreTestWithTar)
   mesosImage.set_type(Image::DOCKER);
   mesosImage.mutable_docker()->set_name("abc");
 
-  Future<slave::ImageInfo> imageInfo = store.get()->get(mesosImage);
+  Future<slave::ImageInfo> imageInfo =
+    store.get()->get(mesosImage, COPY_BACKEND);
+
   AWAIT_READY(imageInfo);
 
   verifyLocalDockerImage(flags, imageInfo.get().layers);
@@ -212,6 +212,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, MetadataManagerInitialization)
   slave::Flags flags;
   flags.docker_registry = path::join(os::getcwd(), "images");
   flags.docker_store_dir = path::join(os::getcwd(), "store");
+  flags.image_provisioner_backend = COPY_BACKEND;
 
   Try<Owned<slave::Store>> store = slave::docker::Store::create(flags);
   ASSERT_SOME(store);
@@ -220,7 +221,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, MetadataManagerInitialization)
   image.set_type(Image::DOCKER);
   image.mutable_docker()->set_name("abc");
 
-  Future<slave::ImageInfo> imageInfo = store.get()->get(image);
+  Future<slave::ImageInfo> imageInfo = store.get()->get(image, COPY_BACKEND);
   AWAIT_READY(imageInfo);
 
   // Store is deleted and recreated. Metadata Manager is initialized upon
@@ -231,7 +232,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, MetadataManagerInitialization)
   Future<Nothing> recover = store.get()->recover();
   AWAIT_READY(recover);
 
-  imageInfo = store.get()->get(image);
+  imageInfo = store.get()->get(image, COPY_BACKEND);
   AWAIT_READY(imageInfo);
   verifyLocalDockerImage(flags, imageInfo.get().layers);
 }
@@ -242,21 +243,23 @@ class MockPuller : public Puller
 public:
   MockPuller()
   {
-    EXPECT_CALL(*this, pull(_, _))
+    EXPECT_CALL(*this, pull(_, _, _))
       .WillRepeatedly(Invoke(this, &MockPuller::unmocked_pull));
   }
 
   virtual ~MockPuller() {}
 
-  MOCK_METHOD2(
+  MOCK_METHOD3(
       pull,
       Future<vector<string>>(
           const spec::ImageReference&,
+          const string&,
           const string&));
 
   Future<vector<string>> unmocked_pull(
       const spec::ImageReference& reference,
-      const string& directory)
+      const string& directory,
+      const string& backend)
   {
     // TODO(gilbert): Allow return list to be overridden.
     return vector<string>();
@@ -269,13 +272,8 @@ public:
 // when multiple requests for the same image is in flight.
 TEST_F(ProvisionerDockerLocalStoreTest, PullingSameImageSimutanuously)
 {
-  const string archivesDir = path::join(os::getcwd(), "images");
-  const string image = path::join(archivesDir, "abc:latest");
-  ASSERT_SOME(os::mkdir(archivesDir));
-  ASSERT_SOME(os::mkdir(image));
-
   slave::Flags flags;
-  flags.docker_registry = "file://" + archivesDir;
+  flags.docker_registry = path::join(os::getcwd(), "images");
   flags.docker_store_dir = path::join(os::getcwd(), "store");
 
   MockPuller* puller = new MockPuller();
@@ -283,7 +281,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, PullingSameImageSimutanuously)
   Future<string> directory;
   Promise<vector<string>> promise;
 
-  EXPECT_CALL(*puller, pull(_, _))
+  EXPECT_CALL(*puller, pull(_, _, _))
     .WillOnce(testing::DoAll(FutureSatisfy(&pull),
                              FutureArg<1>(&directory),
                              Return(promise.future())));
@@ -296,7 +294,9 @@ TEST_F(ProvisionerDockerLocalStoreTest, PullingSameImageSimutanuously)
   mesosImage.set_type(Image::DOCKER);
   mesosImage.mutable_docker()->set_name("abc");
 
-  Future<slave::ImageInfo> imageInfo1 = store.get()->get(mesosImage);
+  Future<slave::ImageInfo> imageInfo1 =
+    store.get()->get(mesosImage, COPY_BACKEND);
+
   AWAIT_READY(pull);
   AWAIT_READY(directory);
 
@@ -317,7 +317,8 @@ TEST_F(ProvisionerDockerLocalStoreTest, PullingSameImageSimutanuously)
       os::write(path::join(layerPath, "json"), stringify(manifest)));
 
   ASSERT_TRUE(imageInfo1.isPending());
-  Future<slave::ImageInfo> imageInfo2 = store.get()->get(mesosImage);
+  Future<slave::ImageInfo> imageInfo2 =
+    store.get()->get(mesosImage, COPY_BACKEND);
 
   const vector<string> result = {"456"};
 

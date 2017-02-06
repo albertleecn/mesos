@@ -195,7 +195,6 @@ if (NOT WIN32)
     containerizer/provisioner_backend_tests.cpp
     containerizer/provisioner_docker_tests.cpp
     containerizer/provisioner_paths_tests.cpp
-    containerizer/volume_image_isolator_tests.cpp
     containerizer/volume_sandbox_path_isolator_tests.cpp
     )
 endif (NOT WIN32)
@@ -204,6 +203,7 @@ if (LINUX)
   set(MESOS_TESTS_SRC
     ${MESOS_TESTS_SRC}
     ldcache_tests.cpp
+    ldd_tests.cpp
     containerizer/capabilities_tests.cpp
     containerizer/cgroups_isolator_tests.cpp
     containerizer/cgroups_tests.cpp
@@ -217,13 +217,16 @@ if (LINUX)
     containerizer/ns_tests.cpp
     containerizer/nvidia_gpu_isolator_tests.cpp
     containerizer/perf_tests.cpp
+    containerizer/rootfs.cpp
     containerizer/runtime_isolator_tests.cpp
     containerizer/sched_tests.cpp
+    containerizer/volume_image_isolator_tests.cpp
     )
 endif (LINUX)
 
 # INCLUDE DIRECTIVES (generates, e.g., -I/path/to/thing on Linux).
 ##################################################################
+include_directories(SYSTEM ${MESOS_3RDPARTY_TESTS_INCLUDE_DIRS})
 include_directories(${MESOS_TESTS_INCLUDE_DIRS})
 
 # LINKING LIBRARIES (might generate, e.g., -L/path/to/thing on Linux).

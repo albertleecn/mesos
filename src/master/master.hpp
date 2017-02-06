@@ -119,6 +119,7 @@ struct Slave
         const process::UPID& _pid,
         const MachineID& _machineId,
         const std::string& _version,
+        const std::vector<SlaveInfo::Capability>& _capabilites,
         const process::Time& _registeredTime,
         const Resources& _checkpointedResources,
         const std::vector<ExecutorInfo> executorInfos =
@@ -177,6 +178,9 @@ struct Slave
   // TODO(bmahler): Use stout's Version when it can parse labels, etc.
   std::string version;
 
+  // Agent capabilities.
+  protobuf::slave::Capabilities capabilities;
+
   process::Time registeredTime;
   Option<process::Time> reregisteredTime;
 
@@ -197,6 +201,10 @@ struct Slave
   Option<process::Timer> reregistrationTimer;
 
   // Executors running on this slave.
+  //
+  // TODO(bmahler): Make this private to enforce that `addExecutor()`
+  // and `removeExecutor()` are used, and provide a const view into
+  // the executors.
   hashmap<FrameworkID, hashmap<ExecutorID, ExecutorInfo>> executors;
 
   // Tasks that have not yet been launched because they are currently
@@ -206,6 +214,10 @@ struct Slave
   hashmap<FrameworkID, hashmap<TaskID, TaskInfo>> pendingTasks;
 
   // Tasks present on this slave.
+  //
+  // TODO(bmahler): Make this private to enforce that `addTask()` and
+  // `removeTask()` are used, and provide a const view into the tasks.
+  //
   // TODO(bmahler): The task pointer ownership complexity arises from the fact
   // that we own the pointer here, but it's shared with the Framework struct.
   // We should find a way to eliminate this.
@@ -241,9 +253,6 @@ struct Slave
   Resources totalResources;
 
   SlaveObserver* observer;
-
-  // Agent capabilities.
-  protobuf::slave::Capabilities capabilities;
 
 private:
   Slave(const Slave&);              // No copying.
@@ -379,7 +388,8 @@ public:
       const process::UPID& from,
       const SlaveInfo& slaveInfo,
       const std::vector<Resource>& checkpointedResources,
-      const std::string& version);
+      const std::string& version,
+      const std::vector<SlaveInfo::Capability>& agentCapabilities);
 
   void reregisterSlave(
       const process::UPID& from,
@@ -389,7 +399,8 @@ public:
       const std::vector<Task>& tasks,
       const std::vector<FrameworkInfo>& frameworks,
       const std::vector<Archive::Framework>& completedFrameworks,
-      const std::string& version);
+      const std::string& version,
+      const std::vector<SlaveInfo::Capability>& agentCapabilities);
 
   void unregisterSlave(
       const process::UPID& from,
@@ -436,7 +447,7 @@ public:
 
   void offer(
       const FrameworkID& frameworkId,
-      const hashmap<SlaveID, Resources>& resources);
+      const hashmap<std::string, hashmap<SlaveID, Resources>>& resources);
 
   void inverseOffer(
       const FrameworkID& frameworkId,
@@ -504,6 +515,7 @@ protected:
       const process::UPID& pid,
       const std::vector<Resource>& checkpointedResources,
       const std::string& version,
+      const std::vector<SlaveInfo::Capability>& agentCapabilities,
       const process::Future<bool>& admit);
 
   void _reregisterSlave(
@@ -515,6 +527,7 @@ protected:
       const std::vector<FrameworkInfo>& frameworks,
       const std::vector<Archive::Framework>& completedFrameworks,
       const std::string& version,
+      const std::vector<SlaveInfo::Capability>& agentCapabilities,
       const process::Future<bool>& readmit);
 
   void __reregisterSlave(
@@ -1726,9 +1739,9 @@ private:
       ~Subscriber()
       {
         // TODO(anand): Refactor `HttpConnection` to being a RAII class instead.
-        // It is possible that a caller might accidently invoke `close()` after
-        // passing ownership to the `Subscriber` object. See MESOS-5843 for more
-        // details.
+        // It is possible that a caller might accidentally invoke `close()`
+        // after passing ownership to the `Subscriber` object. See MESOS-5843
+        // for more details.
         http.close();
       }
 
@@ -2201,6 +2214,12 @@ struct Framework
       << "Duplicate task " << task->task_id()
       << " of framework " << task->framework_id();
 
+    // Verify that Resource.AllocationInfo is set,
+    // this should be guaranteed by the master.
+    foreach (const Resource& resource, task->resources()) {
+      CHECK(resource.has_allocation_info());
+    }
+
     tasks[task->task_id()] = task;
 
     if (!Master::isRemovable(task->state())) {
@@ -2342,6 +2361,12 @@ struct Framework
       << "Duplicate executor '" << executorInfo.executor_id()
       << "' on agent " << slaveId;
 
+    // Verify that Resource.AllocationInfo is set,
+    // this should be guaranteed by the master.
+    foreach (const Resource& resource, executorInfo.resources()) {
+      CHECK(resource.has_allocation_info());
+    }
+
     executors[slaveId][executorInfo.executor_id()] = executorInfo;
     totalUsedResources += executorInfo.resources();
     usedResources[slaveId] += executorInfo.resources();
@@ -2384,33 +2409,34 @@ struct Framework
     // do however allow frameworks to opt in and out of `MULTI_ROLE`
     // capability, given that the `role` and `roles` field contain the
     // same number of roles.
-    if (protobuf::frameworkHasCapability(
-            source, FrameworkInfo::Capability::MULTI_ROLE) ||
-        protobuf::frameworkHasCapability(
-            info, FrameworkInfo::Capability::MULTI_ROLE)) {
+    if (capabilities.multiRole || protobuf::frameworkHasCapability(
+            source, FrameworkInfo::Capability::MULTI_ROLE)) {
       // Two `roles` sets are equivalent if they contain the same
       // elements. A `role` `*` is not equivalent to an empty `roles`
       // set, but to the set `{*}`. Since we might be dealing with a
       // framework upgrading to `MULTI_ROLE` capability or dropping
       // it, we need to examine either `role` or `roles` in order to
       // determine the roles a framework is subscribed to.
-      const std::set<std::string> newRoles =
-        protobuf::frameworkHasCapability(
-            source, FrameworkInfo::Capability::MULTI_ROLE)
-          ? std::set<std::string>(
-                {source.roles().begin(), source.roles().end()})
-          : std::set<std::string>({source.role()});
-
       const std::set<std::string> oldRoles =
-        protobuf::frameworkHasCapability(
-            info, FrameworkInfo::Capability::MULTI_ROLE)
-          ? std::set<std::string>({info.roles().begin(), info.roles().end()})
-          : std::set<std::string>({info.role()});
+        protobuf::framework::getRoles(info);
+      const std::set<std::string> newRoles =
+        protobuf::framework::getRoles(source);
 
       if (oldRoles != newRoles) {
         return Error(
             "Frameworks cannot change their roles: expected '" +
             stringify(oldRoles) + "', but got '" + stringify(newRoles) + "'");
+      }
+
+      info.clear_role();
+      info.clear_roles();
+
+      if (source.has_role()) {
+        info.set_role(source.role());
+      }
+
+      if (source.roles_size() > 0) {
+        info.mutable_roles()->CopyFrom(source.roles());
       }
     } else {
       if (source.role() != info.role()) {
@@ -2418,7 +2444,6 @@ struct Framework
                      << "' for framework " << id() << ". Check MESOS-703";
       }
     }
-
 
     if (source.user() != info.user()) {
       LOG(WARNING) << "Cannot update FrameworkInfo.user to '" << source.user()
@@ -2462,6 +2487,7 @@ struct Framework
     } else {
       info.clear_capabilities();
     }
+    capabilities = protobuf::framework::Capabilities(info.capabilities());
 
     if (source.has_labels()) {
       info.mutable_labels()->CopyFrom(source.labels());
@@ -2565,6 +2591,8 @@ struct Framework
   // being authorized.
   hashmap<TaskID, TaskInfo> pendingTasks;
 
+  // TODO(bmahler): Make this private to enforce that `addTask()` and
+  // `removeTask()` are used, and provide a const view into the tasks.
   hashmap<TaskID, Task*> tasks;
 
   // Tasks launched by this framework that have reached a terminal
@@ -2587,6 +2615,9 @@ struct Framework
 
   hashset<InverseOffer*> inverseOffers; // Active inverse offers for framework.
 
+  // TODO(bmahler): Make this private to enforce that `addExecutor()`
+  // and `removeExecutor()` are used, and provide a const view into
+  // the executors.
   hashmap<SlaveID, hashmap<ExecutorID, ExecutorInfo>> executors;
 
   // NOTE: For the used and offered resources below, we keep the

@@ -333,24 +333,38 @@ bool Request::acceptsEncoding(const string& encoding) const
 
 bool Request::acceptsMediaType(const string& mediaType) const
 {
+  return _acceptsMediaType(headers.get("Accept"), mediaType);
+}
+
+
+bool Request::acceptsMediaType(
+    const string& name,
+    const string& mediaType) const
+{
+  return _acceptsMediaType(headers.get(name), mediaType);
+}
+
+
+bool Request::_acceptsMediaType(
+    Option<string> name,
+    const string& mediaType) const
+{
   vector<string> mediaTypes = strings::tokenize(mediaType, "/");
 
   if (mediaTypes.size() != 2) {
     return false;
   }
 
-  Option<string> accept = headers.get("Accept");
-
-  // If no Accept header field is present, then it is assumed
+  // If no header field is present, then it is assumed
   // that the client accepts all media types.
-  if (accept.isNone()) {
+  if (name.isNone()) {
     return true;
   }
 
   // Remove spaces and tabs for easier parsing.
-  accept = strings::remove(accept.get(), " ");
-  accept = strings::remove(accept.get(), "\t");
-  accept = strings::remove(accept.get(), "\n");
+  name = strings::remove(name.get(), " ");
+  name = strings::remove(name.get(), "\t");
+  name = strings::remove(name.get(), "\n");
 
   // First match 'type/subtype', then 'type/*', then '*/*'.
   vector<string> candidates;
@@ -359,7 +373,7 @@ bool Request::acceptsMediaType(const string& mediaType) const
   candidates.push_back("*/*");
 
   foreach (const string& candidate, candidates) {
-    foreach (const string& type, strings::tokenize(accept.get(), ",")) {
+    foreach (const string& type, strings::tokenize(name.get(), ",")) {
       vector<string> tokens = strings::tokenize(type, ";");
 
       if (tokens.empty()) {
@@ -580,6 +594,123 @@ bool Pipe::Writer::fail(const string& message)
 Future<Nothing> Pipe::Writer::readerClosed() const
 {
   return data->readerClosure.future();
+}
+
+
+namespace header {
+
+Try<WWWAuthenticate> WWWAuthenticate::create(const string& value)
+{
+  // Set `maxTokens` as 2 since auth-param quoted string may
+  // contain space (e.g., "Basic realm="Registry Realm").
+  vector<string> tokens = strings::tokenize(value, " ", 2);
+  if (tokens.size() != 2) {
+    return Error("Unexpected WWW-Authenticate header format: '" + value + "'");
+  }
+
+  hashmap<string, string> authParam;
+  foreach (const string& token, strings::split(tokens[1], ",")) {
+    vector<string> split = strings::split(token, "=");
+    if (split.size() != 2) {
+      return Error(
+          "Unexpected auth-param format: '" +
+          token + "' in '" + tokens[1] + "'");
+    }
+
+    // Auth-param values can be a quoted-string or directive values.
+    // Please see section "3.2.2.4 Directive values and quoted-string":
+    // https://tools.ietf.org/html/rfc2617.
+    authParam[split[0]] = strings::trim(split[1], strings::ANY, "\"");
+  }
+
+  // The realm directive (case-insensitive) is required for all
+  // authentication schemes that issue a challenge.
+  if (!authParam.contains("realm")) {
+    return Error(
+        "Unexpected auth-param '" +
+        tokens[1] + "': 'realm' is not defined");
+  }
+
+  return WWWAuthenticate(tokens[0], authParam);
+}
+
+
+string WWWAuthenticate::authScheme()
+{
+  return authScheme_;
+}
+
+
+hashmap<string, string> WWWAuthenticate::authParam()
+{
+  return authParam_;
+}
+
+} // namespace header {
+
+
+Headers& Headers::operator=(const Headers::Type& _headers)
+{
+  headers = _headers;
+  return *this;
+}
+
+
+string& Headers::operator[](const string& key)
+{
+  return headers[key];
+}
+
+
+void Headers::put(const string& key, const string& value)
+{
+  headers.put(key, value);
+}
+
+
+Option<string> Headers::get(const string& key) const
+{
+  if (headers.contains(key)) {
+    return headers.at(key);
+  }
+
+  return None();
+}
+
+
+string& Headers::at(const string& key)
+{
+  return headers.at(key);
+}
+
+
+const string& Headers::at(const string& key) const
+{
+  return headers.at(key);
+}
+
+
+bool Headers::contains(const string& key) const
+{
+  return headers.contains(key);
+}
+
+
+size_t Headers::size() const
+{
+  return headers.size();
+}
+
+
+bool Headers::empty() const
+{
+  return headers.empty();
+}
+
+
+void Headers::clear()
+{
+  headers.clear();
 }
 
 
@@ -869,9 +1000,6 @@ ostream& operator<<(ostream& stream, const URL& url)
 
 namespace internal {
 
-void _encode(Pipe::Reader reader, Pipe::Writer writer); // Forward declaration.
-
-
 // Encodes the request by writing into a pipe, the caller can
 // read the encoded data from the returned read end of the pipe.
 // A pipe is used since the request body can be a pipe and must
@@ -967,38 +1095,38 @@ Pipe::Reader encode(const Request& request)
     case Request::PIPE:
       CHECK_SOME(request.reader);
       CHECK(request.body.empty());
-      _encode(request.reader.get(), writer);
+      Pipe::Reader requestReader = request.reader.get();
+      loop(None(),
+           [=]() mutable {
+             return requestReader.read();
+           },
+           [=](const string& chunk) mutable -> ControlFlow<Nothing> {
+             if (chunk.empty()) {
+               // EOF case.
+               writer.write("0\r\n\r\n");
+               writer.close();
+               return Break();
+             }
+
+             std::ostringstream out;
+             out << std::hex << chunk.size() << "\r\n";
+             out << chunk;
+             out << "\r\n";
+
+             writer.write(out.str());
+
+             return Continue();
+           })
+        .onDiscarded([=]() mutable {
+          writer.fail("discarded");
+        })
+        .onFailed([=](const string& failure) mutable {
+          writer.fail(failure);
+        });
       break;
   }
 
   return reader;
-}
-
-
-void _encode(Pipe::Reader reader, Pipe::Writer writer)
-{
-  reader.read()
-    .onAny([reader, writer](const Future<string>& chunk) mutable {
-      if (!chunk.isReady()) {
-        writer.fail(chunk.isFailed() ? chunk.failure() : "discarded");
-        return;
-      }
-
-      if (chunk->empty()) {
-        // EOF case.
-        writer.write("0\r\n\r\n");
-        writer.close();
-        return;
-      }
-
-      std::ostringstream out;
-      out << std::hex << chunk->size() << "\r\n";
-      out << chunk.get();
-      out << "\r\n";
-
-      writer.write(out.str());
-      _encode(reader, writer);
-    });
 }
 
 
@@ -1128,15 +1256,20 @@ protected:
 private:
   static Future<Nothing> _send(network::Socket socket, Pipe::Reader reader)
   {
-    return reader.read()
-      .then([socket, reader](const string& data) mutable -> Future<Nothing> {
-        if (data.empty()) {
-          return Nothing(); // EOF.
-        }
-
-        return socket.send(data)
-          .then(lambda::bind(_send, socket, reader));
-      });
+    return loop(
+        None(),
+        [=]() mutable {
+          return reader.read();
+        },
+        [=](const string& data) mutable -> Future<ControlFlow<Nothing>> {
+          if (data.empty()) {
+            return Break(); // EOF.
+          }
+          return socket.send(data)
+            .then([]() -> ControlFlow<Nothing> {
+              return Continue();
+            });
+        });
   }
 
   void read()

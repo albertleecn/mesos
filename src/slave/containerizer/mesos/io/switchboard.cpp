@@ -23,14 +23,15 @@
 #include <vector>
 
 #include <process/address.hpp>
+#include <process/after.hpp>
 #include <process/clock.hpp>
 #include <process/collect.hpp>
 #include <process/defer.hpp>
+#include <process/delay.hpp>
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
 #include <process/http.hpp>
 #include <process/io.hpp>
-#include <process/limiter.hpp>
 #include <process/loop.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
@@ -79,6 +80,7 @@ using std::map;
 using std::string;
 using std::vector;
 
+using process::after;
 using process::await;
 using process::Break;
 using process::Continue;
@@ -92,7 +94,6 @@ using process::Owned;
 using process::PID;
 using process::Process;
 using process::Promise;
-using process::RateLimiter;
 using process::Shared;
 using process::Subprocess;
 
@@ -680,12 +681,10 @@ Future<http::Connection> IOSwitchboard::connect(
   }
 
   // Wait for the server to create the domain socket file.
-  Shared<RateLimiter> limiter(new RateLimiter(1, Milliseconds(10)));
-
   return loop(
       self(),
-      [=]() {
-        return limiter->acquire();
+      []() {
+        return after(Milliseconds(10));
       },
       [=](const Nothing&) -> ControlFlow<Nothing> {
         if (infos.contains(containerId) && !os::exists(address->path())) {
@@ -969,7 +968,9 @@ private:
       const Owned<recordio::Reader<agent::Call>>& reader);
 
   // Handle `ATTACH_CONTAINER_OUTPUT` calls.
-  Future<http::Response> attachContainerOutput(ContentType acceptType);
+  Future<http::Response> attachContainerOutput(
+      ContentType acceptType,
+      Option<ContentType> messageAcceptType);
 
   // Asynchronously receive data as we read it from our
   // `stdoutFromFd` and `stdoutFromFd` file descriptors.
@@ -1294,55 +1295,94 @@ void IOSwitchboardServerProcess::acceptLoop()
 Future<http::Response> IOSwitchboardServerProcess::handler(
     const http::Request& request)
 {
-  if (request.method != "POST") {
-    return http::MethodNotAllowed({"POST"}, request.method);
-  }
+  CHECK_EQ("POST", request.method);
 
   Option<string> contentType_ = request.headers.get("Content-Type");
-  if (contentType_.isNone()) {
-    return http::BadRequest("Expecting 'Content-Type' to be present");
-  }
+  CHECK_SOME(contentType_);
 
   ContentType contentType;
   if (contentType_.get() == APPLICATION_JSON) {
     contentType = ContentType::JSON;
   } else if (contentType_.get() == APPLICATION_PROTOBUF) {
     contentType = ContentType::PROTOBUF;
-  } else if (contentType_.get() == APPLICATION_STREAMING_JSON) {
-    contentType = ContentType::STREAMING_JSON;
-  } else if (contentType_.get() == APPLICATION_STREAMING_PROTOBUF) {
-    contentType = ContentType::STREAMING_PROTOBUF;
+  } else if (contentType_.get() == APPLICATION_RECORDIO) {
+    contentType = ContentType::RECORDIO;
   } else {
-    return http::UnsupportedMediaType(
-        string("Expecting 'Content-Type' of ") +
-        APPLICATION_JSON + " or " + APPLICATION_PROTOBUF + " or " +
-        APPLICATION_STREAMING_JSON + " or " + APPLICATION_STREAMING_PROTOBUF);
+    LOG(FATAL) << "Unexpected 'Content-Type' header: " << contentType_.get();
+  }
+
+  Option<ContentType> messageContentType;
+  Option<string> messageContentType_ =
+    request.headers.get(MESSAGE_CONTENT_TYPE);
+
+  if (streamingMediaType(contentType)) {
+    if (messageContentType_.isNone()) {
+      return http::BadRequest(
+          "Expecting '" + stringify(MESSAGE_CONTENT_TYPE) + "' to be" +
+          " set for streaming requests");
+    }
+
+    if (messageContentType_.get() == APPLICATION_JSON) {
+      messageContentType = Option<ContentType>(ContentType::JSON);
+    } else if (messageContentType_.get() == APPLICATION_PROTOBUF) {
+      messageContentType = Option<ContentType>(ContentType::PROTOBUF);
+    } else {
+      return http::UnsupportedMediaType(
+          string("Expecting '") + MESSAGE_CONTENT_TYPE + "' of " +
+          APPLICATION_JSON + " or " + APPLICATION_PROTOBUF);
+    }
+  } else {
+    // The 'Message-Content-Type' header should not be set
+    // for non-streaming requests.
+    CHECK_NONE(messageContentType);
   }
 
   ContentType acceptType;
-  if (request.acceptsMediaType(APPLICATION_STREAMING_PROTOBUF)) {
-    acceptType = ContentType::STREAMING_PROTOBUF;
-  } else if (request.acceptsMediaType(APPLICATION_STREAMING_JSON)) {
-    acceptType = ContentType::STREAMING_JSON;
-  } else if (request.acceptsMediaType(APPLICATION_JSON)) {
+  if (request.acceptsMediaType(APPLICATION_JSON)) {
     acceptType = ContentType::JSON;
   } else if (request.acceptsMediaType(APPLICATION_PROTOBUF)) {
     acceptType = ContentType::PROTOBUF;
+  } else if (request.acceptsMediaType(APPLICATION_RECORDIO)) {
+    acceptType = ContentType::RECORDIO;
   } else {
-    return http::NotAcceptable(
-        string("Expecting 'Accept' to allow ") +
-        APPLICATION_JSON + " or " + APPLICATION_PROTOBUF + " or " +
-        APPLICATION_STREAMING_JSON + " or "  + APPLICATION_STREAMING_PROTOBUF);
+    Option<string> acceptType_ = request.headers.get("Accept");
+    CHECK_SOME(acceptType_);
+
+    LOG(FATAL) << "Unexpected 'Accept' header: " << acceptType_.get();
+  }
+
+  Option<ContentType> messageAcceptType;
+  if (streamingMediaType(acceptType)) {
+    if (request.acceptsMediaType(MESSAGE_ACCEPT, APPLICATION_JSON)) {
+      messageAcceptType = ContentType::JSON;
+    } else if (request.acceptsMediaType(MESSAGE_ACCEPT, APPLICATION_PROTOBUF)) {
+      messageAcceptType = ContentType::PROTOBUF;
+    } else {
+      Option<string> messageAcceptType_ = request.headers.get(MESSAGE_ACCEPT);
+      CHECK_SOME(messageAcceptType_);
+
+      LOG(FATAL) << "Unexpected '" << MESSAGE_ACCEPT << "' header: "
+                 << messageAcceptType_.get();
+    }
+  } else {
+    // The 'Message-Accept' header should not be set
+    // for a non-streaming response.
+    CHECK_NONE(request.headers.get(MESSAGE_ACCEPT));
   }
 
   CHECK_EQ(http::Request::PIPE, request.type);
   CHECK_SOME(request.reader);
 
-  if (requestStreaming(contentType)) {
+  if (streamingMediaType(contentType)) {
+    CHECK_EQ(ContentType::RECORDIO, contentType);
+    CHECK_SOME(messageContentType);
+
     Owned<recordio::Reader<agent::Call>> reader(
         new recordio::Reader<agent::Call>(
             ::recordio::Decoder<agent::Call>(lambda::bind(
-                deserialize<agent::Call>, contentType, lambda::_1)),
+                deserialize<agent::Call>,
+                messageContentType.get(),
+                lambda::_1)),
             request.reader.get()));
 
     return reader->read()
@@ -1385,7 +1425,7 @@ Future<http::Response> IOSwitchboardServerProcess::handler(
             CHECK(call->has_type());
             CHECK_EQ(agent::Call::ATTACH_CONTAINER_OUTPUT, call->type());
 
-            return attachContainerOutput(acceptType);
+            return attachContainerOutput(acceptType, messageAcceptType);
           }));
   }
 }
@@ -1615,12 +1655,24 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerInput(
 
 
 Future<http::Response> IOSwitchboardServerProcess::attachContainerOutput(
-    ContentType acceptType)
+    ContentType acceptType,
+    Option<ContentType> messageAcceptType)
 {
   http::Pipe pipe;
   http::OK ok;
 
   ok.headers["Content-Type"] = stringify(acceptType);
+
+  // If a client sets the 'Accept' header expecting a streaming response,
+  // `messageAcceptType` would always be set and we use it as the value of
+  // 'Message-Content-Type' response header.
+  ContentType messageContentType = acceptType;
+  if (streamingMediaType(acceptType)) {
+    CHECK_SOME(messageAcceptType);
+    ok.headers[MESSAGE_CONTENT_TYPE] = stringify(messageAcceptType.get());
+    messageContentType = messageAcceptType.get();
+  }
+
   ok.type = http::Response::PIPE;
   ok.reader = pipe.reader();
 
@@ -1628,7 +1680,7 @@ Future<http::Response> IOSwitchboardServerProcess::attachContainerOutput(
   // calls to `receiveOutput()` to actually push data out over the
   // connection. If we ever detect a connection has been closed,
   // we remove it from this list.
-  HttpConnection connection(pipe.writer(), acceptType);
+  HttpConnection connection(pipe.writer(), messageContentType);
   auto iterator = outputConnections.insert(outputConnections.end(), connection);
 
   // We use the `startRedirect` promise to indicate when we should

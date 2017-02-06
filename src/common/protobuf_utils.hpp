@@ -80,6 +80,7 @@ StatusUpdate createStatusUpdate(
     const Option<TaskStatus::Reason>& reason = None(),
     const Option<ExecutorID>& executorId = None(),
     const Option<bool>& healthy = None(),
+    const Option<CheckStatusInfo>& checkStatus = None(),
     const Option<Labels>& labels = None(),
     const Option<ContainerStatus>& containerStatus = None(),
     const Option<TimeInfo>& unreachableTime = None());
@@ -100,6 +101,9 @@ Task createTask(
 Option<bool> getTaskHealth(const Task& task);
 
 
+Option<CheckStatusInfo> getTaskCheckStatus(const Task& task);
+
+
 Option<ContainerStatus> getTaskContainerStatus(const Task& task);
 
 
@@ -110,6 +114,17 @@ MasterInfo createMasterInfo(const process::UPID& pid);
 Label createLabel(
     const std::string& key,
     const Option<std::string>& value = None());
+
+
+// Previously, `Resource` did not contain `AllocationInfo`.
+// So for backwards compatibility with old schedulers and
+// tooling, we must allow operations to contain `Resource`s
+// without an `AllocationInfo`. This allows the master to
+// inject the offer's `AllocationInfo` into the operation's
+// resources.
+void adjustOfferOperation(
+    Offer::Operation* operation,
+    const Resource::AllocationInfo& allocationInfo);
 
 
 // Helper function that fills in a TimeInfo from the current time.

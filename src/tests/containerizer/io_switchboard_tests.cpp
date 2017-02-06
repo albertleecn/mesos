@@ -111,7 +111,7 @@ protected:
     request.url.domain = "";
     request.url.path = "/";
     request.keepAlive = true;
-    request.headers["Accept"] = APPLICATION_STREAMING_JSON;
+    request.headers["Accept"] = APPLICATION_JSON;
     request.headers["Content-Type"] = APPLICATION_JSON;
     request.body = stringify(JSON::protobuf(call));
 
@@ -398,7 +398,7 @@ TEST_F(IOSwitchboardServerTest, SendHeartbeat)
   request.url.domain = "";
   request.url.path = "/";
   request.keepAlive = true;
-  request.headers["Accept"] = APPLICATION_STREAMING_JSON;
+  request.headers["Accept"] = APPLICATION_JSON;
   request.headers["Content-Type"] = APPLICATION_JSON;
   request.body = stringify(JSON::protobuf(call));
 
@@ -421,7 +421,7 @@ TEST_F(IOSwitchboardServerTest, SendHeartbeat)
   ASSERT_SOME(reader);
 
   auto deserializer = [](const string& body) {
-    return deserialize<agent::ProcessIO>(ContentType::STREAMING_JSON, body);
+    return deserialize<agent::ProcessIO>(ContentType::JSON, body);
   };
 
   recordio::Reader<agent::ProcessIO> responseDecoder(
@@ -462,8 +462,7 @@ TEST_F(IOSwitchboardServerTest, SendHeartbeat)
 }
 
 
-// TODO(alexr): Enable this test once MESOS-6912 is resolved.
-TEST_F(IOSwitchboardServerTest, DISABLED_AttachInput)
+TEST_F(IOSwitchboardServerTest, AttachInput)
 {
   // We use a pipe in this test to prevent the switchboard from
   // reading EOF on its `stdoutFromFd` until we are ready for the
@@ -525,7 +524,8 @@ TEST_F(IOSwitchboardServerTest, DISABLED_AttachInput)
   request.url.path = "/";
   request.keepAlive = true;
   request.headers["Accept"] = APPLICATION_JSON;
-  request.headers["Content-Type"] = APPLICATION_STREAMING_JSON;
+  request.headers["Content-Type"] = APPLICATION_RECORDIO;
+  request.headers[MESSAGE_CONTENT_TYPE] = APPLICATION_JSON;
 
   Try<unix::Address> address = unix::Address::create(socketPath);
   ASSERT_SOME(address);
@@ -539,7 +539,7 @@ TEST_F(IOSwitchboardServerTest, DISABLED_AttachInput)
   Future<http::Response> response = connection.send(request);
 
   ::recordio::Encoder<mesos::agent::Call> encoder(lambda::bind(
-        serialize, ContentType::STREAMING_JSON, lambda::_1));
+        serialize, ContentType::JSON, lambda::_1));
 
   Call call;
   call.set_type(Call::ATTACH_CONTAINER_INPUT);
@@ -634,7 +634,8 @@ TEST_F(IOSwitchboardServerTest, ReceiveHeartbeat)
   request.url.path = "/";
   request.keepAlive = true;
   request.headers["Accept"] = APPLICATION_JSON;
-  request.headers["Content-Type"] = APPLICATION_STREAMING_JSON;
+  request.headers["Content-Type"] = APPLICATION_RECORDIO;
+  request.headers[MESSAGE_CONTENT_TYPE] = APPLICATION_JSON;
 
   Try<unix::Address> address = unix::Address::create(socketPath);
   ASSERT_SOME(address);
@@ -648,7 +649,7 @@ TEST_F(IOSwitchboardServerTest, ReceiveHeartbeat)
   Future<http::Response> response = connection.send(request);
 
   ::recordio::Encoder<mesos::agent::Call> encoder(lambda::bind(
-        serialize, ContentType::STREAMING_JSON, lambda::_1));
+      serialize, ContentType::JSON, lambda::_1));
 
   Call call;
   call.set_type(Call::ATTACH_CONTAINER_INPUT);

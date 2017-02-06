@@ -793,7 +793,8 @@ void Master::initialize()
       &Master::registerSlave,
       &RegisterSlaveMessage::slave,
       &RegisterSlaveMessage::checkpointed_resources,
-      &RegisterSlaveMessage::version);
+      &RegisterSlaveMessage::version,
+      &RegisterSlaveMessage::agent_capabilities);
 
   install<ReregisterSlaveMessage>(
       &Master::reregisterSlave,
@@ -803,7 +804,8 @@ void Master::initialize()
       &ReregisterSlaveMessage::tasks,
       &ReregisterSlaveMessage::frameworks,
       &ReregisterSlaveMessage::completed_frameworks,
-      &ReregisterSlaveMessage::version);
+      &ReregisterSlaveMessage::version,
+      &ReregisterSlaveMessage::agent_capabilities);
 
   install<UnregisterSlaveMessage>(
       &Master::unregisterSlave,
@@ -3619,11 +3621,15 @@ void Master::accept(
     // TODO(jieyu): Add metrics for non launch operations.
   }
 
+  // TODO(bmahler): MULTI_ROLE: Validate that the accepted offers
+  // do not mix allocation roles, see MESOS-6637.
+
   // TODO(bmahler): We currently only support using multiple offers
   // for a single slave.
   Resources offeredResources;
   Option<SlaveID> slaveId = None();
   Option<Error> error = None();
+  Option<Resource::AllocationInfo> allocationInfo = None();
 
   if (accept.offer_ids().size() == 0) {
     error = Error("No offers specified");
@@ -3646,6 +3652,7 @@ void Master::accept(
               None());
         } else {
           slaveId = offer->slave_id();
+          allocationInfo = offer->allocation_info();
           offeredResources += offer->resources();
         }
 
@@ -3719,6 +3726,16 @@ void Master::accept(
     }
 
     return;
+  }
+
+  CHECK_SOME(allocationInfo);
+
+  // With the addition of the MULTI_ROLE capability, the resources
+  // within an offer now contain an `AllocationInfo`. We therefore
+  // inject the offer's allocation info into the operation's
+  // resources if the scheduler has not done so already.
+  foreach (Offer::Operation& operation, *accept.mutable_operations()) {
+    protobuf::adjustOfferOperation(&operation, allocationInfo.get());
   }
 
   CHECK_SOME(slaveId);
@@ -4433,7 +4450,7 @@ void Master::_accept(
         }
 
         // Note that we do not fill in the `ExecutorInfo.framework_id`
-        // since we do not have to support backwards compatiblity like
+        // since we do not have to support backwards compatibility like
         // in the `Launch` operation case.
 
         // TODO(bmahler): Consider injecting some default (cpus, mem, disk)
@@ -5199,7 +5216,8 @@ void Master::registerSlave(
     const UPID& from,
     const SlaveInfo& slaveInfo,
     const vector<Resource>& checkpointedResources,
-    const string& version)
+    const string& version,
+    const vector<SlaveInfo::Capability>& agentCapabilities)
 {
   ++metrics->messages_register_slave;
 
@@ -5213,7 +5231,8 @@ void Master::registerSlave(
                      from,
                      slaveInfo,
                      checkpointedResources,
-                     version));
+                     version,
+                     agentCapabilities));
     return;
   }
 
@@ -5306,6 +5325,7 @@ void Master::registerSlave(
                  from,
                  checkpointedResources,
                  version,
+                 agentCapabilities,
                  lambda::_1));
 }
 
@@ -5315,6 +5335,7 @@ void Master::_registerSlave(
     const UPID& pid,
     const vector<Resource>& checkpointedResources,
     const string& version,
+    const vector<SlaveInfo::Capability>& agentCapabilities,
     const Future<bool>& admit)
 {
   CHECK(slaves.registering.contains(pid));
@@ -5350,6 +5371,7 @@ void Master::_registerSlave(
       pid,
       machineId,
       version,
+      agentCapabilities,
       Clock::now(),
       checkpointedResources);
 
@@ -5380,7 +5402,8 @@ void Master::reregisterSlave(
     const vector<Task>& tasks,
     const vector<FrameworkInfo>& frameworks,
     const vector<Archive::Framework>& completedFrameworks,
-    const string& version)
+    const string& version,
+    const vector<SlaveInfo::Capability>& agentCapabilities)
 {
   ++metrics->messages_reregister_slave;
 
@@ -5398,7 +5421,8 @@ void Master::reregisterSlave(
                      tasks,
                      frameworks,
                      completedFrameworks,
-                     version));
+                     version,
+                     agentCapabilities));
     return;
   }
 
@@ -5475,10 +5499,11 @@ void Master::reregisterSlave(
     slave->pid = from;
     link(slave->pid);
 
-    // Update slave's version and re-registration timestamp after
-    // re-registering successfully.
+    // Update slave's version, re-registration timestamp and
+    // agent capabilities after re-registering successfully.
     slave->version = version;
     slave->reregisteredTime = Clock::now();
+    slave->capabilities = agentCapabilities;
 
     // Reconcile tasks between master and slave, and send the
     // `SlaveReregisteredMessage`.
@@ -5541,6 +5566,7 @@ void Master::reregisterSlave(
                  frameworks,
                  completedFrameworks,
                  version,
+                 agentCapabilities,
                  lambda::_1));
 }
 
@@ -5549,11 +5575,12 @@ void Master::_reregisterSlave(
     const SlaveInfo& slaveInfo,
     const UPID& pid,
     const vector<Resource>& checkpointedResources,
-    const vector<ExecutorInfo>& executorInfos,
-    const vector<Task>& tasks,
+    const vector<ExecutorInfo>& executorInfos_,
+    const vector<Task>& tasks_,
     const vector<FrameworkInfo>& frameworks,
     const vector<Archive::Framework>& completedFrameworks,
     const string& version,
+    const vector<SlaveInfo::Capability>& agentCapabilities,
     const Future<bool>& readmit)
 {
   CHECK(slaves.reregistering.contains(slaveInfo.id()));
@@ -5574,6 +5601,64 @@ void Master::_reregisterSlave(
   // Ensure we don't remove the slave for not re-registering after
   // we've recovered it from the registry.
   slaves.recovered.erase(slaveInfo.id());
+
+  // For agents without the MULTI_ROLE capability,
+  // we need to inject the allocation role inside
+  // the task and executor resources;
+  auto injectAllocationInfo = [](
+      RepeatedPtrField<Resource>* resources,
+      const FrameworkInfo& frameworkInfo)
+  {
+    set<string> roles = protobuf::framework::getRoles(frameworkInfo);
+
+    foreach (Resource& resource, *resources) {
+      if (!resource.has_allocation_info()) {
+        if (roles.size() != 1) {
+          LOG(FATAL) << "Missing 'Resource.AllocationInfo' for resources"
+                     << " allocated to MULTI_ROLE framework"
+                     << " '" << frameworkInfo.name() << "'";
+        }
+
+        resource.mutable_allocation_info()->set_role(*roles.begin());
+      }
+    }
+  };
+
+  protobuf::slave::Capabilities slaveCapabilities(agentCapabilities);
+  vector<Task> adjustedTasks;
+  vector<ExecutorInfo> adjustedExecutorInfos;
+
+  if (!slaveCapabilities.multiRole) {
+    hashmap<FrameworkID, FrameworkInfo> frameworks_;
+    foreach (const FrameworkInfo& framework, frameworks) {
+      frameworks_[framework.id()] = framework;
+    }
+
+    adjustedTasks = tasks_;
+    adjustedExecutorInfos = executorInfos_;
+
+    foreach (Task& task, adjustedTasks) {
+      CHECK(frameworks_.contains(task.framework_id()));
+
+      injectAllocationInfo(
+          task.mutable_resources(),
+          frameworks_.at(task.framework_id()));
+    }
+
+    foreach (ExecutorInfo& executor, adjustedExecutorInfos) {
+      CHECK(frameworks_.contains(executor.framework_id()));
+
+      injectAllocationInfo(
+          executor.mutable_resources(),
+          frameworks_.at(executor.framework_id()));
+    }
+  }
+
+  const vector<Task>& tasks =
+    slaveCapabilities.multiRole ? tasks_ : adjustedTasks;
+
+  const vector<ExecutorInfo>& executorInfos =
+    slaveCapabilities.multiRole ? executorInfos_ : adjustedExecutorInfos;
 
   MachineID machineId;
   machineId.set_hostname(slaveInfo.hostname());
@@ -5636,7 +5721,7 @@ void Master::_reregisterSlave(
   // (b) If the master has failed over, all tasks are re-added to the
   // master. The master shouldn't have any record of the tasks running
   // on the agent, so no further cleanup is required.
-  vector<Task> tasks_;
+  vector<Task> recoveredTasks;
   foreach (const Task& task, tasks) {
     const FrameworkID& frameworkId = task.framework_id();
     Framework* framework = getFramework(frameworkId);
@@ -5649,7 +5734,7 @@ void Master::_reregisterSlave(
 
     // Always re-add partition-aware tasks.
     if (partitionAwareFrameworks.contains(frameworkId)) {
-      tasks_.push_back(task);
+      recoveredTasks.push_back(task);
 
       if (framework != nullptr) {
         framework->unreachableTasks.erase(task.task_id());
@@ -5657,7 +5742,7 @@ void Master::_reregisterSlave(
     } else if (!slaveWasRemoved) {
       // Only re-add non-partition-aware tasks if the master has
       // failed over since the agent was marked unreachable.
-      tasks_.push_back(task);
+      recoveredTasks.push_back(task);
     }
   }
 
@@ -5667,10 +5752,11 @@ void Master::_reregisterSlave(
       pid,
       machineId,
       version,
+      agentCapabilities,
       Clock::now(),
       checkpointedResources,
       executorInfos,
-      tasks_);
+      recoveredTasks);
 
   slave->reregisteredTime = Clock::now();
 
@@ -6336,6 +6422,7 @@ void Master::_markUnreachable(
           None(),
           None(),
           None(),
+          None(),
           unreachableTime);
 
       updateTask(task, update);
@@ -6506,6 +6593,7 @@ void Master::_reconcileTasks(
           TaskStatus::REASON_RECONCILIATION,
           executorId,
           protobuf::getTaskHealth(*task),
+          protobuf::getTaskCheckStatus(*task),
           None(),
           protobuf::getTaskContainerStatus(*task));
 
@@ -6580,6 +6668,7 @@ void Master::_reconcileTasks(
           TaskStatus::REASON_RECONCILIATION,
           executorId,
           protobuf::getTaskHealth(*task),
+          protobuf::getTaskCheckStatus(*task),
           None(),
           protobuf::getTaskContainerStatus(*task));
     } else if (slaveId.isSome() && slaves.registered.contains(slaveId.get())) {
@@ -6628,6 +6717,7 @@ void Master::_reconcileTasks(
           None(),
           "Reconciliation: Task is unreachable",
           TaskStatus::REASON_RECONCILIATION,
+          None(),
           None(),
           None(),
           None(),
@@ -6687,8 +6777,9 @@ void Master::frameworkFailoverTimeout(const FrameworkID& frameworkId,
 }
 
 
-void Master::offer(const FrameworkID& frameworkId,
-                   const hashmap<SlaveID, Resources>& resources)
+void Master::offer(
+    const FrameworkID& frameworkId,
+    const hashmap<string, hashmap<SlaveID, Resources>>& resources)
 {
   if (!frameworks.registered.contains(frameworkId) ||
       !frameworks.registered[frameworkId]->active()) {
@@ -6696,131 +6787,142 @@ void Master::offer(const FrameworkID& frameworkId,
                  << frameworkId << " because the framework"
                  << " has terminated or is inactive";
 
-    foreachpair (const SlaveID& slaveId, const Resources& offered, resources) {
-      allocator->recoverResources(frameworkId, slaveId, offered, None());
+    foreachkey (const string& role, resources) {
+      foreachpair (const SlaveID& slaveId,
+                   const Resources& offered,
+                   resources.at(role)) {
+        allocator->recoverResources(frameworkId, slaveId, offered, None());
+      }
     }
     return;
   }
 
-  // Create an offer for each slave and add it to the message.
+  Framework* framework = CHECK_NOTNULL(frameworks.registered.at(frameworkId));
+
+  // Each offer we create is tied to a single agent
+  // and a single allocation role.
   ResourceOffersMessage message;
 
-  Framework* framework = CHECK_NOTNULL(frameworks.registered[frameworkId]);
-  foreachpair (const SlaveID& slaveId, const Resources& offered, resources) {
-    if (!slaves.registered.contains(slaveId)) {
-      LOG(WARNING)
-        << "Master returning resources offered to framework " << *framework
-        << " because agent " << slaveId << " is not valid";
+  foreachkey (const string& role, resources) {
+    foreachpair (const SlaveID& slaveId,
+                 const Resources& offered,
+                 resources.at(role)) {
+      if (!slaves.registered.contains(slaveId)) {
+        LOG(WARNING)
+          << "Master returning resources offered to framework " << *framework
+          << " because agent " << slaveId << " is not valid";
 
-      allocator->recoverResources(frameworkId, slaveId, offered, None());
-      continue;
-    }
-
-    Slave* slave = slaves.registered.get(slaveId);
-    CHECK_NOTNULL(slave);
-
-    // This could happen if the allocator dispatched 'Master::offer' before
-    // the slave was deactivated in the allocator.
-    if (!slave->active) {
-      LOG(WARNING)
-        << "Master returning resources offered because agent " << *slave
-        << " is " << (slave->connected ? "deactivated" : "disconnected");
-
-      allocator->recoverResources(frameworkId, slaveId, offered, None());
-      continue;
-    }
-
-#ifdef WITH_NETWORK_ISOLATOR
-    // TODO(dhamon): This flag is required as the static allocation of
-    // ephemeral ports leads to a maximum number of containers that can
-    // be created on each slave. Once MESOS-1654 is fixed and ephemeral
-    // ports are a first class resource, this can be removed.
-    if (flags.max_executors_per_agent.isSome()) {
-      // Check that we haven't hit the executor limit.
-      size_t numExecutors = 0;
-      foreachkey (const FrameworkID& frameworkId, slave->executors) {
-        numExecutors += slave->executors[frameworkId].keys().size();
-      }
-
-      if (numExecutors >= flags.max_executors_per_agent.get()) {
-        LOG(WARNING) << "Master returning resources offered because agent "
-                     << *slave << " has reached the maximum number of "
-                     << "executors";
-        // Pass a default filter to avoid getting this same offer immediately
-        // from the allocator.
-        allocator->recoverResources(frameworkId, slaveId, offered, Filters());
+        allocator->recoverResources(frameworkId, slaveId, offered, None());
         continue;
       }
-    }
-#endif // WITH_NETWORK_ISOLATOR
 
-    // TODO(vinod): Split regular and revocable resources into
-    // separate offers, so that rescinding offers with revocable
-    // resources does not affect offers with regular resources.
+      Slave* slave = slaves.registered.get(slaveId);
+      CHECK_NOTNULL(slave);
 
-    // TODO(bmahler): Set "https" if only "https" is supported.
-    mesos::URL url;
-    url.set_scheme("http");
-    url.mutable_address()->set_hostname(slave->info.hostname());
-    url.mutable_address()->set_ip(stringify(slave->pid.address.ip));
-    url.mutable_address()->set_port(slave->pid.address.port);
-    url.set_path("/" + slave->pid.id);
+      // This could happen if the allocator dispatched 'Master::offer' before
+      // the slave was deactivated in the allocator.
+      if (!slave->active) {
+        LOG(WARNING)
+          << "Master returning resources offered because agent " << *slave
+          << " is " << (slave->connected ? "deactivated" : "disconnected");
 
-    Offer* offer = new Offer();
-    offer->mutable_id()->MergeFrom(newOfferId());
-    offer->mutable_framework_id()->MergeFrom(framework->id());
-    offer->mutable_slave_id()->MergeFrom(slave->id);
-    offer->set_hostname(slave->info.hostname());
-    offer->mutable_url()->MergeFrom(url);
-    offer->mutable_resources()->MergeFrom(offered);
-    offer->mutable_attributes()->MergeFrom(slave->info.attributes());
-
-    // Add all framework's executors running on this slave.
-    if (slave->executors.contains(framework->id())) {
-      const hashmap<ExecutorID, ExecutorInfo>& executors =
-        slave->executors[framework->id()];
-      foreachkey (const ExecutorID& executorId, executors) {
-        offer->add_executor_ids()->MergeFrom(executorId);
+        allocator->recoverResources(frameworkId, slaveId, offered, None());
+        continue;
       }
-    }
 
-    // If the slave in this offer is planned to be unavailable due to
-    // maintenance in the future, then set the Unavailability.
-    CHECK(machines.contains(slave->machineId));
-    if (machines[slave->machineId].info.has_unavailability()) {
-      offer->mutable_unavailability()->CopyFrom(
-          machines[slave->machineId].info.unavailability());
-    }
+  #ifdef WITH_NETWORK_ISOLATOR
+      // TODO(dhamon): This flag is required as the static allocation of
+      // ephemeral ports leads to a maximum number of containers that can
+      // be created on each slave. Once MESOS-1654 is fixed and ephemeral
+      // ports are a first class resource, this can be removed.
+      if (flags.max_executors_per_agent.isSome()) {
+        // Check that we haven't hit the executor limit.
+        size_t numExecutors = 0;
+        foreachkey (const FrameworkID& frameworkId, slave->executors) {
+          numExecutors += slave->executors[frameworkId].keys().size();
+        }
 
-    offers[offer->id()] = offer;
-
-    framework->addOffer(offer);
-    slave->addOffer(offer);
-
-    if (flags.offer_timeout.isSome()) {
-      // Rescind the offer after the timeout elapses.
-      offerTimers[offer->id()] =
-        delay(flags.offer_timeout.get(),
-              self(),
-              &Self::offerTimeout,
-              offer->id());
-    }
-
-    // TODO(jieyu): For now, we strip 'ephemeral_ports' resource from
-    // offers so that frameworks do not see this resource. This is a
-    // short term workaround. Revisit this once we resolve MESOS-1654.
-    Offer offer_ = *offer;
-    offer_.clear_resources();
-
-    foreach (const Resource& resource, offered) {
-      if (resource.name() != "ephemeral_ports") {
-        offer_.add_resources()->CopyFrom(resource);
+        if (numExecutors >= flags.max_executors_per_agent.get()) {
+          LOG(WARNING) << "Master returning resources offered because agent "
+                       << *slave << " has reached the maximum number of "
+                       << "executors";
+          // Pass a default filter to avoid getting this same offer immediately
+          // from the allocator.
+          allocator->recoverResources(frameworkId, slaveId, offered, Filters());
+          continue;
+        }
       }
-    }
+  #endif // WITH_NETWORK_ISOLATOR
 
-    // Add the offer *AND* the corresponding slave's PID.
-    message.add_offers()->MergeFrom(offer_);
-    message.add_pids(slave->pid);
+      // TODO(vinod): Split regular and revocable resources into
+      // separate offers, so that rescinding offers with revocable
+      // resources does not affect offers with regular resources.
+
+      // TODO(bmahler): Set "https" if only "https" is supported.
+      mesos::URL url;
+      url.set_scheme("http");
+      url.mutable_address()->set_hostname(slave->info.hostname());
+      url.mutable_address()->set_ip(stringify(slave->pid.address.ip));
+      url.mutable_address()->set_port(slave->pid.address.port);
+      url.set_path("/" + slave->pid.id);
+
+      Offer* offer = new Offer();
+      offer->mutable_id()->MergeFrom(newOfferId());
+      offer->mutable_framework_id()->MergeFrom(framework->id());
+      offer->mutable_slave_id()->MergeFrom(slave->id);
+      offer->set_hostname(slave->info.hostname());
+      offer->mutable_url()->MergeFrom(url);
+      offer->mutable_resources()->MergeFrom(offered);
+      offer->mutable_attributes()->MergeFrom(slave->info.attributes());
+      offer->mutable_allocation_info()->set_role(role);
+
+      // Add all framework's executors running on this slave.
+      if (slave->executors.contains(framework->id())) {
+        const hashmap<ExecutorID, ExecutorInfo>& executors =
+          slave->executors[framework->id()];
+        foreachkey (const ExecutorID& executorId, executors) {
+          offer->add_executor_ids()->MergeFrom(executorId);
+        }
+      }
+
+      // If the slave in this offer is planned to be unavailable due to
+      // maintenance in the future, then set the Unavailability.
+      CHECK(machines.contains(slave->machineId));
+      if (machines[slave->machineId].info.has_unavailability()) {
+        offer->mutable_unavailability()->CopyFrom(
+            machines[slave->machineId].info.unavailability());
+      }
+
+      offers[offer->id()] = offer;
+
+      framework->addOffer(offer);
+      slave->addOffer(offer);
+
+      if (flags.offer_timeout.isSome()) {
+        // Rescind the offer after the timeout elapses.
+        offerTimers[offer->id()] =
+          delay(flags.offer_timeout.get(),
+                self(),
+                &Self::offerTimeout,
+                offer->id());
+      }
+
+      // TODO(jieyu): For now, we strip 'ephemeral_ports' resource from
+      // offers so that frameworks do not see this resource. This is a
+      // short term workaround. Revisit this once we resolve MESOS-1654.
+      Offer offer_ = *offer;
+      offer_.clear_resources();
+
+      foreach (const Resource& resource, offered) {
+        if (resource.name() != "ephemeral_ports") {
+          offer_.add_resources()->CopyFrom(resource);
+        }
+      }
+
+      // Add the offer *AND* the corresponding slave's PID.
+      message.add_offers()->MergeFrom(offer_);
+      message.add_pids(slave->pid);
+    }
   }
 
   if (message.offers().size() == 0) {
@@ -7683,6 +7785,8 @@ void Master::removeFramework(Framework* framework)
     CHECK(isWhitelistedRole(role))
       << "Unknown role '" << role << "'"
       << " of framework " << *framework;
+
+    CHECK(activeRoles.contains(role));
 
     activeRoles[role]->removeFramework(framework);
     if (activeRoles[role]->frameworks.empty()) {
@@ -8806,6 +8910,7 @@ Slave::Slave(
     const UPID& _pid,
     const MachineID& _machineId,
     const string& _version,
+    const vector<SlaveInfo::Capability>& _capabilites,
     const Time& _registeredTime,
     const Resources& _checkpointedResources,
     const vector<ExecutorInfo> executorInfos,
@@ -8816,12 +8921,12 @@ Slave::Slave(
     machineId(_machineId),
     pid(_pid),
     version(_version),
+    capabilities(_capabilites),
     registeredTime(_registeredTime),
     connected(true),
     active(true),
     checkpointedResources(_checkpointedResources),
-    observer(nullptr),
-    capabilities(_info.capabilities())
+    observer(nullptr)
 {
   CHECK(_info.has_id());
 
@@ -8868,6 +8973,12 @@ void Slave::addTask(Task* task)
 
   CHECK(!tasks[frameworkId].contains(taskId))
     << "Duplicate task " << taskId << " of framework " << frameworkId;
+
+  // Verify that Resource.AllocationInfo is set,
+  // this should be guaranteed by the master.
+  foreach (const Resource& resource, task->resources()) {
+    CHECK(resource.has_allocation_info());
+  }
 
   tasks[frameworkId][taskId] = task;
 
@@ -8975,6 +9086,12 @@ void Slave::addExecutor(const FrameworkID& frameworkId,
   CHECK(!hasExecutor(frameworkId, executorInfo.executor_id()))
     << "Duplicate executor '" << executorInfo.executor_id()
     << "' of framework " << frameworkId;
+
+  // Verify that Resource.AllocationInfo is set,
+  // this should be guaranteed by the master.
+  foreach (const Resource& resource, executorInfo.resources()) {
+    CHECK(resource.has_allocation_info());
+  }
 
   executors[frameworkId][executorInfo.executor_id()] = executorInfo;
   usedResources[frameworkId] += executorInfo.resources();
