@@ -10,31 +10,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_WINDOWS_FSYNC_HPP__
-#define __STOUT_OS_WINDOWS_FSYNC_HPP__
+#ifndef __STOUT_OS_LSEEK_HPP__
+#define __STOUT_OS_LSEEK_HPP__
 
+#ifdef __WINDOWS__
 #include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <stout/error.hpp>
-#include <stout/nothing.hpp>
 #include <stout/try.hpp>
-#include <stout/windows.hpp>
 
-#include <stout/os/windows/fd.hpp>
-
+#include <stout/os/int_fd.hpp>
 
 namespace os {
 
-inline Try<Nothing> fsync(const WindowsFD& fd)
+inline Try<off_t> lseek(int_fd fd, off_t offset, int whence)
 {
-  if (!FlushFileBuffers(fd)) {
-    return WindowsError(
-        "os::fsync: Could not flush file buffers for given file descriptor");
+#ifdef __WINDOWS__
+  off_t result = ::_lseek(fd.crt(), offset, whence);
+#else
+  off_t result = ::lseek(fd, offset, whence);
+#endif
+  if (result < 0) {
+    return ErrnoError();
   }
-
-  return Nothing();
+  return result;
 }
 
 } // namespace os {
 
-#endif // __STOUT_OS_WINDOWS_FSYNC_HPP__
+#endif // __STOUT_OS_LSEEK_HPP__

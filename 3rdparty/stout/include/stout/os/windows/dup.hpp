@@ -10,40 +10,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_WINDOWS_WRITE_HPP__
-#define __STOUT_OS_WINDOWS_WRITE_HPP__
+#ifndef __STOUT_OS_WINDOWS_DUP_HPP__
+#define __STOUT_OS_WINDOWS_DUP_HPP__
 
 #include <io.h>
+#include <Winsock2.h>
 
-#include <stout/nothing.hpp>
+#include <stout/error.hpp>
 #include <stout/try.hpp>
 #include <stout/unreachable.hpp>
-#include <stout/windows.hpp> // For order-dependent networking headers.
 
-#include <stout/os/socket.hpp>
 #include <stout/os/windows/fd.hpp>
-
 
 namespace os {
 
-inline ssize_t write(const WindowsFD& fd, const void* data, size_t size)
+inline Try<WindowsFD> dup(const WindowsFD& fd)
 {
-  CHECK_LE(size, INT_MAX);
-
   switch (fd.type()) {
     case WindowsFD::FD_CRT:
     case WindowsFD::FD_HANDLE: {
-      return ::_write(fd.crt(), data, static_cast<unsigned int>(size));
+      int result = ::_dup(fd.crt());
+      if (result == -1) {
+        return ErrnoError();
+      }
+      return result;
     }
     case WindowsFD::FD_SOCKET: {
-      return ::send(fd, (const char*)data, static_cast<int>(size), 0);
+      WSAPROTOCOL_INFO protInfo;
+      if (::WSADuplicateSocket(fd, GetCurrentProcessId(), &protInfo) !=
+          INVALID_SOCKET) {
+        return WSASocket(0, 0, 0, &protInfo, 0, 0);
+      };
+      return SocketError();
     }
   }
-
   UNREACHABLE();
 }
 
 } // namespace os {
 
-
-#endif // __STOUT_OS_WINDOWS_WRITE_HPP__
+#endif // __STOUT_OS_WINDOWS_DUP_HPP__

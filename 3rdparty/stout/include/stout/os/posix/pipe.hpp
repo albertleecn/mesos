@@ -10,31 +10,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_WINDOWS_FSYNC_HPP__
-#define __STOUT_OS_WINDOWS_FSYNC_HPP__
+#ifndef __STOUT_OS_POSIX_PIPE_HPP__
+#define __STOUT_OS_POSIX_PIPE_HPP__
 
-#include <io.h>
+#include <unistd.h>
+
+#include <array>
 
 #include <stout/error.hpp>
-#include <stout/nothing.hpp>
 #include <stout/try.hpp>
-#include <stout/windows.hpp>
-
-#include <stout/os/windows/fd.hpp>
-
 
 namespace os {
 
-inline Try<Nothing> fsync(const WindowsFD& fd)
+// Create pipes for interprocess communication.
+inline Try<std::array<int, 2>> pipe()
 {
-  if (!FlushFileBuffers(fd)) {
-    return WindowsError(
-        "os::fsync: Could not flush file buffers for given file descriptor");
+  std::array<int, 2> result;
+  if (::pipe(result.data()) < 0) {
+    return ErrnoError();
   }
-
-  return Nothing();
+  return result;
 }
 
 } // namespace os {
 
-#endif // __STOUT_OS_WINDOWS_FSYNC_HPP__
+#endif // __STOUT_OS_POSIX_PIPE_HPP__
