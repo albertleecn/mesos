@@ -768,7 +768,8 @@ void Master::initialize()
 
   install<ReviveOffersMessage>(
       &Master::reviveOffers,
-      &ReviveOffersMessage::framework_id);
+      &ReviveOffersMessage::framework_id,
+      &ReviveOffersMessage::role);
 
   install<KillTaskMessage>(
       &Master::killTask,
@@ -2309,7 +2310,7 @@ void Master::receive(
       break;
 
     case scheduler::Call::REVIVE:
-      revive(framework);
+      revive(framework, call.revive());
       break;
 
     case scheduler::Call::KILL:
@@ -3221,7 +3222,38 @@ void Master::suppress(
 
   ++metrics->messages_suppress_offers;
 
-  allocator->suppressOffers(framework->id());
+  const Option<string> role =
+    suppress.has_role() ? Option<string>(suppress.role()) : None();
+
+  // Validate role if it is set. We need to make sure the role is valid
+  // and also one of the framework roles.
+  if (role.isSome()) {
+    // There maybe cases that the framework developer set an invalid role
+    // when constructing `scheduler::Call::Suppress`.
+    Option<Error> roleError = roles::validate(role.get());
+    if (roleError.isSome()) {
+      LOG(WARNING) << "SUPPRESS call message with invalid role: "
+                   <<  roleError.get().message;
+
+      return;
+    }
+
+    // TODO(gyliu513): Store the roles set within the Framework struct, so
+    // that we don't have to keep re-computing it.
+    const set<string> roles = protobuf::framework::getRoles(framework->info);
+    if (roles.count(role.get()) == 0) {
+      // TODO(gyliu513): Consider adding a `drop` overload to avoid
+      // custom logging here.
+      LOG(WARNING)
+        << "Ignoring SUPPRESS call message for framework " << *framework
+        << " with role " << role.get() << " because it is not one of the"
+        << " framework's subscribed roles";
+
+      return;
+    }
+  }
+
+  allocator->suppressOffers(framework->id(), role);
 }
 
 
@@ -4775,7 +4807,10 @@ void Master::declineInverseOffers(
 }
 
 
-void Master::reviveOffers(const UPID& from, const FrameworkID& frameworkId)
+void Master::reviveOffers(
+    const UPID& from,
+    const FrameworkID& frameworkId,
+    const string& role)
 {
   Framework* framework = getFramework(frameworkId);
 
@@ -4793,11 +4828,18 @@ void Master::reviveOffers(const UPID& from, const FrameworkID& frameworkId)
     return;
   }
 
-  revive(framework);
+  scheduler::Call::Revive call;
+  if (!role.empty()) {
+    call.set_role(role);
+  }
+
+  revive(framework, call);
 }
 
 
-void Master::revive(Framework* framework)
+void Master::revive(
+    Framework* framework,
+    const scheduler::Call::Revive& revive)
 {
   CHECK_NOTNULL(framework);
 
@@ -4805,7 +4847,36 @@ void Master::revive(Framework* framework)
 
   ++metrics->messages_revive_offers;
 
-  allocator->reviveOffers(framework->id());
+  const Option<string> role =
+    revive.has_role() ? Option<string>(revive.role()) : None();
+
+  // Validate role if it is set. We need to make sure the role is valid
+  // and also one of the framework roles.
+  if (role.isSome()) {
+    Option<Error> roleError = roles::validate(role.get());
+    if (roleError.isSome()) {
+      LOG(WARNING) << "REVIVE call message with invalid role: "
+                   <<  roleError.get().message;
+
+      return;
+    }
+
+    // TODO(gyliu513): Store the roles set within the Framework struct, so
+    // that we don't have to keep re-computing it.
+    const set<string> roles = protobuf::framework::getRoles(framework->info);
+    if (roles.count(role.get()) == 0) {
+      // TODO(gyliu513): Consider adding a `drop` overload to avoid
+      // custom logging here.
+      LOG(WARNING)
+        << "Ignoring REVIVE call message for framework " << *framework
+        << " with role " << role.get() << " because it does not exist in"
+        << " framework roles";
+
+      return;
+    }
+  }
+
+  allocator->reviveOffers(framework->id(), role);
 }
 
 
