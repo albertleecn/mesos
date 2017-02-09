@@ -2344,7 +2344,7 @@ void Master::receive(
       break;
 
     case scheduler::Call::SUPPRESS:
-      suppress(framework);
+      suppress(framework, call.suppress());
       break;
 
     case scheduler::Call::UNKNOWN:
@@ -3211,7 +3211,9 @@ void Master::request(
 }
 
 
-void Master::suppress(Framework* framework)
+void Master::suppress(
+    Framework* framework,
+    const scheduler::Call::Suppress& suppress)
 {
   CHECK_NOTNULL(framework);
 
@@ -3621,9 +3623,6 @@ void Master::accept(
     // TODO(jieyu): Add metrics for non launch operations.
   }
 
-  // TODO(bmahler): MULTI_ROLE: Validate that the accepted offers
-  // do not mix allocation roles, see MESOS-6637.
-
   // TODO(bmahler): We currently only support using multiple offers
   // for a single slave.
   Resources offeredResources;
@@ -4024,7 +4023,7 @@ void Master::_accept(
 
         // Make sure this reserve operation is valid.
         Option<Error> error = validation::operation::validate(
-            operation.reserve(), principal, framework->info.role());
+            operation.reserve(), principal, framework->info);
 
         if (error.isSome()) {
           drop(framework, operation, error.get().message);
