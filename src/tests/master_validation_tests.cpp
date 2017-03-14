@@ -121,7 +121,10 @@ TEST_F(ResourceValidationTest, RevocableDynamicReservation)
 
   Option<Error> error = resource::validate(CreateResources(resource));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message, "cannot be created from revocable resources"));
 }
 
 
@@ -132,7 +135,9 @@ TEST_F(ResourceValidationTest, InvalidRoleReservationPair)
 
   Option<Error> error = resource::validate(CreateResources(resource));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(error->message, "cannot be dynamically reserved"));
 }
 
 
@@ -154,7 +159,11 @@ TEST_F(ResourceValidationTest, UnreservedDiskInfo)
 
   Option<Error> error = resource::validate(CreateResources(volume));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Persistent volumes cannot be created from unreserved resources"));
 }
 
 
@@ -165,7 +174,12 @@ TEST_F(ResourceValidationTest, InvalidPersistenceID)
 
   Option<Error> error = resource::validate(CreateResources(volume));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Invalid persistence ID for persistent volume: 'id1/' contains "
+          "invalid characters"));
 }
 
 
@@ -176,7 +190,11 @@ TEST_F(ResourceValidationTest, PersistentVolumeWithoutVolumeInfo)
 
   Option<Error> error = resource::validate(CreateResources(volume));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Expecting 'volume' to be set for persistent volume"));
 }
 
 
@@ -188,7 +206,11 @@ TEST_F(ResourceValidationTest, PersistentVolumeWithHostPath)
 
   Option<Error> error = resource::validate(CreateResources(volume));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Expecting 'host_path' to be unset for persistent volume"));
 }
 
 
@@ -199,7 +221,9 @@ TEST_F(ResourceValidationTest, NonPersistentVolume)
 
   Option<Error> error = resource::validate(CreateResources(volume));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(error->message, "Non-persistent volume not supported"));
 }
 
 
@@ -211,7 +235,11 @@ TEST_F(ResourceValidationTest, RevocablePersistentVolume)
 
   Option<Error> error = resource::validate(CreateResources(volume));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Persistent volumes cannot be created from revocable resources"));
 }
 
 
@@ -222,7 +250,10 @@ TEST_F(ResourceValidationTest, UnshareableResource)
 
   Option<Error> error = resource::validate(CreateResources(volume));
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message, "Only persistent volumes can be shared"));
 }
 
 
@@ -258,13 +289,37 @@ TEST_F(ReserveOperationValidationTest, MatchingRole)
   Option<Error> error =
     operation::validate(reserve, "principal", frameworkInfo);
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "A reserve operation was attempted for a resource allocated "
+          "to role 'resourceRole', but the framework only has roles "
+          "'{ frameworkRole }'"));
+
+  // Now verify with a MULTI_ROLE framework.
+  frameworkInfo.clear_role();
+  frameworkInfo.add_roles("role1");
+  frameworkInfo.add_roles("role2");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
+
+  error = operation::validate(reserve, "principal", frameworkInfo);
+
+  // We expect an error due to the framework not having the role of the reserved
+  // resource. We only check part of the error message here as internally the
+  // list of the framework's roles does not have a particular order.
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "A reserve operation was attempted for a resource allocated to "
+          "role 'resourceRole', but the framework only has roles "));
 }
 
 
-// This test verifies that validation fails if the framework role is
-// "*" even if the resource role matches.
-TEST_F(ReserveOperationValidationTest, DisallowStarRoleFrameworks)
+// This test verifies that validation fails if reserving to the "*" role.
+TEST_F(ReserveOperationValidationTest, DisallowReservingToStar)
 {
   // The role "*" matches, but is invalid since frameworks with
   // "*" role cannot reserve resources.
@@ -280,29 +335,29 @@ TEST_F(ReserveOperationValidationTest, DisallowStarRoleFrameworks)
   Option<Error> error =
     operation::validate(reserve, "principal", frameworkInfo);
 
-  EXPECT_SOME(error);
-}
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Invalid resources: Invalid resources: Resource 'cpus(*, "
+          "principal):8' is invalid: Invalid reservation: role \"*\" cannot be "
+          "dynamically reserved"));
 
+  // Now verify with a MULTI_ROLE framework.
+  frameworkInfo.clear_role();
+  frameworkInfo.add_roles("role");
+  frameworkInfo.add_roles("*");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
 
-// This test verifies that validation fails if the framework attempts
-// to reserve a resource with the role "*".
-TEST_F(ReserveOperationValidationTest, DisallowReserveForStarRole)
-{
-  // Principal "principal" reserving for "*".
-  Resource resource = Resources::parse("cpus", "8", "*").get();
-  resource.mutable_reservation()->CopyFrom(
-      createReservationInfo("principal"));
+  error = operation::validate(reserve, "principal", frameworkInfo);
 
-  Offer::Operation::Reserve reserve;
-  reserve.add_resources()->CopyFrom(resource);
-
-  FrameworkInfo frameworkInfo;
-  frameworkInfo.set_role("frameworkRole");
-
-  Option<Error> error =
-    operation::validate(reserve, "principal", frameworkInfo);
-
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Resource 'cpus(*, principal):8' is invalid: Invalid reservation: "
+          "role \"*\" cannot be dynamically reserved"));
 }
 
 
@@ -344,7 +399,13 @@ TEST_F(ReserveOperationValidationTest, NonMatchingPrincipal)
   Option<Error> error =
     operation::validate(reserve, "principal1", frameworkInfo);
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "A reserve operation was attempted by authenticated principal "
+          "'principal1', which does not match a reserved resource in the "
+          "request with principal 'principal2'"));
 }
 
 
@@ -366,7 +427,12 @@ TEST_F(ReserveOperationValidationTest, ReservationInfoMissingPrincipal)
   Option<Error> error =
     operation::validate(reserve, "principal", frameworkInfo);
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "A reserve operation was attempted by principal 'principal', but "
+          "there is a reserved resource in the request with no principal set"));
 }
 
 
@@ -385,7 +451,8 @@ TEST_F(ReserveOperationValidationTest, StaticReservation)
   Option<Error> error =
     operation::validate(reserve, "principal", frameworkInfo);
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(error->message, "is not dynamically reserved"));
 }
 
 
@@ -413,7 +480,91 @@ TEST_F(ReserveOperationValidationTest, NoPersistentVolumes)
   Option<Error> error =
     operation::validate(reserve, "principal", frameworkInfo);
 
-  EXPECT_SOME(error);
+  ASSERT_SOME(error);
+  EXPECT_TRUE(strings::contains(error->message, "is not dynamically reserved"));
+}
+
+
+// This test verifies that validation fails if a resource is reserved
+// for a role different from the one it was allocated to.
+TEST_F(ReserveOperationValidationTest, MismatchedAllocation)
+{
+  Resource resource = Resources::parse("cpus", "8", "role1").get();
+  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+
+  Offer::Operation::Reserve reserve;
+  reserve.mutable_resources()->CopyFrom(
+      allocatedResources(resource, "role2"));
+
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.add_roles("role1");
+  frameworkInfo.add_roles("role2");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
+
+  Option<Error> error =
+    operation::validate(reserve, "principal", frameworkInfo);
+
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "A reserve operation was attempted for a resource with role "
+          "'role1', but the resource was allocated to role 'role2'"));
+}
+
+
+// This test verifies that validation fails if an allocated resource
+// is used in the operator HTTP API.
+TEST_F(ReserveOperationValidationTest, UnexpectedAllocatedResource)
+{
+  Resource resource = Resources::parse("cpus", "8", "role").get();
+  resource.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+
+  Offer::Operation::Reserve reserve;
+  reserve.mutable_resources()->CopyFrom(allocatedResources(resource, "role"));
+
+  // HTTP-API style invocations do not pass a `FrameworkInfo`.
+  Option<Error> error = operation::validate(reserve, "principal", None());
+
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "A reserve operation was attempted with an allocated resource,"
+          " but the operator API only allows reservations to be made"
+          " to unallocated resources"));
+}
+
+
+TEST_F(ReserveOperationValidationTest, MixedAllocationRoles)
+{
+  Resource resource1 = Resources::parse("cpus", "8", "role1").get();
+  resource1.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+  Resource resource2 = Resources::parse("mem", "8", "role2").get();
+  resource2.mutable_reservation()->CopyFrom(createReservationInfo("principal"));
+
+  Offer::Operation::Reserve reserve;
+  reserve.mutable_resources()->CopyFrom(
+      allocatedResources(resource1, "role1") +
+      allocatedResources(resource2, "role2"));
+
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.add_roles("role1");
+  frameworkInfo.add_roles("role2");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
+
+  Option<Error> error =
+    operation::validate(reserve, "principal", frameworkInfo);
+
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Invalid reservation resources: The resources have multiple"
+          " allocation roles ('role2' and 'role1') but only one allocation"
+          " role is allowed"));
 }
 
 
@@ -594,6 +745,7 @@ TEST_F(CreateOperationValidationTest, SharedVolumeBasedOnCapability)
 {
   Resource volume = createDiskResource(
       "128", "role1", "1", "path1", None(), true); // Shared.
+  volume.mutable_allocation_info()->set_role("role1");
 
   Offer::Operation::Create create;
   create.add_volumes()->CopyFrom(volume);
@@ -667,7 +819,7 @@ TEST_F(CreateOperationValidationTest, InsufficientDiskResource)
   driver.start();
 
   AWAIT_READY(offers1);
-  EXPECT_FALSE(offers1.get().empty());
+  EXPECT_FALSE(offers1->empty());
 
   Offer offer1 = offers1.get()[0];
 
@@ -697,7 +849,7 @@ TEST_F(CreateOperationValidationTest, InsufficientDiskResource)
   Clock::advance(masterFlags.allocation_interval);
 
   AWAIT_READY(offers2);
-  EXPECT_FALSE(offers2.get().empty());
+  EXPECT_FALSE(offers2->empty());
 
   Offer offer2 = offers2.get()[0];
 
@@ -707,6 +859,37 @@ TEST_F(CreateOperationValidationTest, InsufficientDiskResource)
 
   driver.stop();
   driver.join();
+}
+
+
+TEST_F(CreateOperationValidationTest, MixedAllocationRole)
+{
+  Resource volume1 = Resources::parse("disk", "128", "role1").get();
+  volume1.mutable_disk()->CopyFrom(createDiskInfo("id1", "path1"));
+  Resource volume2 = Resources::parse("disk", "256", "role2").get();
+  volume2.mutable_disk()->CopyFrom(createDiskInfo("id2", "path2"));
+
+  Offer::Operation::Create create;
+  create.mutable_volumes()->CopyFrom(
+      allocatedResources(volume1, "role1") +
+      allocatedResources(volume2, "role2"));
+
+  FrameworkInfo frameworkInfo;
+  frameworkInfo.add_roles("role1");
+  frameworkInfo.add_roles("role2");
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::MULTI_ROLE);
+
+  Option<Error> error = operation::validate(
+      create, Resources(), None(), frameworkInfo);
+
+  ASSERT_SOME(error);
+  EXPECT_TRUE(
+      strings::contains(
+          error->message,
+          "Invalid volume resources: The resources have multiple allocation"
+          " roles ('role2' and 'role1') but only one allocation role is"
+          " allowed"));
 }
 
 
@@ -877,9 +1060,9 @@ TEST_F(TaskValidationTest, ExecutorUsesInvalidFrameworkID)
   driver.start();
 
   AWAIT_READY(status);
-  EXPECT_EQ(TASK_ERROR, status.get().state());
+  EXPECT_EQ(TASK_ERROR, status->state());
   EXPECT_TRUE(strings::startsWith(
-      status.get().message(), "ExecutorInfo has an invalid FrameworkID"));
+      status->message(), "ExecutorInfo has an invalid FrameworkID"));
 
   // Make sure the task is not known to master anymore.
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -897,10 +1080,11 @@ TEST_F(TaskValidationTest, ExecutorUsesInvalidFrameworkID)
 }
 
 
-// Verifies that an environment variable in `ExecutorInfo.command.environment`
-// without a value will be correctly rejected. This constraint will be removed
-// in a future version.
-TEST_F(TaskValidationTest, ExecutorEnvironmentVariableWithoutValue)
+// Verifies that an invalid `ExecutorInfo.command.environment` will be rejected.
+// This test ensures that the common validation code is being executed;
+// comprehensive tests for the `Environment` message can be found in the agent
+// validation tests.
+TEST_F(TaskValidationTest, ExecutorEnvironmentInvalid)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -915,7 +1099,6 @@ TEST_F(TaskValidationTest, ExecutorEnvironmentVariableWithoutValue)
 
   EXPECT_CALL(sched, registered(&driver, _, _));
 
-  // Create an executor.
   ExecutorInfo executor;
   executor = DEFAULT_EXECUTOR_INFO;
   Environment::Variable* variable =
@@ -934,10 +1117,10 @@ TEST_F(TaskValidationTest, ExecutorEnvironmentVariableWithoutValue)
   driver.start();
 
   AWAIT_READY(status);
-  EXPECT_EQ(TASK_ERROR, status.get().state());
+  EXPECT_EQ(TASK_ERROR, status->state());
   EXPECT_EQ(
-      "Executor's `CommandInfo` is invalid: "
-      "Environment variable 'ENV_VAR_KEY' must have a value set",
+      "Executor's `CommandInfo` is invalid: Environment variable 'ENV_VAR_KEY' "
+      "of type 'VALUE' must have a value set",
       status->message());
 
   // Make sure the task is not known to master anymore.
@@ -986,8 +1169,7 @@ TEST_F(TaskValidationTest, ExecutorMissingFrameworkID)
     .WillOnce(LaunchTasks(executor, 1, 1, 16, "*"))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
 
-  EXPECT_CALL(exec, registered(_, _, _, _))
-    .Times(1);
+  EXPECT_CALL(exec, registered(_, _, _, _));
 
   EXPECT_CALL(exec, launchTask(_, _))
     .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
@@ -1035,7 +1217,7 @@ TEST_F(TaskValidationTest, TaskUsesCommandInfoAndExecutorInfo)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -1048,9 +1230,9 @@ TEST_F(TaskValidationTest, TaskUsesCommandInfoAndExecutorInfo)
   driver.launchTasks(offers.get()[0].id(), {task});
 
   AWAIT_READY(status);
-  EXPECT_EQ(TASK_ERROR, status.get().state());
+  EXPECT_EQ(TASK_ERROR, status->state());
   EXPECT_TRUE(strings::contains(
-      status.get().message(), "CommandInfo or ExecutorInfo present"));
+      status->message(), "CommandInfo or ExecutorInfo present"));
 
   driver.stop();
   driver.join();
@@ -1154,8 +1336,7 @@ TEST_F(TaskValidationTest, TaskUsesNoResources)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1165,7 +1346,7 @@ TEST_F(TaskValidationTest, TaskUsesNoResources)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   TaskInfo task;
   task.set_name("");
@@ -1180,11 +1361,11 @@ TEST_F(TaskValidationTest, TaskUsesNoResources)
   driver.launchTasks(offers.get()[0].id(), {task});
 
   AWAIT_READY(status);
-  EXPECT_EQ(task.task_id(), status.get().task_id());
-  EXPECT_EQ(TASK_ERROR, status.get().state());
-  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status.get().reason());
-  EXPECT_TRUE(status.get().has_message());
-  EXPECT_EQ("Task uses no resources", status.get().message());
+  EXPECT_EQ(task.task_id(), status->task_id());
+  EXPECT_EQ(TASK_ERROR, status->state());
+  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status->reason());
+  EXPECT_TRUE(status->has_message());
+  EXPECT_EQ("Task uses no resources", status->message());
 
   driver.stop();
   driver.join();
@@ -1204,8 +1385,7 @@ TEST_F(TaskValidationTest, TaskUsesMoreResourcesThanOffered)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1215,7 +1395,7 @@ TEST_F(TaskValidationTest, TaskUsesMoreResourcesThanOffered)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   TaskInfo task;
   task.set_name("");
@@ -1236,12 +1416,12 @@ TEST_F(TaskValidationTest, TaskUsesMoreResourcesThanOffered)
 
   AWAIT_READY(status);
 
-  EXPECT_EQ(task.task_id(), status.get().task_id());
-  EXPECT_EQ(TASK_ERROR, status.get().state());
-  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status.get().reason());
-  EXPECT_TRUE(status.get().has_message());
+  EXPECT_EQ(task.task_id(), status->task_id());
+  EXPECT_EQ(TASK_ERROR, status->state());
+  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status->reason());
+  EXPECT_TRUE(status->has_message());
   EXPECT_TRUE(strings::contains(
-      status.get().message(), "more than available"));
+      status->message(), "more than available"));
 
   driver.stop();
   driver.join();
@@ -1276,7 +1456,7 @@ TEST_F(TaskValidationTest, DuplicatedTaskID)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   ExecutorInfo executor;
   executor.mutable_executor_id()->set_value("default");
@@ -1315,14 +1495,14 @@ TEST_F(TaskValidationTest, DuplicatedTaskID)
   driver.launchTasks(offers.get()[0].id(), tasks);
 
   AWAIT_READY(task);
-  EXPECT_EQ(task1.task_id(), task.get().task_id());
+  EXPECT_EQ(task1.task_id(), task->task_id());
 
   AWAIT_READY(status);
-  EXPECT_EQ(TASK_ERROR, status.get().state());
-  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status.get().reason());
+  EXPECT_EQ(TASK_ERROR, status->state());
+  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status->reason());
 
   EXPECT_TRUE(strings::startsWith(
-      status.get().message(), "Task has duplicate ID"));
+      status->message(), "Task has duplicate ID"));
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -1350,8 +1530,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnSameSlave)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1361,7 +1540,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnSameSlave)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   ExecutorInfo executor;
   executor.mutable_executor_id()->set_value("default");
@@ -1389,8 +1568,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnSameSlave)
   tasks.push_back(task1);
   tasks.push_back(task2);
 
-  EXPECT_CALL(exec, registered(_, _, _, _))
-    .Times(1);
+  EXPECT_CALL(exec, registered(_, _, _, _));
 
   // Grab the "good" task but don't send a status update.
   Future<TaskInfo> task;
@@ -1404,15 +1582,15 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnSameSlave)
   driver.launchTasks(offers.get()[0].id(), tasks);
 
   AWAIT_READY(task);
-  EXPECT_EQ(task1.task_id(), task.get().task_id());
+  EXPECT_EQ(task1.task_id(), task->task_id());
 
   AWAIT_READY(status);
-  EXPECT_EQ(task2.task_id(), status.get().task_id());
-  EXPECT_EQ(TASK_ERROR, status.get().state());
-  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status.get().reason());
-  EXPECT_TRUE(status.get().has_message());
+  EXPECT_EQ(task2.task_id(), status->task_id());
+  EXPECT_EQ(TASK_ERROR, status->state());
+  EXPECT_EQ(TaskStatus::REASON_TASK_INVALID, status->reason());
+  EXPECT_TRUE(status->has_message());
   EXPECT_TRUE(strings::contains(
-      status.get().message(), "ExecutorInfo is not compatible"));
+      status->message(), "ExecutorInfo is not compatible"));
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -1456,7 +1634,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   ASSERT_SOME(slave1);
 
   AWAIT_READY(offers1);
-  EXPECT_NE(0u, offers1.get().size());
+  EXPECT_NE(0u, offers1->size());
 
   // Launch the first task with the default executor id.
   ExecutorInfo executor1;
@@ -1466,8 +1644,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   TaskInfo task1 = createTask(
       offers1.get()[0], executor1.command().value(), executor1.executor_id());
 
-  EXPECT_CALL(exec1, registered(_, _, _, _))
-    .Times(1);
+  EXPECT_CALL(exec1, registered(_, _, _, _));
 
   EXPECT_CALL(exec1, launchTask(_, _))
     .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
@@ -1479,7 +1656,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   driver.launchTasks(offers1.get()[0].id(), {task1});
 
   AWAIT_READY(status1);
-  ASSERT_EQ(TASK_RUNNING, status1.get().state());
+  ASSERT_EQ(TASK_RUNNING, status1->state());
 
   Future<vector<Offer>> offers2;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1495,7 +1672,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   ASSERT_SOME(slave2);
 
   AWAIT_READY(offers2);
-  EXPECT_NE(0u, offers2.get().size());
+  EXPECT_NE(0u, offers2->size());
 
   // Now launch the second task with the same executor id but
   // a different executor command.
@@ -1506,8 +1683,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   TaskInfo task2 = createTask(
       offers2.get()[0], executor2.command().value(), executor2.executor_id());
 
-  EXPECT_CALL(exec2, registered(_, _, _, _))
-    .Times(1);
+  EXPECT_CALL(exec2, registered(_, _, _, _));
 
   EXPECT_CALL(exec2, launchTask(_, _))
     .WillOnce(SendStatusUpdateFromTask(TASK_RUNNING));
@@ -1519,7 +1695,7 @@ TEST_F(TaskValidationTest, ExecutorInfoDiffersOnDifferentSlaves)
   driver.launchTasks(offers2.get()[0].id(), {task2});
 
   AWAIT_READY(status2);
-  ASSERT_EQ(TASK_RUNNING, status2.get().state());
+  ASSERT_EQ(TASK_RUNNING, status2->state());
 
   EXPECT_CALL(exec1, shutdown(_))
     .Times(AtMost(1));
@@ -1687,6 +1863,7 @@ TEST_F(TaskValidationTest, TaskUsesRevocableResources)
   cpus.set_name("cpus");
   cpus.set_type(Value::SCALAR);
   cpus.mutable_scalar()->set_value(2);
+  cpus.mutable_allocation_info()->set_role("role");
 
   // A task with only non-revocable cpus is valid.
   task.add_resources()->CopyFrom(cpus);
@@ -1715,6 +1892,43 @@ TEST_F(TaskValidationTest, TaskUsesRevocableResources)
   error = task::internal::validateResources(task);
 
   EXPECT_SOME(error);
+}
+
+
+TEST_F(TaskValidationTest, TaskInfoAllocatedResources)
+{
+  // Validation should pass if the task has resources
+  // allocated to a single role.
+  {
+    TaskInfo task;
+    Resources resources = Resources::parse("cpus:1;mem:1").get();
+    task.mutable_resources()->CopyFrom(allocatedResources(resources, "role"));
+
+    EXPECT_NONE(::task::internal::validateResources(task));
+  }
+
+  // Validation should fail if the task has unallocated resources.
+  {
+    TaskInfo task;
+    Resources resources = Resources::parse("cpus:1;mem:1").get();
+    task.mutable_resources()->CopyFrom(resources);
+
+    EXPECT_SOME(::task::internal::validateResources(task));
+  }
+
+  // Validation should fail if the task has resources
+  // allocated to multiple roles.
+  {
+    TaskInfo task;
+    Resources resources1 = Resources::parse("cpus:1").get();
+    Resources resources2 = Resources::parse("mem:1").get();
+
+    task.mutable_resources()->CopyFrom(
+        allocatedResources(resources1, "role1") +
+        allocatedResources(resources2, "role2"));
+
+    EXPECT_SOME(::task::internal::validateResources(task));
+  }
 }
 
 
@@ -1800,8 +2014,7 @@ TEST_F(TaskValidationTest, ExecutorShutdownGracePeriodIsNonNegative)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1859,8 +2072,7 @@ TEST_F(TaskValidationTest, KillPolicyGracePeriodIsNonNegative)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -1901,10 +2113,11 @@ TEST_F(TaskValidationTest, KillPolicyGracePeriodIsNonNegative)
 }
 
 
-// This test verifies that a task containing an environment variable
-// with no value will be rejected correctly. Note that this constraint
-// will be removed in a future version.
-TEST_F(TaskValidationTest, TaskEnvironmentVariableWithoutValue)
+// Verifies that an invalid `TaskInfo.command.environment` will be rejected.
+// This test ensures that the common validation code is being executed;
+// comprehensive tests for the `Environment` message can be found in the agent
+// validation tests.
+TEST_F(TaskValidationTest, TaskEnvironmentInvalid)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -1927,7 +2140,7 @@ TEST_F(TaskValidationTest, TaskEnvironmentVariableWithoutValue)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -1943,10 +2156,10 @@ TEST_F(TaskValidationTest, TaskEnvironmentVariableWithoutValue)
   driver.launchTasks(offers.get()[0].id(), {task});
 
   AWAIT_READY(status);
-  EXPECT_EQ(TASK_ERROR, status.get().state());
+  EXPECT_EQ(TASK_ERROR, status->state());
   EXPECT_EQ(
-      "Task's `CommandInfo` is invalid: "
-      "Environment variable 'ENV_VAR_KEY' must have a value set",
+      "Task's `CommandInfo` is invalid: Environment variable 'ENV_VAR_KEY' "
+      "of type 'VALUE' must have a value set",
       status->message());
 
   driver.stop();
@@ -2074,6 +2287,7 @@ TEST_F(ExecutorValidationTest, ExecutorID)
     EXPECT_SOME(::executor::internal::validateExecutorID(executorInfo));
   }
 
+  // This is currently allowed.
   {
     ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
     executorInfo.mutable_executor_id()->set_value("ab c");
@@ -2086,6 +2300,79 @@ TEST_F(ExecutorValidationTest, ExecutorID)
     executorInfo.mutable_executor_id()->set_value("ab/c");
 
     EXPECT_SOME(::executor::internal::validateExecutorID(executorInfo));
+  }
+
+  // Containing a dot is allowed.
+  {
+    ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
+    executorInfo.mutable_executor_id()->set_value("a.b");
+
+    EXPECT_NONE(::executor::internal::validateExecutorID(executorInfo));
+  }
+
+  // Being only a dot is not allowed.
+  {
+    ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
+    executorInfo.mutable_executor_id()->set_value(".");
+
+    EXPECT_SOME(::executor::internal::validateExecutorID(executorInfo));
+  }
+
+  {
+    ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
+    executorInfo.mutable_executor_id()->set_value("..");
+
+    EXPECT_SOME(::executor::internal::validateExecutorID(executorInfo));
+  }
+}
+
+
+TEST_F(ExecutorValidationTest, ExecutorInfoAllocatedResources)
+{
+  // Validation should pass if the executor has no resources.
+  {
+    ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
+
+    EXPECT_NONE(::executor::internal::validateResources(executorInfo));
+  }
+
+  // Validation should pass if the executor has resources
+  // allocated to a single role.
+  {
+    ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
+
+    EXPECT_NONE(::executor::internal::validateResources(executorInfo));
+
+    Resources resources = Resources::parse("cpus:1;mem:128").get();
+    executorInfo.mutable_resources()->CopyFrom(
+        allocatedResources(resources, "role"));
+
+    EXPECT_NONE(::executor::internal::validateResources(executorInfo));
+  }
+
+  // Validation should fail if the executor has unallocated resources.
+  {
+    ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
+
+    Resources resources = Resources::parse("cpus:1;mem:128").get();
+    executorInfo.mutable_resources()->CopyFrom(resources);
+
+    EXPECT_SOME(::executor::internal::validateResources(executorInfo));
+  }
+
+  // Validation should fail if the executor has resources
+  // allocated to multiple role.
+  {
+    ExecutorInfo executorInfo = DEFAULT_EXECUTOR_INFO;
+
+    Resources resources1 = Resources::parse("cpus:1").get();
+    Resources resources2 = Resources::parse("mem:1").get();
+
+    executorInfo.mutable_resources()->CopyFrom(
+        allocatedResources(resources1, "role1") +
+        allocatedResources(resources2, "role2"));
+
+    EXPECT_SOME(::executor::internal::validateResources(executorInfo));
   }
 }
 
@@ -2274,8 +2561,7 @@ TEST_F(TaskGroupValidationTest, ExecutorUsesDockerContainerInfo)
   MesosSchedulerDriver driver(
       &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -2374,8 +2660,7 @@ TEST_F(TaskGroupValidationTest, ExecutorWithoutFrameworkId)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -2385,7 +2670,7 @@ TEST_F(TaskGroupValidationTest, ExecutorWithoutFrameworkId)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   // Create an invalid executor without framework id.
   ExecutorInfo executor;
@@ -2464,8 +2749,7 @@ TEST_F(TaskGroupValidationTest, TaskUsesDockerContainerInfo)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -2554,8 +2838,7 @@ TEST_F(TaskGroupValidationTest, TaskUsesNetworkInfo)
   MesosSchedulerDriver driver(
       &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -2646,8 +2929,7 @@ TEST_F(TaskGroupValidationTest, TaskUsesDifferentExecutor)
   MesosSchedulerDriver driver(
       &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  EXPECT_CALL(sched, registered(&driver, _, _))
-    .Times(1);
+  EXPECT_CALL(sched, registered(&driver, _, _));
 
   Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
@@ -2722,11 +3004,11 @@ TEST_F(TaskGroupValidationTest, TaskUsesDifferentExecutor)
 }
 
 
-// Ensures that a task group which specifies an invalid environment in
-// `ExecutorInfo` will be correctly rejected. Currently,
-// `Environment.Variable.Value` must be set, but this constraint will be removed
-// in a future version.
-TEST_F(TaskGroupValidationTest, ExecutorEnvironmentVariableWithoutValue)
+// Verifies that a task group which specifies an invalid environment in
+// `ExecutorInfo` will be rejected. This test ensures that the common validation
+// code is being executed; comprehensive tests for the `Environment` message can
+// be found in the agent validation tests.
+TEST_F(TaskGroupValidationTest, ExecutorEnvironmentInvalid)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -2752,7 +3034,7 @@ TEST_F(TaskGroupValidationTest, ExecutorEnvironmentVariableWithoutValue)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   TaskInfo task1;
   task1.set_name("1");
@@ -2798,16 +3080,16 @@ TEST_F(TaskGroupValidationTest, ExecutorEnvironmentVariableWithoutValue)
   EXPECT_EQ(TASK_ERROR, task1Status->state());
   EXPECT_EQ(TaskStatus::REASON_TASK_GROUP_INVALID, task1Status->reason());
   EXPECT_EQ(
-      "Executor's `CommandInfo` is invalid: "
-      "Environment variable 'ENV_VAR_KEY' must have a value set",
+      "Executor's `CommandInfo` is invalid: Environment variable 'ENV_VAR_KEY' "
+      "of type 'VALUE' must have a value set",
       task1Status->message());
 
   AWAIT_READY(task2Status);
   EXPECT_EQ(TASK_ERROR, task2Status->state());
   EXPECT_EQ(TaskStatus::REASON_TASK_GROUP_INVALID, task2Status->reason());
   EXPECT_EQ(
-      "Executor's `CommandInfo` is invalid: "
-      "Environment variable 'ENV_VAR_KEY' must have a value set",
+      "Executor's `CommandInfo` is invalid: Environment variable 'ENV_VAR_KEY' "
+      "of type 'VALUE' must have a value set",
       task2Status->message());
 
   // Make sure the tasks are not known to master anymore.
@@ -2826,11 +3108,11 @@ TEST_F(TaskGroupValidationTest, ExecutorEnvironmentVariableWithoutValue)
 }
 
 
-// Ensures that a task group which specifies an invalid environment in
-// `TaskGroupInfo` will be correctly rejected. Currently,
-// `Environment.Variable.Value` must be set, but this constraint will be removed
-// in a future version.
-TEST_F(TaskGroupValidationTest, TaskEnvironmentVariableWithoutValue)
+// Verifies that a task group which specifies an invalid environment in
+// `TaskGroupInfo` will be rejected. This test ensures that the common
+// validation code is being executed; comprehensive tests for the `Environment`
+// message can be found in the agent validation tests.
+TEST_F(TaskGroupValidationTest, TaskEnvironmentInvalid)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -2856,7 +3138,7 @@ TEST_F(TaskGroupValidationTest, TaskEnvironmentVariableWithoutValue)
   driver.start();
 
   AWAIT_READY(offers);
-  EXPECT_NE(0u, offers.get().size());
+  EXPECT_NE(0u, offers->size());
 
   TaskInfo task1;
   task1.set_name("1");
@@ -2904,7 +3186,7 @@ TEST_F(TaskGroupValidationTest, TaskEnvironmentVariableWithoutValue)
   EXPECT_EQ(TaskStatus::REASON_TASK_GROUP_INVALID, task1Status->reason());
   EXPECT_EQ(
       "Task '1' is invalid: Task's `CommandInfo` is invalid: Environment "
-      "variable 'ENV_VAR_KEY' must have a value set",
+      "variable 'ENV_VAR_KEY' of type 'VALUE' must have a value set",
       task1Status->message());
 
   AWAIT_READY(task2Status);
@@ -2912,7 +3194,7 @@ TEST_F(TaskGroupValidationTest, TaskEnvironmentVariableWithoutValue)
   EXPECT_EQ(TaskStatus::REASON_TASK_GROUP_INVALID, task2Status->reason());
   EXPECT_EQ(
       "Task '1' is invalid: Task's `CommandInfo` is invalid: Environment "
-      "variable 'ENV_VAR_KEY' must have a value set",
+      "variable 'ENV_VAR_KEY' of type 'VALUE' must have a value set",
       task2Status->message());
 
   // Allow status updates to arrive.
@@ -3192,9 +3474,9 @@ TEST_F(FrameworkInfoValidationTest, UpgradeToMultiRole)
 }
 
 
-// This tests verifies that when a multi-role capable framework
-// downgrades to remove multi-role capabilities, illegal attempts to
-// change the roles the framework is subscribed to are caught.
+// This tests verifies that a multi-role capable framework is able
+// to downgrade to remove multi-role capabilities and change roles
+// the framework is subscribed to.
 TEST_F(FrameworkInfoValidationTest, DowngradeFromMultipleRoles)
 {
   Clock::pause();
@@ -3233,40 +3515,37 @@ TEST_F(FrameworkInfoValidationTest, DowngradeFromMultipleRoles)
 
   frameworkInfo.mutable_id()->CopyFrom(frameworkId.get());
 
-  // Downgrade `frameworkInfo` to remove multi-role capability, and
-  // migrate from `roles` to `role` field. This illegally changes the
-  // number of roles the framework is subscribed to.
+  // Downgrade `frameworkInfo` to remove `MULTI_ROLE` capability, and
+  // migrate from `roles` to `role` field.
   ASSERT_EQ(2u, frameworkInfo.roles_size());
   frameworkInfo.set_role(frameworkInfo.roles(0));
   frameworkInfo.clear_roles();
   ASSERT_EQ(1u, frameworkInfo.capabilities_size());
   frameworkInfo.clear_capabilities();
 
-  MockScheduler sched;
-  MesosSchedulerDriver driver(
-      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+  {
+    MockScheduler sched;
+    MesosSchedulerDriver driver(
+        &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  Future<string> error;
-  EXPECT_CALL(sched, error(&driver, _))
-    .WillOnce(FutureArg<1>(&error));
+    Future<Nothing> registered;
+    EXPECT_CALL(sched, registered(&driver, _, _))
+      .WillOnce(FutureSatisfy(&registered));
 
-  driver.start();
+    driver.start();
 
-  Clock::settle();
+    Clock::settle();
 
-  AWAIT_EXPECT_EQ(
-      "Frameworks cannot change their roles: "
-      "expected '{ role1, role2 }', but got '{ role1 }'",
-      error);
+    AWAIT_READY(registered);
 
-  driver.stop();
-  driver.join();
+    driver.stop();
+    driver.join();
+  }
 }
 
 
-// This test verifies that a multi-role framework cannot change its
-// roles on failover.
-TEST_F(FrameworkInfoValidationTest, RejectRoleChangeWithMultiRole)
+// This test verifies that a multi-role framework can change roles on failover.
+TEST_F(FrameworkInfoValidationTest, RoleChangeWithMultiRole)
 {
   Clock::pause();
 
@@ -3306,35 +3585,32 @@ TEST_F(FrameworkInfoValidationTest, RejectRoleChangeWithMultiRole)
   frameworkInfo.mutable_id()->CopyFrom(frameworkId.get());
   frameworkInfo.add_roles("role2");
 
-  MockScheduler sched;
-  MesosSchedulerDriver driver(
-      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+  {
+    MockScheduler sched;
+    MesosSchedulerDriver driver(
+        &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  Future<string> error;
-  EXPECT_CALL(sched, error(&driver, _))
-    .WillOnce(FutureArg<1>(&error));
+    Future<Nothing> registered;
+    EXPECT_CALL(sched, registered(&driver, _, _))
+      .WillOnce(FutureSatisfy(&registered));
 
-  driver.start();
+    driver.start();
 
-  Clock::settle();
+    Clock::settle();
 
-  AWAIT_EXPECT_EQ(
-      "Frameworks cannot change their roles: "
-      "expected '{ role1 }', but got '{ role1, role2 }'",
-      error);
+    AWAIT_READY(registered);
 
-  driver.stop();
-  driver.join();
+    driver.stop();
+    driver.join();
+  }
 }
 
 
-// This test checks that frameworks cannot change their `role` during
-// master failover. The scenario tested here sets up a one-agent
-// cluster with a single framework. On failover the master would
-// first learn about the framework from the agent, and then from the
-// framework. We require the information from the agent and the
-// framework to be consistent.
-TEST_F(FrameworkInfoValidationTest, RejectRoleChangeWithMultiRoleMasterFailover)
+// This test checks that frameworks can change their `role` during master
+// failover. The scenario tested here sets up a one-agent cluster with
+// a single framework. On failover the master would first learn about
+// the framework from the agent, and then from the framework.
+TEST_F(FrameworkInfoValidationTest, RoleChangeWithMultiRoleMasterFailover)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -3396,8 +3672,13 @@ TEST_F(FrameworkInfoValidationTest, RejectRoleChangeWithMultiRoleMasterFailover)
     driver.launchTasks(offers.get()[0].id(), {task});
 
     AWAIT_READY(runningStatus);
-    EXPECT_EQ(TASK_RUNNING, runningStatus.get().state());
-    EXPECT_EQ(task.task_id(), runningStatus.get().task_id());
+    EXPECT_EQ(TASK_RUNNING, runningStatus->state());
+    EXPECT_EQ(task.task_id(), runningStatus->task_id());
+
+    // Since we launched a task, stopping the driver will cause the
+    // task and its executor to be shutdown.
+    EXPECT_CALL(exec, shutdown(_))
+      .Times(AtMost(1));
 
     driver.stop();
     driver.join();
@@ -3419,33 +3700,30 @@ TEST_F(FrameworkInfoValidationTest, RejectRoleChangeWithMultiRoleMasterFailover)
 
   AWAIT_READY(slaveReregisteredMessage);
 
-  // Change the `roles` of the framework in an illegal way (upgrade to
-  // `MULTI_ROLE` where `roles` is not identical to `role`). We do
-  // not simply change `role` here as this currently would not trigger
-  // an error, but would only be logged to the master's log.
+  // Upgrade `frameworkInfo` to add `MULTI_ROLE` capability, and
+  // migrate from `role1` to `role2`.
   frameworkInfo.mutable_id()->CopyFrom(frameworkId.get());
   frameworkInfo.add_roles("role2");
   frameworkInfo.clear_role();
   frameworkInfo.add_capabilities()->set_type(
       FrameworkInfo::Capability::MULTI_ROLE);
 
-  MockScheduler sched;
-  MesosSchedulerDriver driver(
-      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+  {
+    MockScheduler sched;
+    MesosSchedulerDriver driver(
+        &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
-  Future<string> error;
-  EXPECT_CALL(sched, error(&driver, _))
-    .WillOnce(FutureArg<1>(&error));
+    Future<Nothing> registered;
+    EXPECT_CALL(sched, registered(&driver, _, _))
+      .WillOnce(FutureSatisfy(&registered));
 
-  driver.start();
+    driver.start();
 
-  AWAIT_EXPECT_EQ(
-      "Frameworks cannot change their roles: "
-      "expected '{ role1 }', but got '{ role2 }'",
-      error);
+    AWAIT_READY(registered);
 
-  driver.stop();
-  driver.join();
+    driver.stop();
+    driver.join();
+  }
 }
 
 } // namespace tests {

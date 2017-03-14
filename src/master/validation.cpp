@@ -25,6 +25,8 @@
 #include <mesos/roles.hpp>
 #include <mesos/type_utils.hpp>
 
+#include <process/authenticator.hpp>
+
 #include <stout/foreach.hpp>
 #include <stout/hashmap.hpp>
 #include <stout/hashset.hpp>
@@ -39,6 +41,8 @@
 #include "common/validation.hpp"
 
 #include "master/master.hpp"
+
+using process::http::authentication::Principal;
 
 using std::set;
 using std::string;
@@ -55,7 +59,7 @@ namespace call {
 
 Option<Error> validate(
     const mesos::master::Call& call,
-    const Option<string>& principal)
+    const Option<Principal>& principal)
 {
   if (!call.IsInitialized()) {
     return Error("Not initialized: " + call.InitializationErrorString());
@@ -309,7 +313,7 @@ namespace call {
 
 Option<Error> validate(
     const mesos::scheduler::Call& call,
-    const Option<string>& principal)
+    const Option<Principal>& principal)
 {
   if (!call.IsInitialized()) {
     return Error("Not initialized: " + call.InitializationErrorString());
@@ -333,10 +337,15 @@ Option<Error> validate(
     if (principal.isSome() &&
         frameworkInfo.has_principal() &&
         principal != frameworkInfo.principal()) {
+      // We assume that `principal->value.isSome()` is true. The master's HTTP
+      // handlers enforce this constraint, and V0 authenticators will only
+      // return principals of that form.
+      CHECK_SOME(principal->value);
+
       return Error(
-          "Authenticated principal '" + principal.get() + "' does not "
-          "match principal '" + frameworkInfo.principal() + "' set in "
-          "`FrameworkInfo`");
+          "Authenticated principal '" + stringify(principal.get()) +
+          "' does not match principal '" + frameworkInfo.principal() +
+          "' set in `FrameworkInfo`");
     }
 
     return None();
@@ -584,6 +593,36 @@ Option<Error> validatePersistentVolume(
 }
 
 
+// Validates that all the given resources are allocated to same role.
+Option<Error> validateAllocatedToSingleRole(const Resources& resources)
+{
+  Option<string> role;
+
+  foreach (const Resource& resource, resources) {
+    // Note that the master normalizes `Offer::Operation` resources
+    // to have allocation info set, so we can validate it here.
+    if (!resource.allocation_info().has_role()) {
+      return Error("The resources are not allocated to a role");
+    }
+
+    string _role = resource.allocation_info().role();
+
+    if (role.isNone()) {
+      role = _role;
+      continue;
+    }
+
+    if (_role != role.get()) {
+      return Error("The resources have multiple allocation roles"
+                   " ('" + _role + "' and '" + role.get() + "')"
+                   " but only one allocation role is allowed");
+    }
+  }
+
+  return None();
+}
+
+
 Option<Error> validate(const RepeatedPtrField<Resource>& resources)
 {
   Option<Error> error = Resources::validate(resources);
@@ -750,6 +789,11 @@ Option<Error> validateResources(const ExecutorInfo& executor)
         "Executor uses duplicate persistence ID: " + error->message);
   }
 
+  error = resource::validateAllocatedToSingleRole(resources);
+  if (error.isSome()) {
+    return Error("Invalid executor resources: " + error->message);
+  }
+
   error = resource::validateRevocableAndNonRevocableResources(resources);
   if (error.isSome()) {
     return Error("Executor mixes revocable and non-revocable resources: " +
@@ -910,6 +954,11 @@ Option<Error> validateResources(const TaskInfo& task)
   error = resource::validateUniquePersistenceID(resources);
   if (error.isSome()) {
     return Error("Task uses duplicate persistence ID: " + error->message);
+  }
+
+  error = resource::validateAllocatedToSingleRole(resources);
+  if (error.isSome()) {
+    return Error("Invalid task resources: " + error->message);
   }
 
   error = resource::validateRevocableAndNonRevocableResources(resources);
@@ -1606,12 +1655,18 @@ namespace operation {
 
 Option<Error> validate(
     const Offer::Operation::Reserve& reserve,
-    const Option<string>& principal,
+    const Option<Principal>& principal,
     const Option<FrameworkInfo>& frameworkInfo)
 {
+  // NOTE: this ensures the reservation is not being made to the "*" role.
   Option<Error> error = resource::validate(reserve.resources());
   if (error.isSome()) {
     return Error("Invalid resources: " + error.get().message);
+  }
+
+  Option<hashset<string>> frameworkRoles;
+  if (frameworkInfo.isSome()) {
+    frameworkRoles = protobuf::framework::getRoles(frameworkInfo.get());
   }
 
   foreach (const Resource& resource, reserve.resources()) {
@@ -1621,31 +1676,72 @@ Option<Error> validate(
     }
 
     if (principal.isSome()) {
+      // We assume that `principal->value.isSome()` is true. The master's HTTP
+      // handlers enforce this constraint, and V0 authenticators will only
+      // return principals of that form.
+      CHECK_SOME(principal->value);
+
       if (!resource.reservation().has_principal()) {
         return Error(
             "A reserve operation was attempted by principal '" +
-            principal.get() + "', but there is a reserved resource in the"
-            " request with no principal set in `ReservationInfo`");
+            stringify(principal.get()) + "', but there is a "
+            "reserved resource in the request with no principal set");
       }
 
-      if (resource.reservation().principal() != principal.get()) {
+      if (principal != resource.reservation().principal()) {
         return Error(
-            "A reserve operation was attempted by principal '" +
-            principal.get() + "', but there is a reserved resource in the"
-            " request with principal '" + resource.reservation().principal() +
-            "' set in `ReservationInfo`");
+            "A reserve operation was attempted by authenticated principal '" +
+            stringify(principal.get()) + "', which does not match a "
+            "reserved resource in the request with principal '" +
+            resource.reservation().principal() + "'");
       }
     }
 
-    if (frameworkInfo.isSome()) {
-      set<string> frameworkRoles =
-        protobuf::framework::getRoles(frameworkInfo.get());
+    if (frameworkRoles.isSome()) {
+      // If information on the framework was passed we are dealing
+      // with a request over the framework API. In this case we expect
+      // that the reserved resources where allocated to the role, and
+      // that the allocation role and reservation role match the role
+      // of the framework.
+      if (!resource.allocation_info().has_role()) {
+        return Error(
+            "A reserve operation was attempted on unallocated resource"
+            " " + stringify(resource) + ", but frameworks can only"
+            " perform reservations on allocated resources");
+      }
 
-      if (frameworkRoles.count(resource.role()) == 0) {
+      if (resource.allocation_info().role() != resource.role()) {
         return Error(
             "A reserve operation was attempted for a resource with role"
-            " '" + resource.role() + "', but the framework can only reserve"
-            " resources with roles '" + stringify(frameworkRoles) + "'");
+            " '" + resource.role() + "', but the resource was allocated"
+            " to role '" + resource.allocation_info().role() + "'");
+      }
+
+      if (!frameworkRoles->contains(resource.allocation_info().role())) {
+        return Error(
+            "A reserve operation was attempted for a resource allocated"
+            " to role '" + resource.role() + "', but the framework only"
+            " has roles '" + stringify(frameworkRoles.get()) + "'");
+      }
+
+      if (!frameworkRoles->contains(resource.role())) {
+        return Error(
+            "A reserve operation was attempted for a resource with role"
+            " '" + resource.role() + "', but the framework can only"
+            " reserve resources with roles"
+            " '" + stringify(frameworkRoles.get()) + "'");
+      }
+    } else {
+      // If no `FrameworkInfo` was passed we are dealing with a
+      // request via the operator HTTP API. In this case we expect
+      // that the reserved resources have no `AllocationInfo` set
+      // because operators can only reserve from the unallocated
+      // resources.
+      if (resource.has_allocation_info()) {
+        return Error(
+            "A reserve operation was attempted with an allocated resource,"
+            " but the operator API only allows reservations to be made to"
+            " unallocated resources");
       }
     }
 
@@ -1656,6 +1752,16 @@ Option<Error> validate(
     if (Resources::isPersistentVolume(resource)) {
       return Error("A persistent volume " + stringify(resource) +
                    " must already be reserved");
+    }
+  }
+
+  if (frameworkInfo.isSome()) {
+    // If the operation is being applied by a framework, we also
+    // ensure that across all the resources, they are allocated
+    // to a single role.
+    error = resource::validateAllocatedToSingleRole(reserve.resources());
+    if (error.isSome()) {
+      return Error("Invalid reservation resources: " + error->message);
     }
   }
 
@@ -1698,7 +1804,7 @@ Option<Error> validate(const Offer::Operation::Unreserve& unreserve)
 Option<Error> validate(
     const Offer::Operation::Create& create,
     const Resources& checkpointedResources,
-    const Option<string>& principal,
+    const Option<Principal>& principal,
     const Option<FrameworkInfo>& frameworkInfo)
 {
   Option<Error> error = resource::validate(create.volumes());
@@ -1734,22 +1840,38 @@ Option<Error> validate(
     }
 
     // Ensure that the provided principals match. If `principal` is `None`,
-    // we allow `volume.disk().persistence().principal()` to take any value.
+    // we allow `volume.disk.persistence.principal` to take any value.
     if (principal.isSome()) {
+      // We assume that `principal->value.isSome()` is true. The master's HTTP
+      // handlers enforce this constraint, and V0 authenticators will only
+      // return principals of that form.
+      CHECK_SOME(principal->value);
+
       if (!volume.disk().persistence().has_principal()) {
         return Error(
-            "Create volume operation has been attempted by principal '" +
-            principal.get() + "', but there is a volume in the operation with "
-            "no principal set in 'DiskInfo.Persistence'");
+            "Create volume operation attempted by principal '" +
+            stringify(principal.get()) + "', but there is a volume in the "
+            "operation with no principal set in 'disk.persistence'");
       }
 
-      if (volume.disk().persistence().principal() != principal.get()) {
+      if (principal != volume.disk().persistence().principal()) {
         return Error(
-            "Create volume operation has been attempted by principal '" +
-            principal.get() + "', but there is a volume in the operation with "
-            "principal '" + volume.disk().persistence().principal() +
-            "' set in 'DiskInfo.Persistence'");
+            "Create volume operation attempted by authenticated principal '" +
+            stringify(principal.get()) + "', which does not match "
+            "a volume in the operation with principal '" +
+            volume.disk().persistence().principal() +
+            "' set in 'disk.persistence'");
       }
+    }
+  }
+
+  if (frameworkInfo.isSome()) {
+    // If the operation is being applied by a framework, we also
+    // ensure that across all the resources, they are allocated
+    // to a single role.
+    error = resource::validateAllocatedToSingleRole(create.volumes());
+    if (error.isSome()) {
+      return Error("Invalid volume resources: " + error->message);
     }
   }
 

@@ -150,6 +150,9 @@ Option<Error> validate(
     case mesos::agent::Call::GET_TASKS:
       return None();
 
+    case mesos::agent::Call::GET_AGENT:
+      return None();
+
     case mesos::agent::Call::LAUNCH_NESTED_CONTAINER: {
       if (!call.has_launch_nested_container()) {
         return Error("Expecting 'launch_nested_container' to be present");
@@ -220,6 +223,28 @@ Option<Error> validate(
       // Nested containers always have at least one parent.
       if (!call.kill_nested_container().container_id().has_parent()) {
         return Error("Expecting 'kill_nested_container.container_id.parent'"
+                     " to be present");
+      }
+
+      return None();
+    }
+
+    case mesos::agent::Call::REMOVE_NESTED_CONTAINER: {
+      if (!call.has_remove_nested_container()) {
+        return Error("Expecting 'remove_nested_container' to be present");
+      }
+
+      Option<Error> error = validation::container::validateContainerId(
+          call.remove_nested_container().container_id());
+
+      if (error.isSome()) {
+        return Error("'remove_nested_container.container_id' is invalid"
+                     ": " + error->message);
+      }
+
+      // Nested containers always have at least one parent.
+      if (!call.remove_nested_container().container_id().has_parent()) {
+        return Error("Expecting 'remove_nested_container.container_id.parent'"
                      " to be present");
       }
 

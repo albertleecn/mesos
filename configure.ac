@@ -1789,7 +1789,7 @@ The XFS disk isolator is only supported on Linux.
 
   # Check for build dependencies for the XFS disk isolator. We only
   # enable this if all the needed headers and libraries are present.
-  AC_CHECK_HEADERS([xfs/xfs.h xfs/xqm.h linux/quota.h sys/quota.h],
+  AC_CHECK_HEADERS([xfs/xfs.h linux/dqblk_xfs.h linux/quota.h sys/quota.h],
                    [], [AC_MSG_ERROR([missing XFS quota headers
 -------------------------------------------------------------------
 Please install the Linux kernel headers and xfsprogs development
@@ -1884,6 +1884,38 @@ fi
 
 AM_CONDITIONAL([WITH_BUNDLED_ZOOKEEPER],
                [test "x$with_bundled_zookeeper" = "xyes"])
+
+
+# Once all CXXFLAGS are completely assembled, make sure the we are not
+# affected by libcxx undefined behavior,
+# https://llvm.org/bugs/show_bug.cgi?id=28469.
+AC_MSG_CHECKING([C++ standard library for undefined behaviour with selected optimization level])
+AC_LANG_PUSH([C++])
+AC_RUN_IFELSE([
+  AC_LANG_SOURCE([[
+    #include <functional>
+    #include <map>
+
+    struct F {
+      std::map<int, std::function<void()>> m;
+      F() { m[42] = []() {}; }
+    };
+
+    int main() {
+      F f;
+      f = F{};
+    }
+  ]])],
+  [
+    AC_MSG_RESULT([no])
+  ], [
+    AC_MSG_RESULT([yes])
+    AC_MSG_ERROR([Mesos cannot be built with optimizations against this version of libcxx (MESOS-5745).
+                  Consider building without optimizations, or changing the used C++ standard library.])
+  ]
+)
+AC_LANG_POP([C++])
+
 
 # NOTE: Do not update any compiler or linker settings (e.g. CXXFLAGS,
 # LDFLAGS, ...) beyond this line.

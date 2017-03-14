@@ -45,7 +45,7 @@ namespace tests {
 
 ACTION_P(InvokeInitialize, allocator)
 {
-  allocator->real->initialize(arg0, arg1, arg2, arg3, arg4);
+  allocator->real->initialize(arg0, arg1, arg2, arg3);
 }
 
 
@@ -87,7 +87,7 @@ ACTION_P(InvokeUpdateFramework, allocator)
 
 ACTION_P(InvokeAddSlave, allocator)
 {
-  allocator->real->addSlave(arg0, arg1, arg2, arg3, arg4);
+  allocator->real->addSlave(arg0, arg1, arg2, arg3, arg4, arg5);
 }
 
 
@@ -99,7 +99,7 @@ ACTION_P(InvokeRemoveSlave, allocator)
 
 ACTION_P(InvokeUpdateSlave, allocator)
 {
-  allocator->real->updateSlave(arg0, arg1);
+  allocator->real->updateSlave(arg0, arg1, arg2);
 }
 
 
@@ -229,9 +229,9 @@ public:
     // to get the best of both worlds: the ability to use 'DoDefault'
     // and no warnings when expectations are not explicit.
 
-    ON_CALL(*this, initialize(_, _, _, _, _))
+    ON_CALL(*this, initialize(_, _, _, _))
       .WillByDefault(InvokeInitialize(this));
-    EXPECT_CALL(*this, initialize(_, _, _, _, _))
+    EXPECT_CALL(*this, initialize(_, _, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, recover(_, _))
@@ -264,9 +264,9 @@ public:
     EXPECT_CALL(*this, updateFramework(_, _))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, addSlave(_, _, _, _, _))
+    ON_CALL(*this, addSlave(_, _, _, _, _, _))
       .WillByDefault(InvokeAddSlave(this));
-    EXPECT_CALL(*this, addSlave(_, _, _, _, _))
+    EXPECT_CALL(*this, addSlave(_, _, _, _, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, removeSlave(_))
@@ -274,9 +274,9 @@ public:
     EXPECT_CALL(*this, removeSlave(_))
       .WillRepeatedly(DoDefault());
 
-    ON_CALL(*this, updateSlave(_, _))
+    ON_CALL(*this, updateSlave(_, _, _))
       .WillByDefault(InvokeUpdateSlave(this));
-    EXPECT_CALL(*this, updateSlave(_, _))
+    EXPECT_CALL(*this, updateSlave(_, _, _))
       .WillRepeatedly(DoDefault());
 
     ON_CALL(*this, activateSlave(_))
@@ -357,7 +357,7 @@ public:
 
   virtual ~TestAllocator() {}
 
-  MOCK_METHOD5(initialize, void(
+  MOCK_METHOD4(initialize, void(
       const Duration&,
       const lambda::function<
           void(const FrameworkID&,
@@ -365,7 +365,6 @@ public:
       const lambda::function<
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&,
-      const hashmap<std::string, double>&,
       const Option<std::set<std::string>>&));
 
   MOCK_METHOD2(recover, void(
@@ -391,9 +390,10 @@ public:
       const FrameworkID&,
       const FrameworkInfo&));
 
-  MOCK_METHOD5(addSlave, void(
+  MOCK_METHOD6(addSlave, void(
       const SlaveID&,
       const SlaveInfo&,
+      const std::vector<SlaveInfo::Capability>&,
       const Option<Unavailability>&,
       const Resources&,
       const hashmap<FrameworkID, Resources>&));
@@ -401,9 +401,10 @@ public:
   MOCK_METHOD1(removeSlave, void(
       const SlaveID&));
 
-  MOCK_METHOD2(updateSlave, void(
+  MOCK_METHOD3(updateSlave, void(
       const SlaveID&,
-      const Resources&));
+      const Option<Resources>&,
+      const Option<std::vector<SlaveInfo::Capability>>&));
 
   MOCK_METHOD1(activateSlave, void(
       const SlaveID&));

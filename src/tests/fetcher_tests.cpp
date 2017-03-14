@@ -569,9 +569,9 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, NoExtractNotExecutable)
   Try<os::Permissions> permissions = os::permissions(basename);
 
   ASSERT_SOME(permissions);
-  EXPECT_FALSE(permissions.get().owner.x);
-  EXPECT_FALSE(permissions.get().group.x);
-  EXPECT_FALSE(permissions.get().others.x);
+  EXPECT_FALSE(permissions->owner.x);
+  EXPECT_FALSE(permissions->group.x);
+  EXPECT_FALSE(permissions->others.x);
 }
 
 
@@ -609,9 +609,9 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, NoExtractExecutable)
   Try<os::Permissions> permissions = os::permissions(basename);
 
   ASSERT_SOME(permissions);
-  EXPECT_TRUE(permissions.get().owner.x);
-  EXPECT_TRUE(permissions.get().group.x);
-  EXPECT_TRUE(permissions.get().others.x);
+  EXPECT_TRUE(permissions->owner.x);
+  EXPECT_TRUE(permissions->group.x);
+  EXPECT_TRUE(permissions->others.x);
 }
 
 
@@ -662,9 +662,9 @@ TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, ExtractNotExecutable)
   Try<os::Permissions> permissions = os::permissions(path.get());
 
   ASSERT_SOME(permissions);
-  EXPECT_FALSE(permissions.get().owner.x);
-  EXPECT_FALSE(permissions.get().group.x);
-  EXPECT_FALSE(permissions.get().others.x);
+  EXPECT_FALSE(permissions->owner.x);
+  EXPECT_FALSE(permissions->group.x);
+  EXPECT_FALSE(permissions->others.x);
 }
 
 
@@ -1087,6 +1087,67 @@ TEST_F(FetcherTest, HdfsURI)
   EXPECT_TRUE(os::exists(localFile));
 }
 #endif // __WINDOWS__
+
+
+// Regression test against unwanted environment inheritance from the
+// agent towards the fetcher. By supplying an invalid SSL setup, we
+// force the fetcher to fail if the parent process does not filter
+// them out.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(FetcherTest, SSLEnvironmentSpillover)
+{
+  // Patch some critical libprocess environment variables into the
+  // parent process of the mesos-fetcher. We expect this test to fail
+  // when the code path triggered does not filter them.
+  char* enabled = getenv("LIBPROCESS_SSL_ENABLED");
+  char* key = getenv("LIBPROCESS_SSL_KEY_FILE");
+
+  os::setenv("LIBPROCESS_SSL_ENABLED", "true");
+  os::unsetenv("LIBPROCESS_SSL_KEY_FILE");
+
+  // First construct a temporary file that can be fetched and archived with
+  // gzip.
+  Try<string> dir = os::mkdtemp(path::join(os::getcwd(), "XXXXXX"));
+  ASSERT_SOME(dir);
+
+  Try<string> path = os::mktemp(path::join(dir.get(), "XXXXXX"));
+  ASSERT_SOME(path);
+
+  ASSERT_SOME(os::write(path.get(), "hello world"));
+  ASSERT_SOME(os::shell("gzip " + path.get()));
+
+  ContainerID containerId;
+  containerId.set_value(UUID::random().toString());
+
+  CommandInfo commandInfo;
+  CommandInfo::URI* uri = commandInfo.add_uris();
+  uri->set_value(path.get() + ".gz");
+  uri->set_extract(true);
+
+  slave::Flags flags;
+  flags.launcher_dir = getLauncherDir();
+
+  Fetcher fetcher;
+  SlaveID slaveId;
+
+  Future<Nothing> fetch = fetcher.fetch(
+      containerId, commandInfo, os::getcwd(), None(), slaveId, flags);
+
+  // The mesos-fetcher runnable will fail initializing libprocess if
+  // the SSL environment spilled over. Such failure would cause it to
+  // abort and exit and that in turn would fail the `fetch` returned
+  // future.
+  AWAIT_READY(fetch);
+
+  if (enabled != nullptr) {
+    os::setenv("LIBPROCESS_SSL_ENABLED", enabled);
+  } else {
+    os::unsetenv("LIBPROCESS_SSL_ENABLED");
+  }
+
+  if (key != nullptr) {
+    os::setenv("LIBPROCESS_SSL_KEY_FILE", key);
+  }
+}
 
 } // namespace tests {
 } // namespace internal {

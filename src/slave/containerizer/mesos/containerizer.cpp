@@ -129,9 +129,10 @@ using mesos::modules::ModuleManager;
 
 using mesos::slave::ContainerClass;
 using mesos::slave::ContainerConfig;
-using mesos::slave::ContainerIO;
 using mesos::slave::ContainerLaunchInfo;
 using mesos::slave::ContainerLimitation;
+using mesos::slave::ContainerLogger;
+using mesos::slave::ContainerIO;
 using mesos::slave::ContainerState;
 using mesos::slave::ContainerTermination;
 using mesos::slave::Isolator;
@@ -593,6 +594,14 @@ Future<hashset<ContainerID>> MesosContainerizer::containers()
 }
 
 
+Future<Nothing> MesosContainerizer::remove(const ContainerID& containerId)
+{
+  return dispatch(process.get(),
+                  &MesosContainerizerProcess::remove,
+                  containerId);
+}
+
+
 Future<Nothing> MesosContainerizerProcess::recover(
     const Option<state::SlaveState>& state)
 {
@@ -1010,13 +1019,6 @@ Future<bool> MesosContainerizerProcess::launch(
     if (taskInfo->has_container()) {
       ContainerInfo* containerInfo = containerConfig.mutable_container_info();
       containerInfo->CopyFrom(taskInfo->container());
-
-      if (taskInfo->container().mesos().has_image()) {
-        // For command tasks, we need to set the command executor user
-        // as root as it needs to perform chroot (even when
-        // switch_user is set to false).
-        containerConfig.mutable_command_info()->set_user("root");
-      }
     }
   } else {
     // Other cases.
@@ -1095,9 +1097,13 @@ Future<bool> MesosContainerizerProcess::launch(
   if (!containerConfig.has_container_info() ||
       !containerConfig.container_info().mesos().has_image()) {
     return prepare(containerId, None())
+      .then(defer(self(), [this, containerId] () {
+        return ioSwitchboard->extractContainerIO(containerId);
+      }))
       .then(defer(self(),
                   &Self::_launch,
                   containerId,
+                  lambda::_1,
                   environment,
                   slaveId,
                   checkpoint));
@@ -1111,9 +1117,13 @@ Future<bool> MesosContainerizerProcess::launch(
     .then(defer(self(),
                 [=](const ProvisionInfo& provisionInfo) -> Future<bool> {
       return prepare(containerId, provisionInfo)
+        .then(defer(self(), [this, containerId] () {
+          return ioSwitchboard->extractContainerIO(containerId);
+        }))
         .then(defer(self(),
                     &Self::_launch,
                     containerId,
+                    lambda::_1,
                     environment,
                     slaveId,
                     checkpoint));
@@ -1242,6 +1252,7 @@ Future<Nothing> MesosContainerizerProcess::fetch(
 
 Future<bool> MesosContainerizerProcess::_launch(
     const ContainerID& containerId,
+    const Option<ContainerIO>& containerIO,
     const map<string, string>& environment,
     const SlaveID& slaveId,
     bool checkpoint)
@@ -1256,6 +1267,7 @@ Future<bool> MesosContainerizerProcess::_launch(
     return Failure("Container is being destroyed during preparing");
   }
 
+  CHECK(containerIO.isSome());
   CHECK_EQ(container->state, PREPARING);
   CHECK_READY(container->launchInfos);
 
@@ -1302,72 +1314,12 @@ Future<bool> MesosContainerizerProcess::_launch(
       return Failure("Multiple isolators specify rlimits");
     }
 
-    if (isolatorLaunchInfo->has_in() &&
-        launchInfo.has_in()) {
-      return Failure("Multiple isolators specify stdin");
-    }
-
-    if (isolatorLaunchInfo->has_out() &&
-        launchInfo.has_out()) {
-      return Failure("Multiple isolators specify stdout");
-    }
-
-    if (isolatorLaunchInfo->has_err() &&
-        launchInfo.has_err()) {
-      return Failure("Multiple isolators specify stderr");
-    }
-
     if (isolatorLaunchInfo->has_tty_slave_path() &&
         launchInfo.has_tty_slave_path()) {
       return Failure("Multiple isolators specify tty");
     }
 
     launchInfo.MergeFrom(isolatorLaunchInfo.get());
-  }
-
-  // Determine the I/O for the container.
-  // TODO(jieyu): Close 'fd' on error before 'launcher->fork'.
-  Option<Subprocess::IO> in;
-  Option<Subprocess::IO> out;
-  Option<Subprocess::IO> err;
-
-  if (launchInfo.has_in()) {
-    switch (launchInfo.in().type()) {
-      case ContainerIO::FD:
-        in = Subprocess::FD(launchInfo.in().fd(), Subprocess::IO::OWNED);
-        break;
-      case ContainerIO::PATH:
-        in = Subprocess::PATH(launchInfo.in().path());
-        break;
-      default:
-        break;
-    }
-  }
-
-  if (launchInfo.has_out()) {
-    switch (launchInfo.out().type()) {
-      case ContainerIO::FD:
-        out = Subprocess::FD(launchInfo.out().fd(), Subprocess::IO::OWNED);
-        break;
-      case ContainerIO::PATH:
-        out = Subprocess::PATH(launchInfo.out().path());
-        break;
-      default:
-        break;
-    }
-  }
-
-  if (launchInfo.has_err()) {
-    switch (launchInfo.err().type()) {
-      case ContainerIO::FD:
-        err = Subprocess::FD(launchInfo.err().fd(), Subprocess::IO::OWNED);
-        break;
-      case ContainerIO::PATH:
-        err = Subprocess::PATH(launchInfo.err().path());
-        break;
-      default:
-        break;
-    }
   }
 
   // Remove duplicated entries in enter and clone namespaces.
@@ -1505,6 +1457,15 @@ Future<bool> MesosContainerizerProcess::_launch(
     launchInfo.set_user(container->config.user());
   }
 
+  // TODO(gilbert): Remove this once we no longer support command
+  // task in favor of default executor.
+  if (container->config.has_task_info() &&
+      container->config.has_rootfs()) {
+    // We need to set the executor user as root as it needs to
+    // perform chroot (even when switch_user is set to false).
+    launchInfo.set_user("root");
+  }
+
   // Use a pipe to block the child until it's been isolated.
   // The `pipes` array is captured later in a lambda.
   Try<std::array<int_fd, 2>> pipes_ = os::pipe();
@@ -1608,9 +1569,9 @@ Future<bool> MesosContainerizerProcess::_launch(
       containerId,
       argv[0],
       argv,
-      in.isSome() ? in.get() : Subprocess::FD(STDIN_FILENO),
-      out.isSome() ? out.get() : Subprocess::FD(STDOUT_FILENO),
-      err.isSome() ? err.get() : Subprocess::FD(STDERR_FILENO),
+      containerIO->in,
+      containerIO->out,
+      containerIO->err,
       nullptr,
       launchEnvironment,
       // 'enterNamespaces' will be ignored by PosixLauncher.
@@ -2420,6 +2381,49 @@ void MesosContainerizerProcess::______destroy(
   }
 
   containers_.erase(containerId);
+}
+
+
+Future<Nothing> MesosContainerizerProcess::remove(
+    const ContainerID& containerId)
+{
+  // TODO(gkleiman): Check that recovery has completed before continuing.
+
+  CHECK(containerId.has_parent());
+
+  if (containers_.contains(containerId)) {
+    return Failure("Nested container has not terminated yet");
+  }
+
+  const ContainerID rootContainerId = protobuf::getRootContainerId(containerId);
+
+  if (!containers_.contains(rootContainerId)) {
+    return Failure("Unknown parent container");
+  }
+
+  const string runtimePath =
+    containerizer::paths::getRuntimePath(flags.runtime_dir, containerId);
+
+  if (os::exists(runtimePath)) {
+    Try<Nothing> rmdir = os::rmdir(runtimePath);
+    if (rmdir.isError()) {
+      return Failure(
+          "Failed to remove the runtime directory: " + rmdir.error());
+    }
+  }
+
+  const string sandboxPath = containerizer::paths::getSandboxPath(
+      containers_[rootContainerId]->directory.get(), containerId);
+
+  if (os::exists(sandboxPath)) {
+    Try<Nothing> rmdir = os::rmdir(sandboxPath);
+    if (rmdir.isError()) {
+      return Failure(
+          "Failed to remove the sandbox directory: " + rmdir.error());
+    }
+  }
+
+  return Nothing();
 }
 
 

@@ -33,6 +33,7 @@
 #endif
 
 #include "slave/containerizer/mesos/provisioner/constants.hpp"
+#include "slave/containerizer/mesos/provisioner/paths.hpp"
 
 #include "slave/containerizer/mesos/provisioner/docker/metadata_manager.hpp"
 #include "slave/containerizer/mesos/provisioner/docker/paths.hpp"
@@ -66,6 +67,7 @@ using master::Master;
 using mesos::internal::slave::AUFS_BACKEND;
 using mesos::internal::slave::COPY_BACKEND;
 using mesos::internal::slave::OVERLAY_BACKEND;
+using mesos::internal::slave::Provisioner;
 
 using mesos::master::detector::MasterDetector;
 
@@ -201,7 +203,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, LocalStoreTestWithTar)
 
   AWAIT_READY(imageInfo);
 
-  verifyLocalDockerImage(flags, imageInfo.get().layers);
+  verifyLocalDockerImage(flags, imageInfo->layers);
 }
 
 
@@ -226,7 +228,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, MetadataManagerInitialization)
 
   // Store is deleted and recreated. Metadata Manager is initialized upon
   // creation of the store.
-  store.get().reset();
+  store->reset();
   store = slave::docker::Store::create(flags);
   ASSERT_SOME(store);
   Future<Nothing> recover = store.get()->recover();
@@ -234,7 +236,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, MetadataManagerInitialization)
 
   imageInfo = store.get()->get(image, COPY_BACKEND);
   AWAIT_READY(imageInfo);
-  verifyLocalDockerImage(flags, imageInfo.get().layers);
+  verifyLocalDockerImage(flags, imageInfo->layers);
 }
 
 
@@ -361,7 +363,7 @@ TEST_F(ProvisionerDockerLocalStoreTest, PullingSameImageSimutanuously)
   AWAIT_READY(imageInfo1);
   AWAIT_READY(imageInfo2);
 
-  EXPECT_EQ(imageInfo1.get().layers, imageInfo2.get().layers);
+  EXPECT_EQ(imageInfo1->layers, imageInfo2->layers);
 }
 
 
@@ -863,6 +865,137 @@ TEST_F(ProvisionerDockerPullerTest, ROOT_INTERNET_CURL_ImageDigest)
 
   driver.stop();
   driver.join();
+}
+
+
+// This test verifies that if a container image is specified, the
+// command runs as the specified user 'nobody' and the sandbox of
+// the command task is writtable by the specified user. It also
+// verifies that stdout/stderr are owned by the specified user.
+TEST_F(ProvisionerDockerPullerTest, ROOT_INTERNET_CURL_CommandTaskUser)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "docker/runtime,filesystem/linux";
+  flags.image_providers = "docker";
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  ASSERT_EQ(1u, offers->size());
+
+  const Offer& offer = offers.get()[0];
+
+  Result<uid_t> uid = os::getuid("nobody");
+  ASSERT_SOME(uid);
+
+  CommandInfo command;
+  command.set_user("nobody");
+  command.set_value(strings::format(
+      "#!/bin/sh\n"
+      "touch $MESOS_SANDBOX/file\n"
+      "FILE_UID=`stat -c %%u $MESOS_SANDBOX/file`\n"
+      "test $FILE_UID = %d\n"
+      "STDOUT_UID=`stat -c %%u $MESOS_SANDBOX/stdout`\n"
+      "test $STDOUT_UID = %d\n"
+      "STDERR_UID=`stat -c %%u $MESOS_SANDBOX/stderr`\n"
+      "test $STDERR_UID = %d\n",
+      uid.get(), uid.get(), uid.get()).get());
+
+  TaskInfo task = createTask(
+      offer.slave_id(),
+      Resources::parse("cpus:1;mem:128").get(),
+      command);
+
+  Image image;
+  image.set_type(Image::DOCKER);
+  image.mutable_docker()->set_name("alpine");
+
+  ContainerInfo* container = task.mutable_container();
+  container->set_type(ContainerInfo::MESOS);
+  container->mutable_mesos()->mutable_image()->CopyFrom(image);
+
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> statusFinished;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusFinished));
+
+  driver.launchTasks(offer.id(), {task});
+
+  AWAIT_READY_FOR(statusRunning, Seconds(60));
+  EXPECT_EQ(task.task_id(), statusRunning->task_id());
+  EXPECT_EQ(TASK_RUNNING, statusRunning->state());
+
+  AWAIT_READY(statusFinished);
+  EXPECT_EQ(task.task_id(), statusFinished->task_id());
+  EXPECT_EQ(TASK_FINISHED, statusFinished->state());
+
+  driver.stop();
+  driver.join();
+}
+
+
+// This test simulate the case that after the agent reboots the
+// container runtime directory is gone while the provisioner
+// directory still survives. The recursive `provisioner::destroy()`
+// can make sure that a child container is always cleaned up
+// before its parent container.
+TEST_F(ProvisionerDockerPullerTest, ROOT_RecoverNestedOnReboot)
+{
+  const string directory = path::join(os::getcwd(), "archives");
+
+  Future<Nothing> testImage = DockerArchive::create(directory, "alpine");
+  AWAIT_READY(testImage);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "docker/runtime,filesystem/linux";
+  flags.image_providers = "docker";
+  flags.docker_registry = directory;
+  flags.docker_store_dir = path::join(os::getcwd(), "store");
+
+  Try<Owned<Provisioner>> provisioner = Provisioner::create(flags);
+  ASSERT_SOME(provisioner);
+
+  ContainerID containerId;
+  containerId.set_value(UUID::random().toString());
+
+  ContainerID nestedContainerId;
+  nestedContainerId.mutable_parent()->CopyFrom(containerId);
+  nestedContainerId.set_value(UUID::random().toString());
+
+  Image image;
+  image.set_type(Image::DOCKER);
+  image.mutable_docker()->set_name("alpine");
+
+  AWAIT_READY(provisioner.get()->provision(nestedContainerId, image));
+
+  // Passing an empty hashset to `provisioner::recover()` to
+  // simulate the agent reboot scenario.
+  AWAIT_READY(provisioner.get()->recover({}));
+
+  const string containerDir = slave::provisioner::paths::getContainerDir(
+      slave::paths::getProvisionerDir(flags.work_dir),
+      containerId);
+
+  EXPECT_FALSE(os::exists(containerDir));
 }
 
 #endif

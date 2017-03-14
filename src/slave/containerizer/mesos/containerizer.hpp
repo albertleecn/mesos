@@ -114,6 +114,8 @@ public:
 
   virtual process::Future<hashset<ContainerID>> containers();
 
+  virtual process::Future<Nothing> remove(const ContainerID& containerId);
+
 private:
   explicit MesosContainerizer(
       const process::Owned<MesosContainerizerProcess>& process);
@@ -187,6 +189,8 @@ public:
   virtual process::Future<bool> destroy(
       const ContainerID& containerId);
 
+  virtual process::Future<Nothing> remove(const ContainerID& containerId);
+
   virtual process::Future<hashset<ContainerID>> containers();
 
 private:
@@ -235,6 +239,7 @@ private:
 
   process::Future<bool> _launch(
       const ContainerID& containerId,
+      const Option<mesos::slave::ContainerIO>& containerIO,
       const std::map<std::string, std::string>& environment,
       const SlaveID& slaveId,
       bool checkpoint);

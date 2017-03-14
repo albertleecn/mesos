@@ -108,13 +108,13 @@ TEST_F(ReservationEndpointsTest, AvailableResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -152,7 +152,7 @@ TEST_F(ReservationEndpointsTest, AvailableResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -185,7 +185,7 @@ TEST_F(ReservationEndpointsTest, AvailableResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -207,13 +207,13 @@ TEST_F(ReservationEndpointsTest, ReserveOfferedResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -243,7 +243,7 @@ TEST_F(ReservationEndpointsTest, ReserveOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -265,7 +265,7 @@ TEST_F(ReservationEndpointsTest, ReserveOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -282,13 +282,13 @@ TEST_F(ReservationEndpointsTest, UnreserveOfferedResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -326,7 +326,7 @@ TEST_F(ReservationEndpointsTest, UnreserveOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -348,7 +348,7 @@ TEST_F(ReservationEndpointsTest, UnreserveOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -365,7 +365,7 @@ TEST_F(ReservationEndpointsTest, ReserveAvailableAndOfferedResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   master::Flags masterFlags = CreateMasterFlags();
   // Turn off allocation. We're doing it manually.
@@ -375,7 +375,7 @@ TEST_F(ReservationEndpointsTest, ReserveAvailableAndOfferedResources)
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -416,7 +416,7 @@ TEST_F(ReservationEndpointsTest, ReserveAvailableAndOfferedResources)
   // Expect to receive 'available + offered' resources.
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -451,7 +451,7 @@ TEST_F(ReservationEndpointsTest, ReserveAvailableAndOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -470,7 +470,7 @@ TEST_F(ReservationEndpointsTest, ReserveAvailableAndOfferedResources)
   driver.killTask(taskInfo.task_id());
 
   AWAIT_READY(availableResources);
-  EXPECT_TRUE(availableResources.get().contains(
+  EXPECT_TRUE(availableResources->contains(
       allocatedResources(available, frameworkInfo.role())));
 
   // At this point, we have 'available' resources in the allocator, and
@@ -497,7 +497,7 @@ TEST_F(ReservationEndpointsTest, ReserveAvailableAndOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -523,13 +523,13 @@ TEST_F(ReservationEndpointsTest, UnreserveAvailableAndOfferedResources)
   // Turn off allocation. We're doing it manually.
   masterFlags.allocation_interval = Seconds(1000);
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator, masterFlags);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -583,7 +583,7 @@ TEST_F(ReservationEndpointsTest, UnreserveAvailableAndOfferedResources)
   // Expect to receive 'available + offered' resources.
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -618,7 +618,7 @@ TEST_F(ReservationEndpointsTest, UnreserveAvailableAndOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -637,7 +637,7 @@ TEST_F(ReservationEndpointsTest, UnreserveAvailableAndOfferedResources)
   driver.killTask(taskInfo.task_id());
 
   AWAIT_READY(availableResources);
-  EXPECT_TRUE(availableResources.get().contains(
+  EXPECT_TRUE(availableResources->contains(
       allocatedResources(available, frameworkInfo.role())));
 
   // At this point, we have 'available' resources in the allocator, and
@@ -664,7 +664,7 @@ TEST_F(ReservationEndpointsTest, UnreserveAvailableAndOfferedResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   EXPECT_TRUE(Resources(offer.resources()).contains(
@@ -686,7 +686,7 @@ TEST_F(ReservationEndpointsTest, LabeledResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
@@ -697,7 +697,7 @@ TEST_F(ReservationEndpointsTest, LabeledResources)
     Resources::parse(slaveFlags.resources.get()).get();
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -753,7 +753,7 @@ TEST_F(ReservationEndpointsTest, LabeledResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
 
   Resources offeredResources = Resources(offer.resources());
@@ -779,7 +779,7 @@ TEST_F(ReservationEndpointsTest, LabeledResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   offeredResources = Resources(offer.resources());
@@ -819,7 +819,7 @@ TEST_F(ReservationEndpointsTest, LabeledResources)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   offer = offers.get()[0];
 
   offeredResources = Resources(offer.resources());
@@ -847,13 +847,13 @@ TEST_F(ReservationEndpointsTest, InvalidResource)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -906,13 +906,13 @@ TEST_F(ReservationEndpointsTest, InsufficientResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -947,13 +947,13 @@ TEST_F(ReservationEndpointsTest, NoHeader)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -996,13 +996,13 @@ TEST_F(ReservationEndpointsTest, BadCredentials)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1065,7 +1065,7 @@ TEST_F(ReservationEndpointsTest, GoodReserveAndUnreserveACL)
   masterFlags.allocation_interval = Milliseconds(50);
   masterFlags.roles = frameworkInfo.role();
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator, masterFlags);
   ASSERT_SOME(master);
@@ -1075,7 +1075,7 @@ TEST_F(ReservationEndpointsTest, GoodReserveAndUnreserveACL)
   slaveFlags.resources = "cpus:1;mem:512";
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1127,7 +1127,7 @@ TEST_F(ReservationEndpointsTest, GoodReserveACLMultipleRoles)
   master::Flags masterFlags = CreateMasterFlags();
   masterFlags.acls = acls;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator, masterFlags);
   ASSERT_SOME(master);
@@ -1137,7 +1137,7 @@ TEST_F(ReservationEndpointsTest, GoodReserveACLMultipleRoles)
   slaveFlags.resources = "cpus:2;mem:1024";
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1188,7 +1188,7 @@ TEST_F(ReservationEndpointsTest, BadReserveACL)
   masterFlags.allocation_interval = Milliseconds(50);
   masterFlags.roles = frameworkInfo.role();
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator, masterFlags);
   ASSERT_SOME(master);
@@ -1198,7 +1198,7 @@ TEST_F(ReservationEndpointsTest, BadReserveACL)
   slaveFlags.resources = "cpus:1;mem:512";
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1247,7 +1247,7 @@ TEST_F(ReservationEndpointsTest, BadUnreserveACL)
   masterFlags.allocation_interval = Milliseconds(50);
   masterFlags.roles = frameworkInfo.role();
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator, masterFlags);
   ASSERT_SOME(master);
@@ -1257,7 +1257,7 @@ TEST_F(ReservationEndpointsTest, BadUnreserveACL)
   slaveFlags.resources = "cpus:1;mem:512";
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1320,7 +1320,7 @@ TEST_F(ReservationEndpointsTest, BadReserveACLMultipleRoles)
   master::Flags masterFlags = CreateMasterFlags();
   masterFlags.acls = acls;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator, masterFlags);
   ASSERT_SOME(master);
@@ -1330,7 +1330,7 @@ TEST_F(ReservationEndpointsTest, BadReserveACLMultipleRoles)
   slaveFlags.resources = "cpus:2;mem:1024";
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1397,13 +1397,13 @@ TEST_F(ReservationEndpointsTest, NoResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1412,7 +1412,7 @@ TEST_F(ReservationEndpointsTest, NoResources)
   ASSERT_SOME(slave);
 
   process::http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
-  string body = "slaveId=" + slaveId.get().value();
+  string body = "slaveId=" + slaveId->value();
 
   Future<Response> response =
     process::http::post(master.get()->pid, "reserve", headers, body);
@@ -1431,13 +1431,13 @@ TEST_F(ReservationEndpointsTest, NonMatchingPrincipal)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1477,7 +1477,7 @@ TEST_F(ReservationEndpointsTest, ReserveAndUnreserveNoAuthentication)
   masterFlags.authenticate_frameworks = false;
   masterFlags.authenticate_http_readwrite = false;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator, masterFlags);
   ASSERT_SOME(master);
@@ -1487,7 +1487,7 @@ TEST_F(ReservationEndpointsTest, ReserveAndUnreserveNoAuthentication)
   slaveFlags.resources = "cpus:1;mem:512";
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1559,13 +1559,13 @@ TEST_F(ReservationEndpointsTest, DifferentPrincipalsSameRole)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1618,7 +1618,7 @@ TEST_F(ReservationEndpointsTest, DifferentPrincipalsSameRole)
 
   AWAIT_READY(offers);
 
-  ASSERT_EQ(1u, offers.get().size());
+  ASSERT_EQ(1u, offers->size());
   Offer offer = offers.get()[0];
   Resources resources = Resources(offer.resources());
 
@@ -1640,13 +1640,13 @@ TEST_F(ReservationEndpointsTest, AgentStateEndpointResources)
 {
   TestAllocator<> allocator;
 
-  EXPECT_CALL(allocator, initialize(_, _, _, _, _));
+  EXPECT_CALL(allocator, initialize(_, _, _, _));
 
   Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
-  EXPECT_CALL(allocator, addSlave(_, _, _, _, _))
+  EXPECT_CALL(allocator, addSlave(_, _, _, _, _, _))
     .WillOnce(DoAll(InvokeAddSlave(&allocator),
                     FutureArg<0>(&slaveId)));
 
@@ -1693,9 +1693,9 @@ TEST_F(ReservationEndpointsTest, AgentStateEndpointResources)
       createBasicAuthHeaders(DEFAULT_CREDENTIAL));
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response)
-    << response.get().body;
+    << response->body;
 
-  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response->body);
   ASSERT_SOME(parse);
 
   JSON::Object state = parse.get();

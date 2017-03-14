@@ -125,6 +125,13 @@ add_dependencies(${MESOS_PROTOBUF_TARGET} ${PROTOBUF_TARGET})
 
 target_link_libraries(${MESOS_PROTOBUF_TARGET} ${PROTOBUF_LFLAG})
 
+if (WIN32)
+  # Disable all compiler warnings on Protocol Buffers source.
+  set_target_properties(
+    ${MESOS_PROTOBUF_TARGET}
+    PROPERTIES COMPILE_FLAGS "/w")
+endif (WIN32)
+
 
 # Configure Mesos files.
 ########################
@@ -213,6 +220,13 @@ if (NOT WIN32)
     authentication/cram_md5/auxprop.cpp
     )
 endif (NOT WIN32)
+
+if (ENABLE_SSL)
+  set(AUTHENTICATION_SRC
+    ${AUTHENTICATION_SRC}
+    authentication/executor/jwt_secret_generator.cpp
+    )
+endif (ENABLE_SSL)
 
 set(AUTHORIZER_SRC
   authorizer/acls.cpp
@@ -530,6 +544,10 @@ add_dependencies(
   ${MESOS_PROTOBUF_TARGET}
   ${AGENT_DEPENDENCIES}
   )
+
+if (WIN32)
+  add_dependencies(${MESOS_TARGET} ${ENSURE_TOOL_ARCH})
+endif (WIN32)
 
 # ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
 ######################################################

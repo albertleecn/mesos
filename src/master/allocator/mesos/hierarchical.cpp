@@ -141,13 +141,11 @@ void HierarchicalAllocatorProcess::initialize(
         void(const FrameworkID&,
              const hashmap<SlaveID, UnavailableResources>&)>&
       _inverseOfferCallback,
-    const hashmap<string, double>& _weights,
     const Option<set<string>>& _fairnessExcludeResourceNames)
 {
   allocationInterval = _allocationInterval;
   offerCallback = _offerCallback;
   inverseOfferCallback = _inverseOfferCallback;
-  weights = _weights;
   fairnessExcludeResourceNames = _fairnessExcludeResourceNames;
   initialized = true;
   paused = false;
@@ -242,20 +240,7 @@ void HierarchicalAllocatorProcess::addFramework(
   const Framework& framework = frameworks.at(frameworkId);
 
   foreach (const string& role, framework.roles) {
-    // If this is the first framework to register as this role,
-    // initialize state as necessary.
-    if (!activeRoles.contains(role)) {
-      activeRoles[role] = 1;
-      roleSorter->add(role, roleWeight(role));
-      frameworkSorters.insert({role, Owned<Sorter>(frameworkSorterFactory())});
-      frameworkSorters.at(role)->initialize(fairnessExcludeResourceNames);
-      metrics.addRole(role);
-    } else {
-      activeRoles[role]++;
-    }
-
-    CHECK(!frameworkSorters.at(role)->contains(frameworkId.value()));
-    frameworkSorters.at(role)->add(frameworkId.value());
+    trackFrameworkUnderRole(frameworkId, role);
   }
 
   // TODO(bmahler): Validate that the reserved resources have the
@@ -326,31 +311,7 @@ void HierarchicalAllocatorProcess::removeFramework(
       }
     }
 
-    frameworkSorters.at(role)->remove(frameworkId.value());
-  }
-
-  foreach (const string& role, framework.roles) {
-    CHECK(activeRoles.contains(role));
-
-    // If this is the last framework that was registered for this role,
-    // cleanup associated state. This is not necessary for correctness
-    // (roles with no registered frameworks will not be offered any
-    // resources), but since many different role names might be used
-    // over time, we want to avoid leaking resources for no-longer-used
-    // role names. Note that we don't remove the role from
-    // `quotaRoleSorter` if it exists there, since roles with a quota
-    // set still influence allocation even if they don't have any
-    // registered frameworks.
-    activeRoles[role]--;
-    if (activeRoles[role] == 0) {
-      activeRoles.erase(role);
-      roleSorter->remove(role);
-
-      CHECK(frameworkSorters.contains(role));
-      frameworkSorters.erase(role);
-
-      metrics.removeRole(role);
-    }
+    untrackFrameworkUnderRole(frameworkId, role);
   }
 
   // Do not delete the filters contained in this
@@ -424,20 +385,62 @@ void HierarchicalAllocatorProcess::updateFramework(
   CHECK(frameworks.contains(frameworkId));
 
   Framework& framework = frameworks.at(frameworkId);
+
+  set<string> oldRoles = framework.roles;
   set<string> newRoles = protobuf::framework::getRoles(frameworkInfo);
 
-  // TODO(bmahler): Allow frameworks to update their roles, see MESOS-6627.
-  CHECK(framework.roles == newRoles)
-    << "Expected: " << stringify(framework.roles)
-    << " vs Actual: " << stringify(newRoles);
+  const set<string> removedRoles = [&]() {
+    set<string> result = oldRoles;
+    foreach (const string& role, newRoles) {
+      result.erase(role);
+    }
+    return result;
+  }();
 
-  framework.capabilities = Capabilities(frameworkInfo.capabilities());
+  foreach (const string& role, removedRoles) {
+    CHECK(frameworkSorters.contains(role));
+    frameworkSorters.at(role)->deactivate(frameworkId.value());
+
+    // Stop tracking the framework under this role if there are
+    // no longer any resources allocated to it.
+    if (frameworkSorters.at(role)->allocation(frameworkId.value()).empty()) {
+      untrackFrameworkUnderRole(frameworkId, role);
+    }
+
+    if (framework.offerFilters.contains(role)) {
+      framework.offerFilters.erase(role);
+    }
+  }
+
+  const set<string> addedRoles = [&]() {
+    set<string> result = newRoles;
+    foreach (const string& role, oldRoles) {
+      result.erase(role);
+    }
+    return result;
+  }();
+
+  foreach (const string& role, addedRoles) {
+    // NOTE: It's possible that we're already tracking this framework
+    // under the role because a framework can unsubscribe from a role
+    // while it still has resources allocated to the role.
+    if (!isFrameworkTrackedUnderRole(frameworkId, role)) {
+      trackFrameworkUnderRole(frameworkId, role);
+    }
+
+    CHECK(frameworkSorters.contains(role));
+    frameworkSorters.at(role)->activate(frameworkId.value());
+  }
+
+  framework.roles = newRoles;
+  framework.capabilities = frameworkInfo.capabilities();
 }
 
 
 void HierarchicalAllocatorProcess::addSlave(
     const SlaveID& slaveId,
     const SlaveInfo& slaveInfo,
+    const vector<SlaveInfo::Capability>& capabilities,
     const Option<Unavailability>& unavailability,
     const Resources& total,
     const hashmap<FrameworkID, Resources>& used)
@@ -455,13 +458,20 @@ void HierarchicalAllocatorProcess::addSlave(
   foreachpair (const FrameworkID& frameworkId,
                const Resources& used_,
                used) {
-    if (!frameworks.contains(frameworkId) ) {
+    if (!frameworks.contains(frameworkId)) {
       continue;
     }
 
     foreachpair (const string& role,
                  const Resources& allocated,
                  used_.allocations()) {
+      // The framework has resources allocated to this role but it may
+      // or may not be subscribed to the role. Either way, we need to
+      // track the framework under the role.
+      if (!isFrameworkTrackedUnderRole(frameworkId, role)) {
+        trackFrameworkUnderRole(frameworkId, role);
+      }
+
       // TODO(bmahler): Validate that the reserved resources have the
       // framework's role.
       CHECK(roleSorter->contains(role));
@@ -488,6 +498,7 @@ void HierarchicalAllocatorProcess::addSlave(
   slave.allocated = Resources::sum(used);
   slave.activated = true;
   slave.hostname = slaveInfo.hostname();
+  slave.capabilities = protobuf::slave::Capabilities(capabilities);
 
   // NOTE: We currently implement maintenance in the allocator to be able to
   // leverage state and features such as the FrameworkSorter and OfferFilter.
@@ -552,46 +563,72 @@ void HierarchicalAllocatorProcess::removeSlave(
 
 void HierarchicalAllocatorProcess::updateSlave(
     const SlaveID& slaveId,
-    const Resources& oversubscribed)
+    const Option<Resources>& oversubscribed,
+    const Option<vector<SlaveInfo::Capability>>& capabilities)
 {
   CHECK(initialized);
   CHECK(slaves.contains(slaveId));
 
-  // Check that all the oversubscribed resources are revocable.
-  CHECK_EQ(oversubscribed, oversubscribed.revocable());
-
   Slave& slave = slaves.at(slaveId);
 
-  const Resources oldRevocable = slave.total.revocable();
+  bool updated = false;
 
-  // Update the total resources.
-  //
-  // Reset the total resources to include the non-revocable resources,
-  // plus the new estimate of oversubscribed resources.
-  //
-  // NOTE: All modifications to revocable resources in the allocator for
-  // `slaveId` are lost.
-  //
-  // TODO(alexr): Update this math once the source of revocable resources
-  // is extended beyond oversubscription.
-  slave.total = slave.total.nonRevocable() + oversubscribed;
+  // Update agent capabilities.
+  if (capabilities.isSome()) {
+    protobuf::slave::Capabilities newCapabilities(capabilities.get());
+    protobuf::slave::Capabilities oldCapabilities(slave.capabilities);
 
-  // Update the total resources in the `roleSorter` by removing the
-  // previous oversubscribed resources and adding the new
-  // oversubscription estimate.
-  roleSorter->remove(slaveId, oldRevocable);
-  roleSorter->add(slaveId, oversubscribed);
+    slave.capabilities = newCapabilities;
 
-  // NOTE: We do not need to update `quotaRoleSorter` because this
-  // function only changes the revocable resources on the slave, but
-  // the quota role sorter only manages non-revocable resources.
+    if (newCapabilities != oldCapabilities) {
+      updated = true;
 
-  LOG(INFO) << "Agent " << slaveId << " (" << slave.hostname << ")"
-            << " updated with oversubscribed resources " << oversubscribed
-            << " (total: " << slave.total
-            << ", allocated: " << slave.allocated << ")";
+      LOG(INFO) << "Agent " << slaveId << " (" << slave.hostname << ")"
+                << " updated with capabilities " << slave.capabilities;
+    }
+  }
 
-  allocate(slaveId);
+  if (oversubscribed.isSome()) {
+    // Check that all the oversubscribed resources are revocable.
+    CHECK_EQ(oversubscribed.get(), oversubscribed->revocable());
+
+    const Resources oldRevocable = slave.total.revocable();
+
+    if (oldRevocable != oversubscribed.get()) {
+      // Update the total resources.
+      //
+      // Reset the total resources to include the non-revocable resources,
+      // plus the new estimate of oversubscribed resources.
+      //
+      // NOTE: All modifications to revocable resources in the allocator for
+      // `slaveId` are lost.
+      //
+      // TODO(alexr): Update this math once the source of revocable resources
+      // is extended beyond oversubscription.
+      slave.total = slave.total.nonRevocable() + oversubscribed.get();
+
+      // Update the total resources in the `roleSorter` by removing the
+      // previous oversubscribed resources and adding the new
+      // oversubscription estimate.
+      roleSorter->remove(slaveId, oldRevocable);
+      roleSorter->add(slaveId, oversubscribed.get());
+
+      updated = true;
+
+      // NOTE: We do not need to update `quotaRoleSorter` because this
+      // function only changes the revocable resources on the slave, but
+      // the quota role sorter only manages non-revocable resources.
+
+      LOG(INFO) << "Agent " << slaveId << " (" << slave.hostname << ")"
+                << " updated with oversubscribed resources "
+                << oversubscribed.get() << " (total: " << slave.total
+                << ", allocated: " << slave.allocated << ")";
+    }
+  }
+
+  if (updated) {
+    allocate(slaveId);
+  }
 }
 
 
@@ -1048,6 +1085,13 @@ void HierarchicalAllocatorProcess::recoverResources(
         quotaRoleSorter->unallocated(
             role, slaveId, resources.nonRevocable());
       }
+
+      // Stop tracking the framework under this role if it's no longer
+      // subscribed and no longer has resources allocated to the role.
+      if (frameworks.at(frameworkId).roles.count(role) == 0 &&
+          frameworkSorter->allocation(frameworkId.value()).empty()) {
+        untrackFrameworkUnderRole(frameworkId, role);
+      }
     }
   }
 
@@ -1472,7 +1516,7 @@ void HierarchicalAllocatorProcess::__allocate()
 
       // If there are no active frameworks in this role, we do not
       // need to do any allocations for this role.
-      if (!activeRoles.contains(role)) {
+      if (!roles.contains(role)) {
         continue;
       }
 
@@ -1621,7 +1665,7 @@ void HierarchicalAllocatorProcess::__allocate()
   // argument to the `allocate()` call) so that frameworks in roles without
   // quota are not unnecessarily deprived of resources.
   Resources remainingClusterResources = roleSorter->totalScalarQuantities();
-  foreachkey (const string& role, activeRoles) {
+  foreachkey (const string& role, roles) {
     remainingClusterResources -= roleSorter->allocationScalarQuantities(role);
   }
 
@@ -1820,7 +1864,7 @@ void HierarchicalAllocatorProcess::__allocate()
 void HierarchicalAllocatorProcess::deallocate()
 {
   // If no frameworks are currently registered, no work to do.
-  if (activeRoles.empty()) {
+  if (roles.empty()) {
     return;
   }
   CHECK(!frameworkSorters.empty());
@@ -2023,6 +2067,19 @@ bool HierarchicalAllocatorProcess::isFiltered(
   CHECK(slaves.contains(slaveId));
 
   const Framework& framework = frameworks.at(frameworkId);
+  const Slave& slave = slaves.at(slaveId);
+
+  // Prevent offers from non-MULTI_ROLE agents to be allocated
+  // to MULTI_ROLE frameworks.
+  if (framework.capabilities.multiRole &&
+      !slave.capabilities.multiRole) {
+    LOG(WARNING)
+      << "Implicitly filtering agent " << slaveId << " from framework"
+      << frameworkId << " because the framework is MULTI_ROLE capable"
+      << " but the agent is not";
+
+    return true;
+  }
 
   // Since this is a performance-sensitive piece of code,
   // we use find to avoid the doing any redundant lookups.
@@ -2144,6 +2201,78 @@ double HierarchicalAllocatorProcess::_offer_filters_active(
   }
 
   return result;
+}
+
+
+bool HierarchicalAllocatorProcess::isFrameworkTrackedUnderRole(
+    const FrameworkID& frameworkId,
+    const std::string& role) const
+{
+  return roles.contains(role) &&
+         roles.at(role).contains(frameworkId);
+}
+
+
+void HierarchicalAllocatorProcess::trackFrameworkUnderRole(
+    const FrameworkID& frameworkId,
+    const string& role)
+{
+  CHECK(initialized);
+
+  // If this is the first framework to subscribe to this role, or have
+  // resources allocated to this role, initialize state as necessary.
+  if (!roles.contains(role)) {
+    roles[role] = {};
+    CHECK(!roleSorter->contains(role));
+    roleSorter->add(role, roleWeight(role));
+
+    CHECK(!frameworkSorters.contains(role));
+    frameworkSorters.insert({role, Owned<Sorter>(frameworkSorterFactory())});
+    frameworkSorters.at(role)->initialize(fairnessExcludeResourceNames);
+    metrics.addRole(role);
+  }
+
+  CHECK(!roles.at(role).contains(frameworkId));
+  roles.at(role).insert(frameworkId);
+
+  CHECK(!frameworkSorters.at(role)->contains(frameworkId.value()));
+  frameworkSorters.at(role)->add(frameworkId.value());
+}
+
+
+void HierarchicalAllocatorProcess::untrackFrameworkUnderRole(
+    const FrameworkID& frameworkId,
+    const string& role)
+{
+  CHECK(initialized);
+
+  CHECK(roles.contains(role));
+  CHECK(roles.at(role).contains(frameworkId));
+  CHECK(frameworkSorters.contains(role));
+  CHECK(frameworkSorters.at(role)->contains(frameworkId.value()));
+
+  roles.at(role).erase(frameworkId);
+  frameworkSorters.at(role)->remove(frameworkId.value());
+
+  // If no more frameworks are subscribed to this role or have resources
+  // allocated to this role, cleanup associated state. This is not necessary
+  // for correctness (roles with no registered frameworks will not be offered
+  // any resources), but since many different role names might be used over
+  // time, we want to avoid leaking resources for no-longer-used role names.
+  // Note that we don't remove the role from `quotaRoleSorter` if it exists
+  // there, since roles with a quota set still influence allocation even if
+  // they don't have any registered frameworks.
+
+  if (roles.at(role).empty()) {
+    CHECK_EQ(frameworkSorters.at(role)->count(), 0);
+
+    roles.erase(role);
+    roleSorter->remove(role);
+
+    frameworkSorters.erase(role);
+
+    metrics.removeRole(role);
+  }
 }
 
 

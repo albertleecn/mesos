@@ -78,6 +78,7 @@ using process::http::Request;
 using process::http::Unauthorized;
 
 using process::http::authentication::Authenticator;
+using process::http::authentication::Principal;
 using process::http::authentication::AuthenticationResult;
 
 
@@ -99,7 +100,7 @@ static Parameters createBasicAuthenticatorParameters(
     Parameter* parameter = parameters.add_parameter();
     parameter->set_key("credentials");
     parameter->set_value(
-        stringify(JSON::protobuf(credentials.get().credentials())));
+        stringify(JSON::protobuf(credentials->credentials())));
   }
 
   return parameters;
@@ -205,14 +206,14 @@ TYPED_TEST(HttpAuthenticationTest, BasicWithCredentialsTest)
   {
     Request request;
 
-    AuthenticationResult principal;
-    principal.principal = "user";
+    AuthenticationResult result;
+    result.principal = Principal("user");
 
     request.headers.put(
         "Authorization",
         "Basic " + base64::encode("user:password"));
 
-    AWAIT_EXPECT_EQ(principal, authenticator->authenticate(request));
+    AWAIT_EXPECT_EQ(result, authenticator->authenticate(request));
   }
 }
 

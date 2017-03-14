@@ -36,6 +36,26 @@ if (ENABLE_OPTIMIZE)
   endif (WIN32)
 endif (ENABLE_OPTIMIZE)
 
+if (WIN32)
+  # In MSVC 1900, there are two bugs in the linker, one that causes linking
+  # libmesos to occasionally take hours, and one that causes us to be able to
+  # fail to open the `mesos-x.lib` file. These have been confirmed as bugs with
+  # the MSVC backend team by hausdorff.
+  set(
+    ENSURE_TOOL_ARCH ensure_tool_arch
+    CACHE STRING "Ensures %PreferredToolArchitecture% == x64. See MESOS-6720.")
+
+  # NOTE: The "ERROR:" at the beginning of this message allows Visual Studio to
+  # pick up the error message and print it in the "Error List" pane.
+  ADD_CUSTOM_TARGET(
+    ${ENSURE_TOOL_ARCH} ALL
+    COMMAND
+      IF NOT "%PreferredToolArchitecture%" == "x64" (
+        echo "ERROR: Environment variable 'PreferredToolArchitecture' must be set to 'x64', see MESOS-6720 for details" 1>&2 && EXIT 1
+      )
+    )
+endif (WIN32)
+
 
 # 3RDPARTY OPTIONS.
 ###################
@@ -47,6 +67,11 @@ option(
 option(
   ENABLE_LIBEVENT
   "Use libevent instead of libev as the core event loop implementation"
+  FALSE)
+
+option(
+  ENABLE_SSL
+  "Build libprocess with SSL support"
   FALSE)
 
 option(
@@ -94,6 +119,12 @@ if (WIN32 AND (NOT ENABLE_LIBEVENT))
     "loop used by Mesos.  To opt into using libevent, pass "
     "`-DENABLE_LIBEVENT=1` as an argument when you run CMake.")
 endif (WIN32 AND (NOT ENABLE_LIBEVENT))
+
+if (ENABLE_SSL AND (NOT ENABLE_LIBEVENT))
+  message(
+    FATAL_ERROR
+    "'ENABLE_SSL' currently requires 'ENABLE_LIBEVENT'.")
+endif (ENABLE_SSL AND (NOT ENABLE_LIBEVENT))
 
 
 # SYSTEM CHECKS.
@@ -266,14 +297,34 @@ set(MESOS_CPPFLAGS
   -DPKGDATADIR="${DATA_INSTALL_PREFIX}"
   )
 
-# Add build information to Mesos flags.
+if (ENABLE_SSL)
+  set(MESOS_CPPFLAGS
+    ${MESOS_CPPFLAGS}
+    -DUSE_SSL_SOCKET=1
+    )
+endif (ENABLE_SSL)
+
+# Calculate some build information.
 string(TIMESTAMP BUILD_DATE "%Y-%m-%d %H:%M:%S UTC" UTC)
-string(TIMESTAMP BUILD_TIME "%s" UTC)
 if (WIN32)
+  string(TIMESTAMP BUILD_TIME "%s" UTC)
   set(BUILD_USER "$ENV{USERNAME}")
 else (WIN32)
+  execute_process(
+    COMMAND date +%s
+    OUTPUT_VARIABLE BUILD_TIME
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
   set(BUILD_USER "$ENV{USER}")
 endif (WIN32)
+
+# Emit the BUILD_DATE, BUILD_TIME, and BUILD_USER variables into a file.
+# This will be updated each time `cmake` is run.
+configure_file(
+  "${CMAKE_SOURCE_DIR}/src/common/build_config.hpp.in"
+  "${CMAKE_BINARY_DIR}/src/common/build_config.hpp"
+  @ONLY
+  )
 
 # TODO(hausdorff): (MESOS-5902) Populate this value when we integrate Java
 # support.
@@ -285,9 +336,7 @@ set(BUILD_JAVA_JVM_LIBRARY "")
 set(MESOS_CPPFLAGS
   ${MESOS_CPPFLAGS}
   -DUSE_STATIC_LIB
-  -DBUILD_DATE="${BUILD_DATE}"
-  -DBUILD_TIME="${BUILD_TIME}"
-  -DBUILD_USER="${BUILD_USER}"
+  -DUSE_CMAKE_BUILD_CONFIG
   -DBUILD_JAVA_JVM_LIBRARY="${BUILD_JAVA_JVM_LIBRARY}"
   )
 

@@ -50,6 +50,14 @@ if (NOT WIN32)
     )
 endif (NOT WIN32)
 
+if (ENABLE_SSL)
+  set(PROCESS_TESTS_SRC
+    ${PROCESS_TESTS_SRC}
+    jwt_tests.cpp
+    ssl_tests.cpp
+    )
+endif (ENABLE_SSL)
+
 
 # ADDITIONAL CPP FLAGS FOR PROCESS TEST BINARY (e.g., -DBUILD_DIR=...).
 #######################################################################
@@ -67,7 +75,7 @@ link_directories(${PROCESS_TEST_LIB_DIRS})
 
 # THE PROCESS TEST EXECUTABLE (generates, e.g., libprocess-tests, etc., on Linux).
 ###############################################################################
-add_executable(${PROCESS_TESTS_TARGET} ${PROCESS_TESTS_SRC})
+add_executable(${PROCESS_TESTS_TARGET} EXCLUDE_FROM_ALL ${PROCESS_TESTS_SRC})
 
 GROUP_STOUT_HEADERS()
 GROUP_PROCESS_HEADERS()
@@ -88,9 +96,15 @@ add_dependencies(${PROCESS_TESTS_TARGET} ${PROCESS_TEST_DEPENDENCIES})
 
 # ADDITIONAL EXECUTABLE(s).
 ###########################
-add_executable(test-linkee test_linkee.cpp)
+add_executable(test-linkee EXCLUDE_FROM_ALL test_linkee.cpp)
 target_link_libraries(test-linkee ${PROCESS_TEST_LIBS})
 add_dependencies(${PROCESS_TESTS_TARGET} test-linkee)
+
+if (ENABLE_SSL)
+  add_executable(ssl-client EXCLUDE_FROM_ALL ssl_client.cpp)
+  target_link_libraries(ssl-client ${PROCESS_TEST_LIBS})
+  add_dependencies(${PROCESS_TESTS_TARGET} ssl-client)
+endif (ENABLE_SSL)
 
 # ADD TEST TARGET (runs when you do, e.g., `make check`).
 #########################################################

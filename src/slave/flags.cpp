@@ -216,12 +216,12 @@ mesos::internal::slave::Flags::Flags()
       "not across reboots). This directory will be cleared on reboot.\n"
       "(Example: `/var/run/mesos`)",
       []() -> string {
-        Try<std::string> var = os::var();
+        Try<string> var = os::var();
         if (var.isSome()) {
 #ifdef __WINDOWS__
-          const std::string prefix(var.get());
+          const string prefix(var.get());
 #else
-          const std::string prefix(path::join(var.get(), "run"));
+          const string prefix(path::join(var.get(), "run"));
 #endif // __WINDOWS__
 
           // We check for access on the prefix because the remainder
@@ -632,10 +632,12 @@ mesos::internal::slave::Flags::Flags()
 
   add(&Flags::docker_socket,
       "docker_socket",
-      "The UNIX socket path to be mounted into the docker executor container\n"
-      "to provide docker CLI access to the docker daemon. This must be the\n"
-      "path used by the agent's docker image.\n",
-      "/var/run/docker.sock");
+      "Resource used by the agent and the executor to provice CLI access\n"
+      "to the Docker daemon. On Unix, this is typically a path to a\n"
+      "socket, such as '/var/run/docker.sock'. On Windows this must be a\n"
+      "named pipe, such as '//./pipe/docker_engine'. NOTE: This must be\n"
+      "the path used by the Docker image used to run the agent.\n",
+      DEFAULT_DOCKER_HOST_RESOURCE);
 
   add(&Flags::docker_config,
       "docker_config",

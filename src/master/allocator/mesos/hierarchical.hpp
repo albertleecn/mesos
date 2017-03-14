@@ -101,7 +101,6 @@ public:
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
-      const hashmap<std::string, double>& weights,
       const Option<std::set<std::string>>&
         fairnessExcludeResourceNames = None());
 
@@ -131,6 +130,7 @@ public:
   void addSlave(
       const SlaveID& slaveId,
       const SlaveInfo& slaveInfo,
+      const std::vector<SlaveInfo::Capability>& capabilities,
       const Option<Unavailability>& unavailability,
       const Resources& total,
       const hashmap<FrameworkID, Resources>& used);
@@ -140,7 +140,8 @@ public:
 
   void updateSlave(
       const SlaveID& slave,
-      const Resources& oversubscribed);
+      const Option<Resources>& oversubscribed = None(),
+      const Option<std::vector<SlaveInfo::Capability>>& capabilities = None());
 
   void deactivateSlave(
       const SlaveID& slaveId);
@@ -375,6 +376,8 @@ protected:
 
     std::string hostname;
 
+    protobuf::slave::Capabilities capabilities;
+
     // Represents a scheduled unavailability due to maintenance for a specific
     // slave, and the responses from frameworks as to whether they will be able
     // to gracefully handle this unavailability.
@@ -423,10 +426,11 @@ protected:
   // ready after the allocation run is complete.
   Option<process::Future<Nothing>> allocation;
 
-  // Number of registered frameworks for each role. When a role's active
-  // count drops to zero, it is removed from this map; the role is also
-  // removed from `roleSorter` and its `frameworkSorter` is deleted.
-  hashmap<std::string, size_t> activeRoles;
+  // We track information about roles that we're aware of in the system.
+  // Specifically, we keep track of the roles when a framework subscribes to
+  // the role, and/or when there are resources allocated to the role
+  // (e.g. some tasks and/or executors are consuming resources under the role).
+  hashmap<std::string, hashset<FrameworkID>> roles;
 
   // Configured weight for each role, if any; if a role does not
   // appear here, it has the default weight of 1.
@@ -510,6 +514,18 @@ protected:
   const std::function<Sorter*()> frameworkSorterFactory;
 
 private:
+  bool isFrameworkTrackedUnderRole(
+      const FrameworkID& frameworkId,
+      const std::string& role) const;
+
+  void trackFrameworkUnderRole(
+      const FrameworkID& frameworkId,
+      const std::string& role);
+
+  void untrackFrameworkUnderRole(
+      const FrameworkID& frameworkId,
+      const std::string& role);
+
   // Helper to update the agent's total resources maintained in the allocator
   // and the role and quota sorters (whose total resources match the agent's
   // total resources).

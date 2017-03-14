@@ -33,6 +33,9 @@
 #include <process/http.hpp>
 #include <process/id.hpp>
 #include <process/io.hpp>
+#ifdef USE_SSL_SOCKET
+#include <process/jwt.hpp>
+#endif // USE_SSL_SOCKET
 #include <process/owned.hpp>
 #include <process/socket.hpp>
 
@@ -60,6 +63,12 @@ namespace unix = process::network::unix;
 using authentication::Authenticator;
 using authentication::AuthenticationResult;
 using authentication::BasicAuthenticator;
+#ifdef USE_SSL_SOCKET
+using authentication::JWT;
+using authentication::JWTAuthenticator;
+using authentication::JWTError;
+#endif // USE_SSL_SOCKET
+using authentication::Principal;
 
 using process::Failure;
 using process::Future;
@@ -114,7 +123,7 @@ public:
 
   MOCK_METHOD2(
       authenticated,
-      Future<http::Response>(const http::Request&, const Option<string>&));
+      Future<http::Response>(const http::Request&, const Option<Principal>&));
 
 protected:
   virtual void initialize()
@@ -1772,7 +1781,7 @@ TEST_F(HttpAuthenticationTest, NoAuthenticator)
 {
   Http http;
 
-  EXPECT_CALL(*http.process, authenticated(_, Option<string>::none()))
+  EXPECT_CALL(*http.process, authenticated(_, Option<Principal>::none()))
     .WillOnce(Return(http::OK()));
 
   Future<http::Response> response =
@@ -1840,12 +1849,12 @@ TEST_F(HttpAuthenticationTest, Authenticated)
   Http http;
 
   AuthenticationResult authentication;
-  authentication.principal = "principal";
+  authentication.principal = Principal("principal");
 
   EXPECT_CALL((*authenticator), authenticate(_))
     .WillOnce(Return(authentication));
 
-  EXPECT_CALL(*http.process, authenticated(_, Option<string>("principal")))
+  EXPECT_CALL(*http.process, authenticated(_, Option<Principal>("principal")))
     .WillOnce(Return(http::OK()));
 
   // Note that we don't bother pretending to specify a valid
@@ -1854,6 +1863,31 @@ TEST_F(HttpAuthenticationTest, Authenticated)
     http::get(http.process->self(), "authenticated");
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
+}
+
+
+// Tests that if an authenticator returns an invalid principal, the request
+// will not succeed.
+TEST_F(HttpAuthenticationTest, InvalidPrincipal)
+{
+  MockAuthenticator* authenticator = new MockAuthenticator();
+  setAuthenticator("realm", Owned<Authenticator>(authenticator));
+
+  Http http;
+
+  // This principal is invalid because it has neither `value` nor `claims` set.
+  AuthenticationResult authentication;
+  authentication.principal = Principal(None(), {});
+
+  EXPECT_CALL((*authenticator), authenticate(_))
+    .WillOnce(Return(authentication));
+
+  // Note that we don't bother pretending to specify a valid
+  // 'Authorization' header since we force authentication success.
+  Future<http::Response> response =
+    http::get(http.process->self(), "authenticated");
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::InternalServerError().status, response);
 }
 
 
@@ -1875,8 +1909,8 @@ TEST_F(HttpAuthenticationTest, Pipelining)
     .WillOnce(Return(promise1.future()))
     .WillOnce(Return(promise2.future()));
 
-  Future<Option<string>> principal1;
-  Future<Option<string>> principal2;
+  Future<Option<Principal>> principal1;
+  Future<Option<Principal>> principal2;
   EXPECT_CALL(*http.process, authenticated(_, _))
     .WillOnce(DoAll(FutureArg<1>(&principal1), Return(http::OK("1"))))
     .WillOnce(DoAll(FutureArg<1>(&principal2), Return(http::OK("2"))));
@@ -1902,13 +1936,13 @@ TEST_F(HttpAuthenticationTest, Pipelining)
   Future<http::Response> response1 = connection.send(request);
   Future<http::Response> response2 = connection.send(request);
 
-  AuthenticationResult authentiation2;
-  authentiation2.principal = "principal2";
-  promise2.set(authentiation2);
+  AuthenticationResult authentication2;
+  authentication2.principal = Principal("principal2");
+  promise2.set(authentication2);
 
-  AuthenticationResult authentiation1;
-  authentiation1.principal = "princpal1";
-  promise1.set(authentiation1);
+  AuthenticationResult authentication1;
+  authentication1.principal = Principal("principal1");
+  promise1.set(authentication1);
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response1);
   EXPECT_EQ("1", response1->body);
@@ -1916,8 +1950,8 @@ TEST_F(HttpAuthenticationTest, Pipelining)
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response2);
   EXPECT_EQ("2", response2->body);
 
-  AWAIT_EXPECT_EQ(authentiation1.principal, principal1);
-  AWAIT_EXPECT_EQ(authentiation2.principal, principal2);
+  AWAIT_EXPECT_EQ(authentication1.principal, principal1);
+  AWAIT_EXPECT_EQ(authentication2.principal, principal2);
 }
 
 
@@ -1970,7 +2004,7 @@ TEST_F(HttpAuthenticationTest, Basic)
 
   // Right credentials provided.
   {
-    EXPECT_CALL(*http.process, authenticated(_, Option<string>("user")))
+    EXPECT_CALL(*http.process, authenticated(_, Option<Principal>("user")))
       .WillOnce(Return(http::OK()));
 
     http::Headers headers;
@@ -1983,6 +2017,85 @@ TEST_F(HttpAuthenticationTest, Basic)
     AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
   }
 }
+
+
+#ifdef USE_SSL_SOCKET
+// Tests the "JWT" authenticator.
+TEST_F(HttpAuthenticationTest, JWT)
+{
+  Http http;
+
+  Owned<Authenticator> authenticator(new JWTAuthenticator("realm", "secret"));
+
+  AWAIT_READY(setAuthenticator("realm", authenticator));
+
+  // No 'Authorization' header provided.
+  {
+    Future<http::Response> response = http::get(*http.process, "authenticated");
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Unauthorized({}).status, response);
+  }
+
+  // Invalid 'Authorization' header provided.
+  {
+    http::Headers headers;
+    headers["Authorization"] = "Basic " + base64::encode("user:password");
+
+    Future<http::Response> response =
+      http::get(http.process->self(), "authenticated", None(), headers);
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Unauthorized({}).status, response);
+  }
+
+  // Invalid token provided.
+  {
+    JSON::Object payload;
+    payload.values["sub"] = "user";
+
+    Try<JWT, JWTError> jwt = JWT::create(payload, "a different secret");
+
+    // TODO(nfnt): Change this to `EXPECT_SOME(jwt)`
+    // once MESOS-7220 is resolved.
+    EXPECT_TRUE(jwt.isSome());
+
+    http::Headers headers;
+    headers["Authorization"] = "Bearer " + stringify(jwt.get());
+
+    Future<http::Response> response =
+      http::get(http.process->self(), "authenticated", None(), headers);
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Unauthorized({}).status, response);
+  }
+
+  // Valid token provided.
+  {
+    Principal principal(Option<string>::none());
+    principal.claims["foo"] = "1234";
+    principal.claims["sub"] = "user";
+
+    EXPECT_CALL(*http.process, authenticated(_, Option<Principal>(principal)))
+      .WillOnce(Return(http::OK()));
+
+    JSON::Object payload;
+    payload.values["foo"] = 1234;
+    payload.values["sub"] = "user";
+
+    Try<JWT, JWTError> jwt = JWT::create(payload, "secret");
+
+    // TODO(nfnt): Change this to `EXPECT_SOME(jwt)`
+    // once MESOS-7220 is resolved.
+    EXPECT_TRUE(jwt.isSome());
+
+    http::Headers headers;
+    headers["Authorization"] = "Bearer " + stringify(jwt.get());
+
+    Future<http::Response> response =
+      http::get(http.process->self(), "authenticated", None(), headers);
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, response);
+  }
+}
+#endif // USE_SSL_SOCKET
 
 
 class HttpServeTest : public TemporaryDirectoryTest {};

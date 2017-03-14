@@ -73,6 +73,8 @@
 
 using mesos::agent::ProcessIO;
 
+using mesos::authorization::createSubject;
+
 using mesos::internal::recordio::Reader;
 
 using mesos::slave::ContainerClass;
@@ -107,6 +109,8 @@ using process::http::Pipe;
 using process::http::ServiceUnavailable;
 using process::http::UnsupportedMediaType;
 
+using process::http::authentication::Principal;
+
 using process::metrics::internal::MetricsProcess;
 
 using ::recordio::Decoder;
@@ -127,6 +131,10 @@ static void json(JSON::ObjectWriter* writer, const TaskInfo& task)
   writer->field("slave_id", task.slave_id().value());
   writer->field("resources", Resources(task.resources()));
 
+  // Tasks are not allowed to mix resources allocated to
+  // different roles, see MESOS-6636.
+  writer->field("role", task.resources().begin()->allocation_info().role());
+
   if (task.has_command()) {
     writer->field("command", task.command());
   }
@@ -136,6 +144,13 @@ static void json(JSON::ObjectWriter* writer, const TaskInfo& task)
   if (task.has_discovery()) {
     writer->field("discovery", JSON::Protobuf(task.discovery()));
   }
+}
+
+static void json(
+    JSON::StringWriter* writer,
+    const SlaveInfo::Capability& capability)
+{
+  writer->append(SlaveInfo::Capability::Type_Name(capability.type()));
 }
 
 namespace internal {
@@ -166,6 +181,15 @@ struct ExecutorWriter
     writer->field("container", executor_->containerId.value());
     writer->field("directory", executor_->directory);
     writer->field("resources", executor_->resources);
+
+    // Resources may be empty for command executors.
+    if (!executor_->info.resources().empty()) {
+      // Executors are not allowed to mix resources allocated to
+      // different roles, see MESOS-6636.
+      writer->field(
+          "role",
+          executor_->info.resources().begin()->allocation_info().role());
+    }
 
     if (executor_->info.has_labels()) {
       writer->field("labels", executor_->info.labels());
@@ -330,7 +354,7 @@ string Slave::Http::API_HELP()
 
 Future<Response> Slave::Http::api(
     const Request& request,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   // TODO(anand): Add metrics for rejected requests.
 
@@ -394,7 +418,7 @@ Future<Response> Slave::Http::api(
   // This lambda deserializes a string into a valid `Call`
   // based on the content type.
   auto deserializer = [](const string& body, ContentType contentType)
-      -> Try<agent::Call> {
+      -> Try<mesos::agent::Call> {
     Try<v1::agent::Call> v1Call =
       deserialize<v1::agent::Call>(contentType, body);
 
@@ -402,7 +426,7 @@ Future<Response> Slave::Http::api(
       return Error(v1Call.error());
     }
 
-    agent::Call call = devolve(v1Call.get());
+    mesos::agent::Call call = devolve(v1Call.get());
 
     Option<Error> error = validation::agent::call::validate(call);
     if (error.isSome()) {
@@ -488,7 +512,7 @@ Future<Response> Slave::Http::api(
       .then(defer(
           slave->self(),
           [=](const string& body) -> Future<Response> {
-            Try<agent::Call> call = deserializer(body, contentType);
+            Try<mesos::agent::Call> call = deserializer(body, contentType);
             if (call.isError()) {
               return BadRequest(call.error());
             }
@@ -499,10 +523,10 @@ Future<Response> Slave::Http::api(
 
 
 Future<Response> Slave::Http::_api(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     Option<Owned<Reader<mesos::agent::Call>>>&& reader,
     const RequestMediaTypes& mediaTypes,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   // Validate that a client has not _accidentally_ sent us a
   // streaming request for a call type that does not support it.
@@ -521,56 +545,62 @@ Future<Response> Slave::Http::_api(
   LOG(INFO) << "Processing call " << call.type();
 
   switch (call.type()) {
-    case agent::Call::UNKNOWN:
+    case mesos::agent::Call::UNKNOWN:
       return NotImplemented();
 
-    case agent::Call::GET_HEALTH:
+    case mesos::agent::Call::GET_HEALTH:
       return getHealth(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_FLAGS:
+    case mesos::agent::Call::GET_FLAGS:
       return getFlags(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_VERSION:
+    case mesos::agent::Call::GET_VERSION:
       return getVersion(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_METRICS:
+    case mesos::agent::Call::GET_METRICS:
       return getMetrics(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_LOGGING_LEVEL:
+    case mesos::agent::Call::GET_LOGGING_LEVEL:
       return getLoggingLevel(call, mediaTypes.accept, principal);
 
-    case agent::Call::SET_LOGGING_LEVEL:
+    case mesos::agent::Call::SET_LOGGING_LEVEL:
       return setLoggingLevel(call, mediaTypes.accept, principal);
 
-    case agent::Call::LIST_FILES:
+    case mesos::agent::Call::LIST_FILES:
       return listFiles(call, mediaTypes.accept, principal);
 
-    case agent::Call::READ_FILE:
+    case mesos::agent::Call::READ_FILE:
       return readFile(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_STATE:
+    case mesos::agent::Call::GET_STATE:
       return getState(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_CONTAINERS:
+    case mesos::agent::Call::GET_CONTAINERS:
       return getContainers(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_FRAMEWORKS:
+    case mesos::agent::Call::GET_FRAMEWORKS:
       return getFrameworks(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_EXECUTORS:
+    case mesos::agent::Call::GET_EXECUTORS:
       return getExecutors(call, mediaTypes.accept, principal);
 
-    case agent::Call::GET_TASKS:
+    case mesos::agent::Call::GET_TASKS:
       return getTasks(call, mediaTypes.accept, principal);
 
-    case agent::Call::LAUNCH_NESTED_CONTAINER:
+    case mesos::agent::Call::GET_AGENT:
+      return getAgent(call, mediaTypes.accept, principal);
+
+    case mesos::agent::Call::LAUNCH_NESTED_CONTAINER:
       return launchNestedContainer(call, mediaTypes.accept, principal);
 
-    case agent::Call::WAIT_NESTED_CONTAINER:
+    case mesos::agent::Call::WAIT_NESTED_CONTAINER:
       return waitNestedContainer(call, mediaTypes.accept, principal);
 
-    case agent::Call::KILL_NESTED_CONTAINER:
+    case mesos::agent::Call::KILL_NESTED_CONTAINER:
       return killNestedContainer(call, mediaTypes.accept, principal);
+
+    case mesos::agent::Call::REMOVE_NESTED_CONTAINER:
+      return removeNestedContainer(call, mediaTypes.accept, principal);
 
     case mesos::agent::Call::LAUNCH_NESTED_CONTAINER_SESSION:
       return launchNestedContainerSession(call, mediaTypes, principal);
@@ -755,7 +785,7 @@ string Slave::Http::FLAGS_HELP()
 
 Future<Response> Slave::Http::flags(
     const Request& request,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   // TODO(nfnt): Remove check for enabled
   // authorization as part of MESOS-5346.
@@ -770,8 +800,9 @@ Future<Response> Slave::Http::flags(
   authorization::Request authRequest;
   authRequest.set_action(authorization::VIEW_FLAGS);
 
-  if (principal.isSome()) {
-    authRequest.mutable_subject()->set_value(principal.get());
+  Option<authorization::Subject> subject = createSubject(principal);
+  if (subject.isSome()) {
+    authRequest.mutable_subject()->CopyFrom(subject.get());
   }
 
   return slave->authorizer.get()->authorized(authRequest)
@@ -807,19 +838,16 @@ JSON::Object Slave::Http::_flags() const
 
 
 Future<Response> Slave::Http::getFlags(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_FLAGS, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_FLAGS, call.type());
 
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_FLAGS);
@@ -865,14 +893,14 @@ Future<Response> Slave::Http::health(const Request& request) const
 
 
 Future<Response> Slave::Http::getHealth(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_HEALTH, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_HEALTH, call.type());
 
-  agent::Response response;
-  response.set_type(agent::Response::GET_HEALTH);
+  mesos::agent::Response response;
+  response.set_type(mesos::agent::Response::GET_HEALTH);
   response.mutable_get_health()->set_healthy(true);
 
   return OK(serialize(acceptType, evolve(response)),
@@ -881,11 +909,11 @@ Future<Response> Slave::Http::getHealth(
 
 
 Future<Response> Slave::Http::getVersion(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_VERSION, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_VERSION, call.type());
 
   return OK(serialize(acceptType,
                       evolve<v1::agent::Response::GET_VERSION>(version())),
@@ -894,11 +922,11 @@ Future<Response> Slave::Http::getVersion(
 
 
 Future<Response> Slave::Http::getMetrics(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_METRICS, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_METRICS, call.type());
   CHECK(call.has_get_metrics());
 
   Option<Duration> timeout;
@@ -908,9 +936,9 @@ Future<Response> Slave::Http::getMetrics(
 
   return process::metrics::snapshot(timeout)
       .then([acceptType](const hashmap<string, double>& metrics) -> Response {
-        agent::Response response;
-        response.set_type(agent::Response::GET_METRICS);
-        agent::Response::GetMetrics* _getMetrics =
+          mesos::agent::Response response;
+        response.set_type(mesos::agent::Response::GET_METRICS);
+        mesos::agent::Response::GetMetrics* _getMetrics =
           response.mutable_get_metrics();
 
         foreachpair (const string& key, double value, metrics) {
@@ -926,14 +954,14 @@ Future<Response> Slave::Http::getMetrics(
 
 
 Future<Response> Slave::Http::getLoggingLevel(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_LOGGING_LEVEL, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_LOGGING_LEVEL, call.type());
 
-  agent::Response response;
-  response.set_type(agent::Response::GET_LOGGING_LEVEL);
+  mesos::agent::Response response;
+  response.set_type(mesos::agent::Response::GET_LOGGING_LEVEL);
   response.mutable_get_logging_level()->set_level(FLAGS_v);
 
   return OK(serialize(acceptType, evolve(response)),
@@ -942,11 +970,11 @@ Future<Response> Slave::Http::getLoggingLevel(
 
 
 Future<Response> Slave::Http::setLoggingLevel(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType /*contentType*/,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::SET_LOGGING_LEVEL, call.type());
+  CHECK_EQ(mesos::agent::Call::SET_LOGGING_LEVEL, call.type());
   CHECK(call.has_set_logging_level());
 
   uint32_t level = call.set_logging_level().level();
@@ -956,10 +984,7 @@ Future<Response> Slave::Http::setLoggingLevel(
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::SET_LOG_LEVEL);
@@ -990,7 +1015,7 @@ Future<Response> Slave::Http::setLoggingLevel(
 Future<Response> Slave::Http::listFiles(
     const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::LIST_FILES, call.type());
 
@@ -1139,7 +1164,7 @@ string Slave::Http::STATE_HELP() {
 
 Future<Response> Slave::Http::state(
     const Request& request,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   if (slave->state == Slave::RECOVERING) {
     return ServiceUnavailable("Agent has not finished recovery");
@@ -1152,10 +1177,7 @@ Future<Response> Slave::Http::state(
   Future<Owned<ObjectApprover>> flagsApprover;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     frameworksApprover = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_FRAMEWORK);
@@ -1222,6 +1244,7 @@ Future<Response> Slave::Http::state(
         writer->field("id", slave->info.id().value());
         writer->field("pid", string(slave->self()));
         writer->field("hostname", slave->info.hostname());
+        writer->field("capabilities", AGENT_CAPABILITIES());
 
         const Resources& totalResources = slave->totalResources;
 
@@ -1324,24 +1347,20 @@ Future<Response> Slave::Http::state(
 
 
 Future<Response> Slave::Http::getFrameworks(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_FRAMEWORKS, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_FRAMEWORKS, call.type());
 
   // Retrieve `ObjectApprover`s for authorizing frameworks.
   Future<Owned<ObjectApprover>> frameworksApprover;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     frameworksApprover = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_FRAMEWORK);
-
   } else {
     frameworksApprover = Owned<ObjectApprover>(new AcceptingObjectApprover());
   }
@@ -1350,8 +1369,8 @@ Future<Response> Slave::Http::getFrameworks(
     .then(defer(slave->self(),
         [this, acceptType](const Owned<ObjectApprover>& frameworksApprover)
           -> Future<Response> {
-      agent::Response response;
-      response.set_type(agent::Response::GET_FRAMEWORKS);
+          mesos::agent::Response response;
+      response.set_type(mesos::agent::Response::GET_FRAMEWORKS);
       response.mutable_get_frameworks()->CopyFrom(
           _getFrameworks(frameworksApprover));
 
@@ -1361,10 +1380,10 @@ Future<Response> Slave::Http::getFrameworks(
 }
 
 
-agent::Response::GetFrameworks Slave::Http::_getFrameworks(
+mesos::agent::Response::GetFrameworks Slave::Http::_getFrameworks(
     const Owned<ObjectApprover>& frameworksApprover) const
 {
-  agent::Response::GetFrameworks getFrameworks;
+  mesos::agent::Response::GetFrameworks getFrameworks;
   foreachvalue (const Framework* framework, slave->frameworks) {
     // Skip unauthorized frameworks.
     if (!approveViewFrameworkInfo(frameworksApprover, framework->info)) {
@@ -1390,20 +1409,17 @@ agent::Response::GetFrameworks Slave::Http::_getFrameworks(
 
 
 Future<Response> Slave::Http::getExecutors(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_EXECUTORS, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_EXECUTORS, call.type());
 
   // Retrieve `ObjectApprover`s for authorizing frameworks and executors.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> executorsApprover;
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     frameworksApprover = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_FRAMEWORK);
@@ -1425,8 +1441,8 @@ Future<Response> Slave::Http::getExecutors(
       Owned<ObjectApprover> executorsApprover;
       tie(frameworksApprover, executorsApprover) = approvers;
 
-      agent::Response response;
-      response.set_type(agent::Response::GET_EXECUTORS);
+      mesos::agent::Response response;
+      response.set_type(mesos::agent::Response::GET_EXECUTORS);
 
       response.mutable_get_executors()->CopyFrom(
           _getExecutors(frameworksApprover, executorsApprover));
@@ -1437,7 +1453,7 @@ Future<Response> Slave::Http::getExecutors(
 }
 
 
-agent::Response::GetExecutors Slave::Http::_getExecutors(
+mesos::agent::Response::GetExecutors Slave::Http::_getExecutors(
     const Owned<ObjectApprover>& frameworksApprover,
     const Owned<ObjectApprover>& executorsApprover) const
 {
@@ -1461,7 +1477,7 @@ agent::Response::GetExecutors Slave::Http::_getExecutors(
     frameworks.push_back(framework.get());
   }
 
-  agent::Response::GetExecutors getExecutors;
+  mesos::agent::Response::GetExecutors getExecutors;
 
   foreach (const Framework* framework, frameworks) {
     foreachvalue (Executor* executor, framework->executors) {
@@ -1494,21 +1510,18 @@ agent::Response::GetExecutors Slave::Http::_getExecutors(
 
 
 Future<Response> Slave::Http::getTasks(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_TASKS, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_TASKS, call.type());
 
   // Retrieve Approvers for authorizing frameworks and tasks.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> tasksApprover;
   Future<Owned<ObjectApprover>> executorsApprover;
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     frameworksApprover = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_FRAMEWORK);
@@ -1536,8 +1549,8 @@ Future<Response> Slave::Http::getTasks(
       Owned<ObjectApprover> executorsApprover;
       tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
 
-      agent::Response response;
-      response.set_type(agent::Response::GET_TASKS);
+      mesos::agent::Response response;
+      response.set_type(mesos::agent::Response::GET_TASKS);
 
       response.mutable_get_tasks()->CopyFrom(
           _getTasks(frameworksApprover,
@@ -1550,7 +1563,7 @@ Future<Response> Slave::Http::getTasks(
 }
 
 
-agent::Response::GetTasks Slave::Http::_getTasks(
+mesos::agent::Response::GetTasks Slave::Http::_getTasks(
     const Owned<ObjectApprover>& frameworksApprover,
     const Owned<ObjectApprover>& tasksApprover,
     const Owned<ObjectApprover>& executorsApprover) const
@@ -1601,7 +1614,7 @@ agent::Response::GetTasks Slave::Http::_getTasks(
     }
   }
 
-  agent::Response::GetTasks getTasks;
+  mesos::agent::Response::GetTasks getTasks;
 
   foreach (const Framework* framework, frameworks) {
     // Pending tasks.
@@ -1674,22 +1687,36 @@ agent::Response::GetTasks Slave::Http::_getTasks(
 }
 
 
-Future<Response> Slave::Http::getState(
-    const agent::Call& call,
+Future<Response> Slave::Http::getAgent(
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_STATE, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_AGENT, call.type());
+
+  agent::Response response;
+  response.set_type(mesos::agent::Response::GET_AGENT);
+
+  response.mutable_get_agent()->mutable_slave_info()->CopyFrom(slave->info);
+
+  return OK(serialize(acceptType, evolve(response)),
+            stringify(acceptType));
+}
+
+
+Future<Response> Slave::Http::getState(
+    const mesos::agent::Call& call,
+    ContentType acceptType,
+    const Option<Principal>& principal) const
+{
+  CHECK_EQ(mesos::agent::Call::GET_STATE, call.type());
 
   // Retrieve Approvers for authorizing frameworks and tasks.
   Future<Owned<ObjectApprover>> frameworksApprover;
   Future<Owned<ObjectApprover>> tasksApprover;
   Future<Owned<ObjectApprover>> executorsApprover;
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     frameworksApprover = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_FRAMEWORK);
@@ -1717,8 +1744,8 @@ Future<Response> Slave::Http::getState(
       Owned<ObjectApprover> executorsApprover;
       tie(frameworksApprover, tasksApprover, executorsApprover) = approvers;
 
-      agent::Response response;
-      response.set_type(agent::Response::GET_STATE);
+      mesos::agent::Response response;
+      response.set_type(mesos::agent::Response::GET_STATE);
       response.mutable_get_state()->CopyFrom(
           _getState(frameworksApprover,
                     tasksApprover,
@@ -1730,21 +1757,21 @@ Future<Response> Slave::Http::getState(
 }
 
 
-agent::Response::GetState Slave::Http::_getState(
+mesos::agent::Response::GetState Slave::Http::_getState(
     const Owned<ObjectApprover>& frameworksApprover,
     const Owned<ObjectApprover>& tasksApprover,
     const Owned<ObjectApprover>& executorsApprover) const
 {
-  agent::Response::GetState getState;
+  mesos::agent::Response::GetState getState;
 
   getState.mutable_get_tasks()->CopyFrom(
-    _getTasks(frameworksApprover, tasksApprover, executorsApprover));
+      _getTasks(frameworksApprover, tasksApprover, executorsApprover));
 
   getState.mutable_get_executors()->CopyFrom(
-    _getExecutors(frameworksApprover, executorsApprover));
+      _getExecutors(frameworksApprover, executorsApprover));
 
   getState.mutable_get_frameworks()->CopyFrom(
-    _getFrameworks(frameworksApprover));
+      _getFrameworks(frameworksApprover));
 
   return getState;
 }
@@ -1793,7 +1820,7 @@ string Slave::Http::STATISTICS_HELP()
 
 Future<Response> Slave::Http::statistics(
     const Request& request,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   // TODO(nfnt): Remove check for enabled
   // authorization as part of MESOS-5346.
@@ -1902,7 +1929,7 @@ string Slave::Http::CONTAINERS_HELP()
 
 Future<Response> Slave::Http::containers(
     const Request& request,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   // TODO(a10gupta): Remove check for enabled
   // authorization as part of MESOS-5346.
@@ -1933,19 +1960,16 @@ Future<Response> Slave::Http::containers(
 
 
 Future<Response> Slave::Http::getContainers(
-    const agent::Call& call,
+    const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
-  CHECK_EQ(agent::Call::GET_CONTAINERS, call.type());
+  CHECK_EQ(mesos::agent::Call::GET_CONTAINERS, call.type());
 
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_CONTAINER);
@@ -1979,15 +2003,12 @@ Future<Response> Slave::Http::getContainers(
 
 Future<Response> Slave::Http::_containers(
     const Request& request,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::VIEW_CONTAINER);
@@ -2144,7 +2165,7 @@ Try<string> Slave::Http::extractEndpoint(const process::http::URL& url) const
 Future<Response> Slave::Http::readFile(
     const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::READ_FILE, call.type());
 
@@ -2194,7 +2215,7 @@ Future<Response> Slave::Http::readFile(
 Future<Response> Slave::Http::launchNestedContainer(
     const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::LAUNCH_NESTED_CONTAINER, call.type());
   CHECK(call.has_launch_nested_container());
@@ -2202,10 +2223,7 @@ Future<Response> Slave::Http::launchNestedContainer(
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::LAUNCH_NESTED_CONTAINER);
@@ -2302,7 +2320,7 @@ Future<Response> Slave::Http::_launchNestedContainer(
 Future<Response> Slave::Http::waitNestedContainer(
     const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::WAIT_NESTED_CONTAINER, call.type());
   CHECK(call.has_wait_nested_container());
@@ -2310,10 +2328,7 @@ Future<Response> Slave::Http::waitNestedContainer(
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::WAIT_NESTED_CONTAINER);
@@ -2379,7 +2394,7 @@ Future<Response> Slave::Http::waitNestedContainer(
 Future<Response> Slave::Http::killNestedContainer(
     const mesos::agent::Call& call,
     ContentType acceptType,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::KILL_NESTED_CONTAINER, call.type());
   CHECK(call.has_kill_nested_container());
@@ -2387,10 +2402,7 @@ Future<Response> Slave::Http::killNestedContainer(
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::KILL_NESTED_CONTAINER);
@@ -2435,6 +2447,67 @@ Future<Response> Slave::Http::killNestedContainer(
           }
           return OK();
         });
+    }));
+}
+
+
+Future<Response> Slave::Http::removeNestedContainer(
+    const mesos::agent::Call& call,
+    ContentType acceptType,
+    const Option<Principal>& principal) const
+{
+  CHECK_EQ(mesos::agent::Call::REMOVE_NESTED_CONTAINER, call.type());
+  CHECK(call.has_remove_nested_container());
+
+  Future<Owned<ObjectApprover>> approver;
+
+  if (slave->authorizer.isSome()) {
+    Option<authorization::Subject> subject = createSubject(principal);
+
+    approver = slave->authorizer.get()->getObjectApprover(
+        subject, authorization::REMOVE_NESTED_CONTAINER);
+  } else {
+    approver = Owned<ObjectApprover>(new AcceptingObjectApprover());
+  }
+
+  return approver.then(defer(slave->self(),
+    [this, call](const Owned<ObjectApprover>& removeApprover)
+        -> Future<Response> {
+      const ContainerID& containerId =
+        call.remove_nested_container().container_id();
+
+      Executor* executor = slave->getExecutor(containerId);
+      if (executor == nullptr) {
+        return OK();
+      }
+
+      Framework* framework = slave->getFramework(executor->frameworkId);
+      CHECK_NOTNULL(framework);
+
+      ObjectApprover::Object object;
+      object.executor_info = &(executor->info);
+      object.framework_info = &(framework->info);
+
+      Try<bool> approved = removeApprover.get()->approved(object);
+
+      if (approved.isError()) {
+        return Failure(approved.error());
+      } else if (!approved.get()) {
+        return Forbidden();
+      }
+
+      Future<Nothing> remove = slave->containerizer->remove(containerId);
+
+      return remove.then(
+          [containerId](const Future<Nothing>& result) -> Response {
+            if (result.isFailed()) {
+              LOG(ERROR) << "Failed to remove nested container " << containerId
+                         << ": " << result.failure();
+              return InternalServerError(result.failure());
+            }
+
+            return OK();
+          });
     }));
 }
 
@@ -2512,7 +2585,7 @@ Future<Response> Slave::Http::attachContainerInput(
     const mesos::agent::Call& call,
     Owned<Reader<mesos::agent::Call>>&& decoder,
     const RequestMediaTypes& mediaTypes,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::ATTACH_CONTAINER_INPUT, call.type());
   CHECK(call.has_attach_container_input());
@@ -2528,10 +2601,7 @@ Future<Response> Slave::Http::attachContainerInput(
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::ATTACH_CONTAINER_INPUT);
@@ -2603,7 +2673,7 @@ Future<Nothing> connect(Pipe::Reader reader, Pipe::Writer writer)
 Future<Response> Slave::Http::launchNestedContainerSession(
     const mesos::agent::Call& call,
     const RequestMediaTypes& mediaTypes,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::LAUNCH_NESTED_CONTAINER_SESSION, call.type());
   CHECK(call.has_launch_nested_container_session());
@@ -2614,10 +2684,7 @@ Future<Response> Slave::Http::launchNestedContainerSession(
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::LAUNCH_NESTED_CONTAINER_SESSION);
@@ -2841,7 +2908,7 @@ Future<Response> Slave::Http::_attachContainerOutput(
 Future<Response> Slave::Http::attachContainerOutput(
     const mesos::agent::Call& call,
     const RequestMediaTypes& mediaTypes,
-    const Option<string>& principal) const
+    const Option<Principal>& principal) const
 {
   CHECK_EQ(mesos::agent::Call::ATTACH_CONTAINER_OUTPUT, call.type());
   CHECK(call.has_attach_container_output());
@@ -2849,10 +2916,7 @@ Future<Response> Slave::Http::attachContainerOutput(
   Future<Owned<ObjectApprover>> approver;
 
   if (slave->authorizer.isSome()) {
-    authorization::Subject subject;
-    if (principal.isSome()) {
-      subject.set_value(principal.get());
-    }
+    Option<authorization::Subject> subject = createSubject(principal);
 
     approver = slave->authorizer.get()->getObjectApprover(
         subject, authorization::ATTACH_CONTAINER_OUTPUT);

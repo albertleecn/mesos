@@ -130,6 +130,13 @@ set(MESOS_TESTS_SRC
   zookeeper_url_tests.cpp
   )
 
+if (ENABLE_SSL)
+  set(MESOS_TESTS_SRC
+    ${MESOS_TESTS_SRC}
+    secret_generator_tests.cpp
+    )
+endif (ENABLE_SSL)
+
 set(MESOS_TESTS_SRC
   ${MESOS_TESTS_SRC}
   common/http_tests.cpp
@@ -170,6 +177,7 @@ if (NOT WIN32)
     slave_recovery_tests.cpp
     state_tests.cpp
     teardown_tests.cpp
+    upgrade_tests.cpp
     )
 
   set(MESOS_TESTS_SRC
@@ -236,8 +244,8 @@ link_directories(${MESOS_TESTS_LIB_DIRS})
 
 # THE TEST AND HELPER EXECUTABLEs (generates, e.g., stout-tests, etc., on Linux).
 #################################$###############################################
-add_executable(${MESOS_TESTS_TARGET} ${MESOS_TESTS_SRC})
-add_executable(${TEST_HELPER_TARGET} ${TEST_HELPER_SRC})
+add_executable(${MESOS_TESTS_TARGET} EXCLUDE_FROM_ALL ${MESOS_TESTS_SRC})
+add_executable(${TEST_HELPER_TARGET} EXCLUDE_FROM_ALL ${TEST_HELPER_SRC})
 
 # ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
 ######################################################

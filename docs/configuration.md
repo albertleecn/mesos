@@ -1513,6 +1513,18 @@ production yet. (default: false)
 </tr>
 <tr>
   <td>
+    --http_heartbeat_interval=VALUE
+  </td>
+  <td>
+This flag sets a heartbeat interval (e.g. '5secs', '10mins') for
+messages to be sent over persistent connections made against
+the agent HTTP API. Currently, this only applies to the
+<code>LAUNCH_NESTED_CONTAINER_SESSION</code> and <code>ATTACH_CONTAINER_OUTPUT</code> calls.
+(default: 30secs)
+  </td>
+</tr>
+<tr>
+  <td>
     --image_providers=VALUE
   </td>
   <td>
@@ -2061,9 +2073,9 @@ quotas for container sandbox directories. Valid project IDs range from
 </table>
 
 
-## Mesos Build Configuration Options
+## Mesos Autotools Build Configuration Options
 
-###The configure script has the following flags for optional features:
+### Autotools `configure` script options
 
 <table class="table table-striped">
   <thead>
@@ -2300,7 +2312,7 @@ quotas for container sandbox directories. Valid project IDs range from
   </tr>
 </table>
 
-### The configure script has the following flags for optional packages:
+### Autotools `configure` script optional package flags
 
 <table class="table table-striped">
   <thead>
@@ -2521,7 +2533,7 @@ quotas for container sandbox directories. Valid project IDs range from
   </tr>
 </table>
 
-### Some influential environment variables for configure script:
+### Environment variables which affect the Autotools `configure` script
 
 Use these variables to override the choices made by `configure` or to help
 it to find libraries and programs with nonstandard names/locations.
