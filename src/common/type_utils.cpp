@@ -462,7 +462,7 @@ bool operator!=(const CheckStatusInfo& left, const CheckStatusInfo& right)
 }
 
 
-ostream& operator<<(std::ostream& stream, const CapabilityInfo& capabilityInfo)
+ostream& operator<<(ostream& stream, const CapabilityInfo& capabilityInfo)
 {
   return stream << JSON::protobuf(capabilityInfo);
 }
@@ -592,6 +592,12 @@ ostream& operator<<(ostream& stream, const vector<TaskID>& taskIds)
   }
   stream << " ]";
   return stream;
+}
+
+
+ostream& operator<<(ostream& stream, const CheckInfo::Type& type)
+{
+  return stream << CheckInfo::Type_Name(type);
 }
 
 

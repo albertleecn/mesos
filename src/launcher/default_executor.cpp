@@ -46,6 +46,7 @@
 #include "checks/health_checker.hpp"
 
 #include "common/http.hpp"
+#include "common/protobuf_utils.hpp"
 #include "common/status_utils.hpp"
 
 #include "internal/devolve.hpp"
@@ -332,6 +333,41 @@ protected:
 
       if (task.has_container()) {
         launch->mutable_container()->CopyFrom(task.container());
+      }
+
+      // Currently, it is not possible to specify resources for nested
+      // containers (i.e., all resources are merged in the top level
+      // executor container). This means that any disk resources used by
+      // the task are mounted on the top level container. As a workaround,
+      // we set up the volume mapping allowing child containers to share
+      // the volumes from their parent containers sandbox.
+      foreach (const Resource& resource, task.resources()) {
+        // Ignore if there are no disk resources or if the
+        // disk resources did not specify a volume mapping.
+        if (!resource.has_disk() || !resource.disk().has_volume()) {
+          continue;
+        }
+
+        // Set `ContainerInfo.type` to 'MESOS' if the task did
+        // not specify a container.
+        if (!task.has_container()) {
+          launch->mutable_container()->set_type(ContainerInfo::MESOS);
+        }
+
+        const Volume& executorVolume = resource.disk().volume();
+
+        Volume* taskVolume = launch->mutable_container()->add_volumes();
+        taskVolume->set_mode(executorVolume.mode());
+        taskVolume->set_container_path(executorVolume.container_path());
+
+        Volume::Source* source = taskVolume->mutable_source();
+        source->set_type(Volume::Source::SANDBOX_PATH);
+
+        Volume::Source::SandboxPath* sandboxPath =
+          source->mutable_sandbox_path();
+
+        sandboxPath->set_type(Volume::Source::SandboxPath::PARENT);
+        sandboxPath->set_path(executorVolume.container_path());
       }
 
       responses.push_back(post(connection.get(), call));
@@ -890,14 +926,14 @@ private:
   {
     UUID uuid = UUID::random();
 
-    TaskStatus status;
-    status.mutable_task_id()->CopyFrom(taskId);
-    status.mutable_executor_id()->CopyFrom(executorId);
+    TaskStatus status = protobuf::createTaskStatus(
+        taskId,
+        state,
+        uuid,
+        Clock::now().secs());
 
-    status.set_state(state);
+    status.mutable_executor_id()->CopyFrom(executorId);
     status.set_source(TaskStatus::SOURCE_EXECUTOR);
-    status.set_uuid(uuid.toBytes());
-    status.set_timestamp(Clock::now().secs());
 
     if (message.isSome()) {
       status.set_message(message.get());

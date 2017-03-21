@@ -47,6 +47,7 @@
 #include <stout/try.hpp>
 #include <stout/unreachable.hpp>
 
+#include <stout/os/constants.hpp>
 #include <stout/os/killtree.hpp>
 
 #include "common/status_utils.hpp"
@@ -92,7 +93,7 @@ static const string DEFAULT_DOMAIN = "127.0.0.1";
 #ifdef __linux__
 // TODO(alexr): Instead of defining this ad-hoc clone function, provide a
 // general solution for entring namespace in child processes, see MESOS-6184.
-pid_t cloneWithSetns(
+static pid_t cloneWithSetns(
     const lambda::function<int()>& func,
     const Option<pid_t>& taskPid,
     const vector<string>& namespaces)

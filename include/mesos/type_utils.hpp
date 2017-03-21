@@ -261,7 +261,9 @@ std::ostream& operator<<(
     std::ostream& stream,
     const ContainerInfo& containerInfo);
 
+
 std::ostream& operator<<(std::ostream& stream, const Environment& environment);
+
 
 std::ostream& operator<<(std::ostream& stream, const ExecutorID& executorId);
 
@@ -302,6 +304,9 @@ std::ostream& operator<<(std::ostream& stream, const TaskState& state);
 std::ostream& operator<<(
     std::ostream& stream,
     const std::vector<TaskID>& taskIds);
+
+
+std::ostream& operator<<(std::ostream& stream, const CheckInfo::Type& type);
 
 
 std::ostream& operator<<(
