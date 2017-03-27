@@ -32,6 +32,8 @@
 
 #include <mesos/agent/agent.hpp>
 
+#include <mesos/authentication/secret_generator.hpp>
+
 #include <mesos/executor/executor.hpp>
 
 #include <mesos/master/detector.hpp>
@@ -186,9 +188,7 @@ public:
       const std::string& data);
 
   void updateFramework(
-      const FrameworkID& frameworkId,
-      const process::UPID& pid,
-      const FrameworkInfo& frameworkInfo);
+      const UpdateFrameworkMessage& message);
 
   void checkpointResources(const std::vector<Resource>& checkpointedResources);
 
@@ -357,6 +357,18 @@ public:
       const std::list<TaskInfo>& tasks,
       const std::list<TaskGroupInfo>& taskGroups);
 
+  process::Future<Secret> generateSecret(
+      const FrameworkID& frameworkId,
+      const ExecutorID& executorId,
+      const ContainerID& containerId);
+
+  // If an executor is launched for a task group, `taskInfo` would not be set.
+  void launchExecutor(
+      const Option<process::Future<Secret>>& future,
+      const FrameworkID& frameworkId,
+      const ExecutorID& executorId,
+      const Option<TaskInfo>& taskInfo);
+
   void fileAttached(const process::Future<Nothing>& result,
                     const std::string& path);
 
@@ -505,7 +517,9 @@ private:
 
     // /api/v1/executor
     process::Future<process::http::Response> executor(
-        const process::http::Request& request) const;
+        const process::http::Request& request,
+        const Option<process::http::authentication::Principal>&
+            principal) const;
 
     // /slave/flags
     process::Future<process::http::Response> flags(
@@ -884,6 +898,10 @@ private:
   // The most recent estimate of the total amount of oversubscribed
   // (allocated and oversubscribable) resources.
   Option<Resources> oversubscribedResources;
+
+protected:
+  // Made protected for testing purposes.
+  mesos::SecretGenerator* secretGenerator;
 };
 
 
@@ -1097,11 +1115,7 @@ struct Framework
 
   ~Framework();
 
-  // If an executor is launched for a task group, `taskInfo` would
-  // not be set.
-  Executor* launchExecutor(
-      const ExecutorInfo& executorInfo,
-      const Option<TaskInfo>& taskInfo);
+  Executor* addExecutor(const ExecutorInfo& executorInfo);
   void destroyExecutor(const ExecutorID& executorId);
   Executor* getExecutor(const ExecutorID& executorId) const;
   Executor* getExecutor(const TaskID& taskId) const;
@@ -1200,6 +1214,7 @@ std::map<std::string, std::string> executorEnvironment(
     const std::string& directory,
     const SlaveID& slaveId,
     const process::PID<Slave>& slavePid,
+    const Option<Secret>& authenticationToken,
     bool checkpoint);
 
 

@@ -31,6 +31,8 @@
 
 #include <mesos/type_utils.hpp>
 
+#include <mesos/authentication/secret_generator.hpp>
+
 #include <mesos/module/authenticatee.hpp>
 
 #include <process/async.hpp>
@@ -63,10 +65,15 @@
 
 #include "authentication/cram_md5/authenticatee.hpp"
 
+#ifdef USE_SSL_SOCKET
+#include "authentication/executor/jwt_secret_generator.hpp"
+#endif // USE_SSL_SOCKET
+
 #include "common/build.hpp"
 #include "common/protobuf_utils.hpp"
 #include "common/resources_utils.hpp"
 #include "common/status_utils.hpp"
+#include "common/validation.hpp"
 
 #include "credentials/credentials.hpp"
 
@@ -97,6 +104,12 @@
 #endif // __WINDOWS__
 
 using google::protobuf::RepeatedPtrField;
+
+using mesos::SecretGenerator;
+
+#ifdef USE_SSL_SOCKET
+using mesos::authentication::executor::JWTSecretGenerator;
+#endif // USE_SSL_SOCKET
 
 using mesos::authorization::createSubject;
 
@@ -175,7 +188,8 @@ Slave::Slave(const string& id,
     executorDirectoryMaxAllowedAge(age(0)),
     resourceEstimator(_resourceEstimator),
     qosController(_qosController),
-    authorizer(_authorizer) {}
+    authorizer(_authorizer),
+    secretGenerator(nullptr) {}
 
 
 Slave::~Slave()
@@ -190,6 +204,8 @@ Slave::~Slave()
   }
 
   delete authenticatee;
+
+  delete secretGenerator;
 }
 
 void Slave::signaled(int signal, int uid)
@@ -260,11 +276,50 @@ void Slave::initialize()
     httpCredentials = credentials.get();
   }
 
+  string httpAuthenticators;
+  if (flags.http_authenticators.isSome()) {
+    httpAuthenticators = flags.http_authenticators.get();
+#ifdef USE_SSL_SOCKET
+  } else if (flags.authenticate_http_executors) {
+    httpAuthenticators =
+      string(DEFAULT_BASIC_HTTP_AUTHENTICATOR) + "," +
+      string(DEFAULT_JWT_HTTP_AUTHENTICATOR);
+#endif // USE_SSL_SOCKET
+  } else {
+    httpAuthenticators = DEFAULT_BASIC_HTTP_AUTHENTICATOR;
+  }
+
+  Option<string> secretKey;
+#ifdef USE_SSL_SOCKET
+  if (flags.executor_secret_key.isSome()) {
+    secretKey = flags.executor_secret_key.get();
+    secretGenerator = new JWTSecretGenerator(secretKey.get());
+  }
+
+  if (flags.authenticate_http_executors) {
+    if (flags.executor_secret_key.isNone()) {
+      EXIT(EXIT_FAILURE) << "--executor_secret_key must be specified when "
+                         << "--authenticate_http_executors is set to true";
+    }
+
+    Try<Nothing> result = initializeHttpAuthenticators(
+        EXECUTOR_HTTP_AUTHENTICATION_REALM,
+        strings::split(httpAuthenticators, ","),
+        httpCredentials,
+        secretKey);
+
+    if (result.isError()) {
+      EXIT(EXIT_FAILURE) << result.error();
+    }
+  }
+#endif // USE_SSL_SOCKET
+
   if (flags.authenticate_http_readonly) {
     Try<Nothing> result = initializeHttpAuthenticators(
         READONLY_HTTP_AUTHENTICATION_REALM,
-        strings::split(flags.http_authenticators, ","),
-        httpCredentials);
+        strings::split(httpAuthenticators, ","),
+        httpCredentials,
+        secretKey);
 
     if (result.isError()) {
       EXIT(EXIT_FAILURE) << result.error();
@@ -274,8 +329,9 @@ void Slave::initialize()
   if (flags.authenticate_http_readwrite) {
     Try<Nothing> result = initializeHttpAuthenticators(
         READWRITE_HTTP_AUTHENTICATION_REALM,
-        strings::split(flags.http_authenticators, ","),
-        httpCredentials);
+        strings::split(httpAuthenticators, ","),
+        httpCredentials,
+        secretKey);
 
     if (result.isError()) {
       EXIT(EXIT_FAILURE) << result.error();
@@ -503,10 +559,7 @@ void Slave::initialize()
       &FrameworkToExecutorMessage::data);
 
   install<UpdateFrameworkMessage>(
-      &Slave::updateFramework,
-      &UpdateFrameworkMessage::framework_id,
-      &UpdateFrameworkMessage::pid,
-      &UpdateFrameworkMessage::framework_info);
+      &Slave::updateFramework);
 
   install<CheckpointResourcesMessage>(
       &Slave::checkpointResources,
@@ -568,10 +621,12 @@ void Slave::initialize()
         options);
 
   route("/api/v1/executor",
+        EXECUTOR_HTTP_AUTHENTICATION_REALM,
         Http::EXECUTOR_HELP(),
-        [this](const process::http::Request& request) {
+        [this](const process::http::Request& request,
+               const Option<Principal>& principal) {
           Http::log(request);
-          return http.executor(request);
+          return http.executor(request, principal);
         });
 
   // TODO(ijimenez): Remove this endpoint at the end of the
@@ -2131,9 +2186,24 @@ void Slave::__run(
   Executor* executor = framework->getExecutor(executorId);
 
   if (executor == nullptr) {
-    executor = framework->launchExecutor(
-        executorInfo,
-        taskGroup.isNone() ? task.get() : Option<TaskInfo>::none());
+    executor = framework->addExecutor(executorInfo);
+
+    if (secretGenerator) {
+      generateSecret(framework->id(), executor->id, executor->containerId)
+        .onAny(defer(
+            self(),
+            &Self::launchExecutor,
+            lambda::_1,
+            frameworkId,
+            executorId,
+            taskGroup.isNone() ? task.get() : Option<TaskInfo>::none()));
+    } else {
+      launchExecutor(
+          None(),
+          frameworkId,
+          executorId,
+          taskGroup.isNone() ? task.get() : Option<TaskInfo>::none());
+    }
   }
 
   CHECK_NOTNULL(executor);
@@ -2251,7 +2321,7 @@ void Slave::__run(
   }
 
   // We don't perform the checks for 'removeFramework' here since
-  // we're guaranteed by 'launchExecutor' that 'framework->executors'
+  // we're guaranteed by 'addExecutor' that 'framework->executors'
   // will be non-empty.
   CHECK(!framework->executors.empty());
 }
@@ -2458,6 +2528,213 @@ void Slave::___run(
 
     executor->send(event);
   }
+}
+
+
+// Generates a secret for executor authentication.
+Future<Secret> Slave::generateSecret(
+    const FrameworkID& frameworkId,
+    const ExecutorID& executorId,
+    const ContainerID& containerId)
+{
+  Principal principal(
+      Option<string>::none(),
+      {
+        {"fid", frameworkId.value()},
+        {"eid", executorId.value()},
+        {"cid", containerId.value()}
+      });
+
+  return secretGenerator->generate(principal)
+    .then([](const Secret& secret) -> Future<Secret> {
+      Option<Error> error = common::validation::validateSecret(secret);
+
+      if (error.isSome()) {
+        return Failure(
+            "Failed to validate generated secret: " + error->message);
+      } else if (secret.type() != Secret::VALUE) {
+        return Failure(
+            "Expecting generated secret to be of VALUE type instead of " +
+            stringify(secret.type()) + " type; " +
+            "only VALUE type secrets are supported at this time");
+      }
+
+      return secret;
+    });
+}
+
+
+// Launches an executor which was previously created.
+void Slave::launchExecutor(
+    const Option<Future<Secret>>& future,
+    const FrameworkID& frameworkId,
+    const ExecutorID& executorId,
+    const Option<TaskInfo>& taskInfo)
+{
+  Framework* framework = getFramework(frameworkId);
+  if (framework == nullptr) {
+    LOG(WARNING) << "Ignoring launching executor '" << executorId
+                 << "' because the framework " << frameworkId
+                 << " does not exist";
+    return;
+  }
+
+  if (framework->state == Framework::TERMINATING) {
+    LOG(WARNING) << "Ignoring launching executor '" << executorId
+                 << "' of framework " << frameworkId
+                 << " because the framework is terminating";
+    return;
+  }
+
+  Executor* executor = framework->getExecutor(executorId);
+  if (executor == nullptr) {
+    LOG(WARNING) << "Ignoring launching executor '" << executorId
+                 << "' of framework " << frameworkId
+                 << " because the executor does not exist";
+    return;
+  }
+
+  if (executor->state == Executor::TERMINATING ||
+      executor->state == Executor::TERMINATED) {
+    string executorState;
+    if (executor->state == Executor::TERMINATING) {
+      executorState = "terminating";
+    } else {
+      executorState = "terminated";
+    }
+
+    LOG(WARNING) << "Ignoring launching executor " << *executor
+                 << " in container " << executor->containerId
+                 << " because the executor is " << executorState;
+
+    // The framework may have shutdown this executor already, transitioning it
+    // to the TERMINATING/TERMINATED state. However, the executor still exists
+    // in the agent's map, so we must send status updates for any queued tasks
+    // and perform cleanup via `executorTerminated`.
+    ContainerTermination termination;
+    termination.set_state(TASK_FAILED);
+    termination.add_reasons(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
+    termination.set_message("Executor " + executorState);
+
+    executorTerminated(frameworkId, executorId, termination);
+
+    return;
+  }
+
+  CHECK_EQ(Executor::REGISTERING, executor->state);
+
+  Option<Secret> authenticationToken;
+
+  if (future.isSome()) {
+    if (!future->isReady()) {
+      LOG(ERROR) << "Failed to launch executor " << *executor
+                 << " in container " << executor->containerId
+                 << " because secret generation failed: "
+                 << (future->isFailed() ? future->failure() : "discarded");
+
+      ContainerTermination termination;
+      termination.set_state(TASK_FAILED);
+      termination.add_reasons(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
+      termination.set_message(
+          "Secret generation failed: " +
+          (future->isFailed() ? future->failure() : "discarded"));
+
+      executorTerminated(frameworkId, executorId, termination);
+
+      return;
+    }
+
+    authenticationToken = future->get();
+  }
+
+  // Tell the containerizer to launch the executor.
+  ExecutorInfo executorInfo_ = executor->info;
+
+  // Populate the command info for default executor. We modify the ExecutorInfo
+  // to avoid resetting command info upon re-registering with the master since
+  // the master doesn't store them; they are generated by the slave.
+  if (executorInfo_.has_type() &&
+      executorInfo_.type() == ExecutorInfo::DEFAULT) {
+    CHECK(!executorInfo_.has_command());
+
+    executorInfo_.mutable_command()->CopyFrom(
+        defaultExecutorCommandInfo(flags.launcher_dir, executor->user));
+  }
+
+  Resources resources = executorInfo_.resources();
+
+  // NOTE: We modify the ExecutorInfo to include the task's
+  // resources when launching the executor so that the containerizer
+  // has non-zero resources to work with when the executor has
+  // no resources. This should be revisited after MESOS-600.
+  if (taskInfo.isSome()) {
+    resources += taskInfo->resources();
+  }
+
+  executorInfo_.mutable_resources()->CopyFrom(resources);
+
+  // Prepare environment variables for the executor.
+  map<string, string> environment = executorEnvironment(
+      flags,
+      executorInfo_,
+      executor->directory,
+      info.id(),
+      self(),
+      authenticationToken,
+      framework->info.checkpoint());
+
+  // Launch the container.
+  Future<bool> launch;
+  if (!executor->isCommandExecutor()) {
+    // If the executor is _not_ a command executor, this means that
+    // the task will include the executor to run. The actual task to
+    // run will be enqueued and subsequently handled by the executor
+    // when it has registered to the slave.
+    launch = containerizer->launch(
+        executor->containerId,
+        None(),
+        executorInfo_,
+        executor->directory,
+        executor->user,
+        info.id(),
+        environment,
+        framework->info.checkpoint());
+  } else {
+    // An executor has _not_ been provided by the task and will
+    // instead define a command and/or container to run. Right now,
+    // these tasks will require an executor anyway and the slave
+    // creates a command executor. However, it is up to the
+    // containerizer how to execute those tasks and the generated
+    // executor info works as a placeholder.
+    // TODO(nnielsen): Obsolete the requirement for executors to run
+    // one-off tasks.
+    launch = containerizer->launch(
+        executor->containerId,
+        taskInfo,
+        executorInfo_,
+        executor->directory,
+        executor->user,
+        info.id(),
+        environment,
+        framework->info.checkpoint());
+  }
+
+  launch.onAny(defer(self(),
+                     &Self::executorLaunched,
+                     frameworkId,
+                     executor->id,
+                     executor->containerId,
+                     lambda::_1));
+
+  // Make sure the executor registers within the given timeout.
+  delay(flags.executor_registration_timeout,
+        self(),
+        &Self::registerExecutorTimeout,
+        frameworkId,
+        executor->id,
+        executor->containerId);
+
+  return;
 }
 
 
@@ -2877,13 +3154,14 @@ void Slave::schedulerMessage(
 
 
 void Slave::updateFramework(
-    const FrameworkID& frameworkId,
-    const UPID& pid,
-    const FrameworkInfo& frameworkInfo)
+    const UpdateFrameworkMessage& message)
 {
   CHECK(state == RECOVERING || state == DISCONNECTED ||
         state == RUNNING || state == TERMINATING)
     << state;
+
+  const FrameworkID& frameworkId = message.framework_id();
+  const UPID& pid = message.pid();
 
   if (state != RUNNING) {
     LOG(WARNING) << "Dropping updateFramework message for " << frameworkId
@@ -2906,11 +3184,15 @@ void Slave::updateFramework(
       break;
     case Framework::RUNNING: {
       LOG(INFO) << "Updating info for framework " << frameworkId
-                << (pid != UPID() ? "with pid updated to " + stringify(pid)
+                << (pid != UPID() ? " with pid updated to " + stringify(pid)
                                   : "");
 
-      framework->info.CopyFrom(frameworkInfo);
-      framework->capabilities = frameworkInfo.capabilities();
+      // The framework info was added in 1.3, so it will not be set
+      // if from a master older than 1.3.
+      if (message.has_framework_info()) {
+        framework->info.CopyFrom(message.framework_info());
+        framework->capabilities = message.framework_info().capabilities();
+      }
 
       if (pid == UPID()) {
         framework->pid = None();
@@ -4799,7 +5081,8 @@ void Slave::executorLaunched(
 }
 
 
-// Called by the isolator when an executor process terminates.
+// Called by the isolator when an executor process terminates, and by
+// `Slave::launchExecutor` when executor secret generation fails.
 void Slave::executorTerminated(
     const FrameworkID& frameworkId,
     const ExecutorID& executorId,
@@ -6536,10 +6819,7 @@ Framework::~Framework()
 }
 
 
-// Create and launch an executor.
-Executor* Framework::launchExecutor(
-    const ExecutorInfo& executorInfo,
-    const Option<TaskInfo>& taskInfo)
+Executor* Framework::addExecutor(const ExecutorInfo& executorInfo)
 {
   // Verify that Resource.AllocationInfo is set, if coming
   // from a MULTI_ROLE master this will be set, otherwise
@@ -6549,9 +6829,9 @@ Executor* Framework::launchExecutor(
   }
 
   // Generate an ID for the executor's container.
-  // TODO(idownes) This should be done by the containerizer but we
-  // need the ContainerID to create the executor's directory. Fix
-  // this when 'launchExecutor()' is handled asynchronously.
+  // TODO(idownes) This should be done by the containerizer but we need the
+  // ContainerID to create the executor's directory and generate the secret.
+  // Consider fixing this since 'launchExecutor()' is handled asynchronously.
   ContainerID containerId;
   containerId.set_value(UUID::random().toString());
 
@@ -6623,92 +6903,6 @@ Executor* Framework::launchExecutor(
 
   slave->files->attach(executor->directory, executor->directory, authorize)
     .onAny(defer(slave, &Slave::fileAttached, lambda::_1, executor->directory));
-
-  // Tell the containerizer to launch the executor.
-  ExecutorInfo executorInfo_ = executor->info;
-
-  // Populate the command info for default executor. We modify the ExecutorInfo
-  // to avoid resetting command info upon re-registering with the master since
-  // the master doesn't store them; they are generated by the slave.
-  if (executorInfo_.has_type() &&
-      executorInfo_.type() == ExecutorInfo::DEFAULT) {
-    CHECK(!executorInfo_.has_command());
-
-    executorInfo_.mutable_command()->CopyFrom(
-        defaultExecutorCommandInfo(slave->flags.launcher_dir, user));
-  }
-
-  Resources resources = executorInfo_.resources();
-
-  // NOTE: We modify the ExecutorInfo to include the task's
-  // resources when launching the executor so that the containerizer
-  // has non-zero resources to work with when the executor has
-  // no resources. This should be revisited after MESOS-600.
-  if (taskInfo.isSome()) {
-    resources += taskInfo->resources();
-  }
-
-  executorInfo_.mutable_resources()->CopyFrom(resources);
-
-  // Prepare environment variables for the executor.
-  map<string, string> environment = executorEnvironment(
-      slave->flags,
-      executorInfo_,
-      executor->directory,
-      slave->info.id(),
-      slave->self(),
-      info.checkpoint());
-
-  // Launch the container.
-  Future<bool> launch;
-  if (!executor->isCommandExecutor()) {
-    // If the executor is _not_ a command executor, this means that
-    // the task will include the executor to run. The actual task to
-    // run will be enqueued and subsequently handled by the executor
-    // when it has registered to the slave.
-    launch = slave->containerizer->launch(
-        containerId,
-        None(),
-        executorInfo_,
-        executor->directory,
-        user,
-        slave->info.id(),
-        environment,
-        info.checkpoint());
-  } else {
-    // An executor has _not_ been provided by the task and will
-    // instead define a command and/or container to run. Right now,
-    // these tasks will require an executor anyway and the slave
-    // creates a command executor. However, it is up to the
-    // containerizer how to execute those tasks and the generated
-    // executor info works as a placeholder.
-    // TODO(nnielsen): Obsolete the requirement for executors to run
-    // one-off tasks.
-    launch = slave->containerizer->launch(
-        containerId,
-        taskInfo,
-        executorInfo_,
-        executor->directory,
-        user,
-        slave->info.id(),
-        environment,
-        info.checkpoint());
-  }
-
-  launch.onAny(defer(slave,
-                     &Slave::executorLaunched,
-                     id(),
-                     executor->id,
-                     containerId,
-                     lambda::_1));
-
-  // Make sure the executor registers within the given timeout.
-  delay(slave->flags.executor_registration_timeout,
-        slave,
-        &Slave::registerExecutorTimeout,
-        id(),
-        executor->id,
-        containerId);
 
   return executor;
 }
@@ -7286,6 +7480,7 @@ map<string, string> executorEnvironment(
     const string& directory,
     const SlaveID& slaveId,
     const PID<Slave>& slavePid,
+    const Option<Secret>& authenticationToken,
     bool checkpoint)
 {
   map<string, string> environment;
@@ -7376,6 +7571,13 @@ map<string, string> executorEnvironment(
     // retries when disconnected.
     environment["MESOS_SUBSCRIPTION_BACKOFF_MAX"] =
       stringify(EXECUTOR_REREGISTER_TIMEOUT);
+  }
+
+  if (authenticationToken.isSome()) {
+    CHECK(authenticationToken->has_value());
+
+    environment["MESOS_EXECUTOR_AUTHENTICATION_TOKEN"] =
+      authenticationToken->value().data();
   }
 
   if (HookManager::hooksAvailable()) {

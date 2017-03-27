@@ -251,6 +251,8 @@ public:
       // the run future.
     }));
 
+    inspect.onReady(defer(self(), &Self::launchCheck, task));
+
     inspect.onReady(
         defer(self(), &Self::launchHealthCheck, containerName, task));
   }
@@ -397,7 +399,7 @@ private:
 
       // Stop health checking the task.
       if (checker.get() != nullptr) {
-        checker->stop();
+        checker->pause();
       }
 
       // TODO(bmahler): Replace this with 'docker kill' so
@@ -413,7 +415,7 @@ private:
 
     // Stop health checking the task.
     if (checker.get() != nullptr) {
-      checker->stop();
+      checker->pause();
     }
 
     // In case the stop is stuck, discard it.
@@ -498,6 +500,12 @@ private:
     // an ack.
     os::sleep(Seconds(1));
     driver.get()->stop();
+  }
+
+  void launchCheck(const TaskInfo& task)
+  {
+    // TODO(alexr): Implement general checks support, see MESOS-7250.
+    CHECK(!task.has_check()) << "Docker executor does not support checks yet";
   }
 
   void launchHealthCheck(const string& containerName, const TaskInfo& task)
@@ -724,8 +732,6 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
 
-  std::cout << stringify(flags) << std::endl;
-
   mesos::internal::logging::initialize(argv[0], flags, true); // Catch signals.
 
   // Log any flag warnings (after logging is initialized).
@@ -733,12 +739,12 @@ int main(int argc, char** argv)
     LOG(WARNING) << warning.message;
   }
 
+  VLOG(1) << stringify(flags);
+
   if (flags.help) {
     cout << flags.usage() << endl;
     return EXIT_SUCCESS;
   }
-
-  std::cout << stringify(flags) << std::endl;
 
   if (flags.docker.isNone()) {
     cerr << flags.usage("Missing required option --docker") << endl;

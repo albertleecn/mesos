@@ -251,6 +251,11 @@ std::ostream& operator<<(
     const CapabilityInfo& capabilityInfo);
 
 
+std::ostream& operator<<(
+    std::ostream& stream,
+    const CheckStatusInfo& checkStatusInfo);
+
+
 std::ostream& operator<<(std::ostream& stream, const CommandInfo& commandInfo);
 
 
@@ -315,6 +320,9 @@ std::ostream& operator<<(
 
 
 std::ostream& operator<<(std::ostream& stream, const Image::Type& imageType);
+
+
+std::ostream& operator<<(std::ostream& stream, const Secret::Type& secretType);
 
 
 std::ostream& operator<<(std::ostream& stream, const RLimitInfo& rlimitInfo);
