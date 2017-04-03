@@ -144,7 +144,7 @@ public:
                 const SlaveID& _slaveId,
                 const PID<Master>& _master,
                 const Option<shared_ptr<RateLimiter>>& _limiter,
-                const shared_ptr<Metrics> _metrics,
+                const shared_ptr<Metrics>& _metrics,
                 const Duration& _slavePingTimeout,
                 const size_t _maxSlavePingTimeouts)
     : ProcessBase(process::ID::generate("slave-observer")),
@@ -382,7 +382,7 @@ struct BoundedRateLimiter
 };
 
 
-bool Framework::isTrackedUnderRole(const std::string& role) const
+bool Framework::isTrackedUnderRole(const string& role) const
 {
   CHECK(master->isWhitelistedRole(role))
     << "Unknown role '" << role << "'" << " of framework " << *this;
@@ -391,7 +391,7 @@ bool Framework::isTrackedUnderRole(const std::string& role) const
          master->roles.at(role)->frameworks.contains(id());
 }
 
-void Framework::trackUnderRole(const std::string& role)
+void Framework::trackUnderRole(const string& role)
 {
   CHECK(master->isWhitelistedRole(role))
     << "Unknown role '" << role << "'" << " of framework " << *this;
@@ -406,7 +406,7 @@ void Framework::trackUnderRole(const std::string& role)
   master->roles.at(role)->addFramework(this);
 }
 
-void Framework::untrackUnderRole(const std::string& role)
+void Framework::untrackUnderRole(const string& role)
 {
   CHECK(master->isWhitelistedRole(role))
     << "Unknown role '" << role << "'" << " of framework " << *this;
@@ -9017,8 +9017,8 @@ Slave::Slave(
     const vector<SlaveInfo::Capability>& _capabilites,
     const Time& _registeredTime,
     const Resources& _checkpointedResources,
-    const vector<ExecutorInfo> executorInfos,
-    const vector<Task> tasks)
+    const vector<ExecutorInfo>& executorInfos,
+    const vector<Task>& tasks)
   : master(_master),
     id(_info.id()),
     info(_info),
