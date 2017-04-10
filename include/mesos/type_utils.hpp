@@ -309,6 +309,9 @@ std::ostream& operator<<(
     const ResourceProviderID& resourceProviderId);
 
 
+std::ostream& operator<<(std::ostream& stream, const RLimitInfo& rlimitInfo);
+
+
 std::ostream& operator<<(std::ostream& stream, const SlaveID& slaveId);
 
 
@@ -344,9 +347,6 @@ std::ostream& operator<<(std::ostream& stream, const Image::Type& imageType);
 
 
 std::ostream& operator<<(std::ostream& stream, const Secret::Type& secretType);
-
-
-std::ostream& operator<<(std::ostream& stream, const RLimitInfo& rlimitInfo);
 
 
 template <typename T>
@@ -592,6 +592,22 @@ struct hash<mesos::MachineID>
     size_t seed = 0;
     boost::hash_combine(seed, strings::lower(machineId.hostname()));
     boost::hash_combine(seed, machineId.ip());
+    return seed;
+  }
+};
+
+
+template <>
+struct hash<mesos::ResourceProviderID>
+{
+  typedef size_t result_type;
+
+  typedef mesos::ResourceProviderID argument_type;
+
+  result_type operator()(const argument_type& resourceProviderId) const
+  {
+    size_t seed = 0;
+    boost::hash_combine(seed, resourceProviderId.value());
     return seed;
   }
 };
