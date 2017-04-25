@@ -16,6 +16,19 @@ This release contains the following new features:
     (e.g. new employees join, new teams are formed, employees leave, teams
     are disbanded, etc).
 
+  * [MESOS-6365] - Authentication and authorization support for HTTP executors.
+    A new `--authenticate_http_executors` agent flag enables required
+    authentication on the HTTP executor API. A new `--executor_secret_key` flag
+    sets a key file to be used when generating and authenticating default tokens
+    that are passed to HTTP executors. Note that enabling these flags after
+    upgrade is disruptive to HTTP executors that were launched before the
+    upgrade; see 'docs/authentication.md' for more information on these flags
+    and the recommended upgrade procedure. Implicit authorization rules have
+    been added which allow an authenticated executor to make executor API calls
+    as that executor and make operator API calls which affect that executor's
+    container. See 'docs/authorization.md' for more information on these
+    implicit authorization rules.
+
 Deprecations:
   * [MESOS-7259] - Remove deprecated ACLs `SetQuota` and `RemoveQuota`
     This change is only applicable to the local authorizer since internally
@@ -42,6 +55,7 @@ All Issues:
   * [MESOS-7350] - Failed to pull image from Nexus Registry due to signature missing.
   * [MESOS-5028] - Copy provisioner cannot replace directory with symlink.
   * [MESOS-7346] - Agent crashes if the task name is too long.
+  * [MESOS-7400] - The mesos crashes due to an incorrect invariant check in the decoder.
 
 
 Release Notes - Mesos - Version 1.2.0
@@ -492,6 +506,7 @@ All Issues:
   * [MESOS-7383] - Docker executor logs possibly sensitive parameters.
   * [MESOS-7350] - Failed to pull image from Nexus Registry due to signature missing.
   * [MESOS-5028] - Copy provisioner cannot replace directory with symlink.
+  * [MESOS-7422] - Docker containerizer should not leak possibly sensitive data to agent log.
 
 
 Release Notes - Mesos - Version 1.1.1
@@ -942,6 +957,7 @@ All Issues:
     * [MESOS-7265] - Containerizer startup may cause sensitive data to leak into sandbox logs.
     * [MESOS-7366] - Agent sandbox gc could accidentally delete the entire persistent volume content.
     * [MESOS-7383] - Docker executor logs possibly sensitive parameters.
+    * [MESOS-7422] - Docker containerizer should not leak possibly sensitive data to agent log.
 
 
 Release Notes - Mesos - Version 1.0.3
