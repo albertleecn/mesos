@@ -350,6 +350,34 @@ bool operator==(const MasterInfo& left, const MasterInfo& right)
 
 
 bool operator==(
+    const ResourceProviderInfo& left,
+    const ResourceProviderInfo& right)
+{
+  if (left.id() != right.id()) {
+    return false;
+  }
+
+  if (Attributes(left.attributes()) != Attributes(right.attributes())) {
+    return false;
+  }
+
+  if (Resources(left.resources()) != Resources(right.resources())) {
+    return false;
+  }
+
+  return true;
+}
+
+
+bool operator!=(
+    const ResourceProviderInfo& left,
+    const ResourceProviderInfo& right)
+{
+  return !(left == right);
+}
+
+
+bool operator==(
     const ResourceStatistics& left,
     const ResourceStatistics& right)
 {
@@ -465,6 +493,12 @@ bool operator!=(const CheckStatusInfo& left, const CheckStatusInfo& right)
 ostream& operator<<(ostream& stream, const CapabilityInfo& capabilityInfo)
 {
   return stream << JSON::protobuf(capabilityInfo);
+}
+
+
+ostream& operator<<(ostream& stream, const DeviceWhitelist& deviceWhitelist)
+{
+  return stream << JSON::protobuf(deviceWhitelist);
 }
 
 

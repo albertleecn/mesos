@@ -2374,6 +2374,17 @@ Future<Response> Master::Http::slaves(
                 }
               });
 
+
+          Resources unreservedResources = slave->totalResources.unreserved();
+
+          writer->field(
+              "unreserved_resources_full",
+              [&unreservedResources](JSON::ArrayWriter* writer) {
+                foreach (const Resource& resource, unreservedResources) {
+                  writer->element(JSON::Protobuf(resource));
+                }
+              });
+
           Resources usedResources = Resources::sum(slave->usedResources);
 
           writer->field(
@@ -4863,9 +4874,13 @@ Future<Response> Master::Http::_operation(
     totalRecovered += recovered;
     required -= recovered;
 
-    // We explicitly pass 'Filters()' which has a default 'refuse_sec'
-    // of 5 seconds rather than 'None()' here, so that we can
-    // virtually always win the race against 'allocate'.
+    // We explicitly pass 'Filters()' which has a default 'refuse_seconds'
+    // of 5 seconds rather than 'None()' here, so that we can virtually
+    // always win the race against 'allocate' if these resources are to
+    // be offered back to these frameworks.
+    // NOTE: However it's entirely possible that these resources are
+    // offered to other frameworks in the next 'allocate' and the filter
+    // cannot prevent it.
     master->allocator->recoverResources(
         offer->framework_id(),
         offer->slave_id(),
