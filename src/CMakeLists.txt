@@ -197,6 +197,7 @@ set(AGENT_SRC
 if (NOT WIN32)
   set(AGENT_SRC
     ${AGENT_SRC}
+    slave/containerizer/mesos/isolators/environment_secret.cpp
     slave/containerizer/mesos/isolators/docker/volume/driver.cpp
     slave/containerizer/mesos/isolators/docker/volume/paths.cpp
     slave/containerizer/mesos/isolators/filesystem/posix.cpp
@@ -320,6 +321,7 @@ set(LINUX_SRC
   slave/containerizer/mesos/isolators/namespaces/pid.cpp
   slave/containerizer/mesos/isolators/network/cni/cni.cpp
   slave/containerizer/mesos/isolators/volume/image.cpp
+  slave/containerizer/mesos/isolators/volume/secret.cpp
   slave/containerizer/mesos/provisioner/backends/aufs.cpp
   slave/containerizer/mesos/provisioner/backends/bind.cpp
   slave/containerizer/mesos/provisioner/backends/overlay.cpp
@@ -400,6 +402,10 @@ set(SCHEDULER_SRC
   scheduler/scheduler.cpp
   )
 
+set(SECRET_SRC
+  secret/resolver.cpp
+  )
+
 set(STATE_SRC
   ${STATE_SRC}
   state/in_memory.cpp
@@ -449,6 +455,7 @@ set(WATCHER_SRC
 
 set(WIN32_SRC
   ${WIN32_SRC}
+  slave/containerizer/mesos/isolators/environment_secret.cpp
   slave/containerizer/mesos/isolators/filesystem/posix.cpp
   slave/containerizer/mesos/isolators/filesystem/windows.cpp
   )
@@ -480,6 +487,7 @@ set(MESOS_SRC
   ${MODULE_SRC}
   ${OCI_SRC}
   ${SCHEDULER_SRC}
+  ${SECRET_SRC}
   ${STATE_SRC}
   ${URI_SRC}
   ${USAGE_SRC}

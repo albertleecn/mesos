@@ -378,7 +378,10 @@ public:
     : ProcessBase(process::ID::generate("docker-fetcher-plugin")),
       auths(_auths) {}
 
-  Future<Nothing> fetch(const URI& uri, const string& directory);
+  Future<Nothing> fetch(
+      const URI& uri,
+      const string& directory,
+      const Option<string>& data);
 
 private:
   Future<Nothing> _fetch(
@@ -489,19 +492,22 @@ string DockerFetcherPlugin::name() const
 
 Future<Nothing> DockerFetcherPlugin::fetch(
     const URI& uri,
-    const string& directory) const
+    const string& directory,
+    const Option<string>& data) const
 {
   return dispatch(
       process.get(),
       &DockerFetcherPluginProcess::fetch,
       uri,
-      directory);
+      directory,
+      data);
 }
 
 
 Future<Nothing> DockerFetcherPluginProcess::fetch(
     const URI& uri,
-    const string& directory)
+    const string& directory,
+    const Option<string>& data)
 {
   // TODO(gilbert): Convert the `uri` to ::docker::spec::ImageReference
   // and pass it all the way down to avoid the complicated URI conversion
@@ -527,8 +533,25 @@ Future<Nothing> DockerFetcherPluginProcess::fetch(
         directory + "': " + mkdir.error());
   }
 
+  hashmap<string, spec::Config::Auth> _auths;
+
+  // 'data' is expected as a docker config in JSON format.
+  if (data.isSome()) {
+    Try<hashmap<string, spec::Config::Auth>> secretAuths =
+      spec::parseAuthConfig(data.get());
+
+    if (secretAuths.isError()) {
+      return Failure("Failed to parse docker config: " + secretAuths.error());
+    }
+
+    _auths = secretAuths.get();
+  }
+
+  // The 'secretAuths' takes the precedence over the default auths.
+  _auths.insert(auths.begin(), auths.end());
+
   // Use the 'Basic' credential to pull the manifest/blob by default.
-  http::Headers basicAuthHeaders = getAuthHeaderBasic(uri, auths);
+  http::Headers basicAuthHeaders = getAuthHeaderBasic(uri, _auths);
 
   if (uri.scheme() == "docker-blob") {
     return fetchBlob(uri, directory, basicAuthHeaders);
