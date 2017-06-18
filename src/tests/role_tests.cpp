@@ -847,6 +847,16 @@ TEST_F(RoleTest, Validate)
 }
 
 
+TEST_F(RoleTest, isStrictSubroleOf)
+{
+  EXPECT_TRUE(roles::isStrictSubroleOf("foo/bar", "foo"));
+  EXPECT_TRUE(roles::isStrictSubroleOf("foo/bar/baz", "foo"));
+  EXPECT_FALSE(roles::isStrictSubroleOf("foo", "foo"));
+  EXPECT_FALSE(roles::isStrictSubroleOf("bar", "foo"));
+  EXPECT_FALSE(roles::isStrictSubroleOf("foobar", "foo"));
+}
+
+
 // Testing get without authentication and with bad credentials.
 TEST_F(RoleTest, EndpointBadAuthentication)
 {
@@ -901,7 +911,7 @@ TEST_F(RoleTest, EndpointBadAuthentication)
 TEST_F_TEMP_DISABLED_ON_WINDOWS(RoleTest, VolumesInOverlappingHierarchies)
 {
   constexpr char PATH[] = "path";
-  constexpr Megabytes DISK_SIZE(1);
+  constexpr Bytes DISK_SIZE = Megabytes(1);
 
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);

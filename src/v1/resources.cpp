@@ -510,19 +510,19 @@ static Option<Error> validateCommandLineResources(const Resources& resources)
           "Persistent volumes cannot be specified at the command line");
     } else if (Resources::isRevocable(resource)) {
       return Error(
-          "Revocable resources cannot be specified at the command line; do "
-          "not include a 'revocable' key in the resources JSON");
+          "Revocable resources cannot be specified at the command line; do"
+          " not include a 'revocable' key in the resources JSON");
     } else if (Resources::isDynamicallyReserved(resource)) {
       return Error(
-          "Dynamic reservations cannot be specified at the command line; "
-          "do not include a 'reservation' key in the resources JSON");
+          "Dynamic reservations cannot be specified at the command line; do"
+          " not include a reservation with DYNAMIC type in the resources JSON");
     }
 
     if (nameTypes.contains(resource.name()) &&
         nameTypes[resource.name()] != resource.type()) {
       return Error(
-          "Resources with the same name ('" + resource.name() + "') but "
-          "different types are not allowed");
+          "Resources with the same name ('" + resource.name() + "') but"
+          " different types are not allowed");
     } else if (!nameTypes.contains(resource.name())) {
       nameTypes[resource.name()] = resource.type();
     }
@@ -837,16 +837,73 @@ Option<Error> Resources::validate(const Resource& resource)
     }
   }
 
-  // Checks for the invalid state of (role, reservation) pair.
-  if (resource.role() == "*" && resource.has_reservation()) {
+  if (resource.has_reservation() && resource.reservations_size() > 0) {
     return Error(
-        "Invalid reservation: role \"*\" cannot be dynamically reserved");
+        "Invalid reservation: only one of 'reservation' or 'reservations'"
+        " may be present");
   }
 
   // Check role name.
   Option<Error> error = roles::validate(resource.role());
   if (error.isSome()) {
     return error;
+  }
+
+  if (resource.has_reservation()) {
+    if (resource.reservation().has_type()) {
+      return Error(
+          "'Resource.ReservationInfo.type' must not be set for the"
+          " 'Resource.reservation' field");
+    }
+
+    if (resource.reservation().has_role()) {
+      return Error(
+          "'Resource.ReservationInfo.role' must not be set for the"
+          " 'Resource.reservation' field");
+    }
+
+    // Checks for the invalid state of (role, reservation) pair.
+    if (resource.role() == "*") {
+      return Error(
+          "Invalid reservation: role \"*\" cannot be dynamically reserved");
+    }
+  }
+
+  // Validate all of the roles in `reservations`.
+  foreach (
+      const Resource::ReservationInfo& reservation, resource.reservations()) {
+    Option<Error> error = roles::validate(reservation.role());
+    if (error.isSome()) {
+      return error;
+    }
+
+    if (reservation.role() == "*") {
+      return Error("Invalid reservation: role \"*\" cannot be reserved");
+    }
+  }
+
+  if (resource.reservations_size() > 0) {
+    string ancestor = resource.reservations(0).role();
+
+    for (int i = 1; i < resource.reservations_size(); ++i) {
+      const Resource::ReservationInfo& reservation = resource.reservations(i);
+
+      if (reservation.type() == Resource::ReservationInfo::STATIC) {
+        return Error(
+            "Invalid refined reservation: A refined reservation"
+            " cannot be STATIC");
+      }
+
+      const string& descendant = reservation.role();
+
+      if (!roles::isStrictSubroleOf(descendant, ancestor)) {
+        return Error(
+            "Invalid refined reservation: role '" + descendant + "'" +
+            " is not a refinement of '" + ancestor + "'");
+      }
+
+      ancestor = descendant;
+    }
   }
 
   // Check that shareability is enabled for supported resource types.
@@ -919,15 +976,9 @@ bool Resources::isAllocatableTo(
     const Resource& resource,
     const std::string& role)
 {
-  if (isUnreserved(resource)) {
-    return true;
-  }
-
-  const vector<string> path = strings::tokenize(role, "/");
-  const vector<string> prefix = strings::tokenize(resource.role(), "/");
-
-  return path.size() >= prefix.size() &&
-         std::equal(prefix.begin(), prefix.end(), path.begin());
+  return isUnreserved(resource) ||
+         role == resource.role() ||
+         roles::isStrictSubroleOf(role, resource.role());
 }
 
 
@@ -1278,6 +1329,48 @@ Resources Resources::flatten() const
   Try<Resources> flattened = flatten("*");
   CHECK_SOME(flattened);
   return flattened.get();
+}
+
+
+Resources Resources::pushReservation(
+    const Resource::ReservationInfo& reservation) const
+{
+  Resources result;
+
+  foreach (Resource_ resource_, *this) {
+    resource_.resource.add_reservations()->CopyFrom(reservation);
+    CHECK_NONE(Resources::validate(resource_.resource));
+    result.add(resource_);
+  }
+
+  return result;
+}
+
+
+Resources Resources::popReservation() const
+{
+  Resources result;
+
+  foreach (Resource_ resource_, resources) {
+    CHECK_GE(resource_.resource.reservations_size(), 0);
+    resource_.resource.mutable_reservations()->RemoveLast();
+    result.add(resource_);
+  }
+
+  return result;
+}
+
+
+Resources Resources::toUnreserved() const
+{
+  Resources result;
+
+  foreach (Resource_ resource_, *this) {
+    resource_.resource.clear_reservations();
+    result.add(resource_);
+  }
+
+  return result;
 }
 
 
