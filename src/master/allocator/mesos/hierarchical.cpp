@@ -900,14 +900,14 @@ void HierarchicalAllocatorProcess::updateAllocation(
   frameworkSorter->remove(slaveId, offeredResources);
   frameworkSorter->add(slaveId, updatedOfferedResources);
 
-  // Check that the `flattened` quantities for framework allocations
+  // Check that the unreserved quantities for framework allocations
   // have not changed by the above operations.
   const Resources updatedFrameworkAllocation =
     frameworkSorter->allocation(frameworkId.value(), slaveId);
 
   CHECK_EQ(
-      frameworkAllocation.flatten().createStrippedScalarQuantity(),
-      updatedFrameworkAllocation.flatten().createStrippedScalarQuantity());
+      frameworkAllocation.toUnreserved().createStrippedScalarQuantity(),
+      updatedFrameworkAllocation.toUnreserved().createStrippedScalarQuantity());
 
   LOG(INFO) << "Updated allocation of framework " << frameworkId
             << " on agent " << slaveId
@@ -1545,8 +1545,8 @@ void HierarchicalAllocatorProcess::__allocate()
 
     // NOTE: `allocationScalarQuantities` omits dynamic reservation,
     // persistent volume info, and allocation info. We additionally
-    // strip the `Resource.role` here via `flatten()`.
-    return quotaRoleSorter->allocationScalarQuantities(role).flatten();
+    // remove the resource's `role` here via `toUnreserved()`.
+    return quotaRoleSorter->allocationScalarQuantities(role).toUnreserved();
   };
 
   // Due to the two stages in the allocation algorithm and the nature of
@@ -2121,10 +2121,10 @@ bool HierarchicalAllocatorProcess::isFiltered(
   // to MULTI_ROLE frameworks.
   if (framework.capabilities.multiRole &&
       !slave.capabilities.multiRole) {
-    LOG(WARNING)
-      << "Implicitly filtering agent " << slaveId << " from framework"
-      << frameworkId << " because the framework is MULTI_ROLE capable"
-      << " but the agent is not";
+    LOG(WARNING) << "Implicitly filtering agent " << slaveId
+                 << " from framework " << frameworkId
+                 << " because the framework is MULTI_ROLE capable"
+                 << " but the agent is not";
 
     return true;
   }
@@ -2132,9 +2132,9 @@ bool HierarchicalAllocatorProcess::isFiltered(
   // Prevent offers from non-HIERARCHICAL_ROLE agents to be allocated
   // to hierarchical roles.
   if (!slave.capabilities.hierarchicalRole && strings::contains(role, "/")) {
-    LOG(WARNING) << "Implicitly filtering agent " << slaveId << " from role"
-                 << role << " because the role is hierarchical but the agent "
-                 << "is not HIERARCHICAL_ROLE capable";
+    LOG(WARNING) << "Implicitly filtering agent " << slaveId << " from role "
+                 << role << " because the role is hierarchical but the agent"
+                 << " is not HIERARCHICAL_ROLE capable";
 
     return true;
   }

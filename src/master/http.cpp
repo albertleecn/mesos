@@ -1129,6 +1129,8 @@ Future<Response> Master::Http::_createVolumes(
         validate.get().message);
   }
 
+  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
+
   return master->authorizeCreateVolume(operation.create(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
       if (!authorized) {
@@ -1301,6 +1303,8 @@ Future<Response> Master::Http::_destroyVolumes(
   if (validate.isSome()) {
     return BadRequest("Invalid DESTROY operation: " + validate.get().message);
   }
+
+  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
 
   return master->authorizeDestroyVolume(operation.destroy(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
@@ -2265,17 +2269,19 @@ Future<Response> Master::Http::_reserve(
         error.get().message);
   }
 
+  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
+
   return master->authorizeReserveResources(operation.reserve(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
       if (!authorized) {
         return Forbidden();
       }
 
-      // NOTE: `flatten()` is important. To make a dynamic reservation,
-      // we want to ensure that the required resources are available
-      // and unreserved; `flatten()` removes the role and
-      // ReservationInfo from the resources.
-      return _operation(slaveId, resources.flatten(), operation);
+      // We only allow "pushing" a single reservation at a time, so we require
+      // the resources with one reservation "popped" to be present on the agent.
+      Resources required = resources.popReservation();
+
+      return _operation(slaveId, required, operation);
     }));
 }
 
@@ -5006,6 +5012,8 @@ Future<Response> Master::Http::_unreserve(
     return BadRequest(
         "Invalid UNRESERVE operation: " + error.get().message);
   }
+
+  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
 
   return master->authorizeUnreserveResources(operation.unreserve(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
