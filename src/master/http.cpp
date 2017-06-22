@@ -69,6 +69,7 @@
 #include "common/build.hpp"
 #include "common/http.hpp"
 #include "common/protobuf_utils.hpp"
+#include "common/resources_utils.hpp"
 
 #include "internal/devolve.hpp"
 
@@ -1095,6 +1096,8 @@ Future<Response> Master::Http::createVolumes(
       return BadRequest(error.get().message);
     }
 
+    convertResourceFormat(&volume.get(), POST_RESERVATION_REFINEMENT);
+
     volumes += volume.get();
   }
 
@@ -1128,8 +1131,6 @@ Future<Response> Master::Http::_createVolumes(
         "Invalid CREATE operation on agent " + stringify(*slave) + ": " +
         validate.get().message);
   }
-
-  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
 
   return master->authorizeCreateVolume(operation.create(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
@@ -1272,6 +1273,8 @@ Future<Response> Master::Http::destroyVolumes(
       return BadRequest(error.get().message);
     }
 
+    convertResourceFormat(&volume.get(), POST_RESERVATION_REFINEMENT);
+
     volumes += volume.get();
   }
 
@@ -1303,8 +1306,6 @@ Future<Response> Master::Http::_destroyVolumes(
   if (validate.isSome()) {
     return BadRequest("Invalid DESTROY operation: " + validate.get().message);
   }
-
-  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
 
   return master->authorizeDestroyVolume(operation.destroy(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
@@ -1504,11 +1505,15 @@ mesos::master::Response::GetFrameworks::Framework model(
     _framework.mutable_inverse_offers()->Add()->CopyFrom(*offer);
   }
 
-  foreach (const Resource& resource, framework.totalUsedResources) {
+  foreach (Resource resource, framework.totalUsedResources) {
+    convertResourceFormat(&resource, ENDPOINT);
+
     _framework.mutable_allocated_resources()->Add()->CopyFrom(resource);
   }
 
-  foreach (const Resource& resource, framework.totalOfferedResources) {
+  foreach (Resource resource, framework.totalOfferedResources) {
+    convertResourceFormat(&resource, ENDPOINT);
+
     _framework.mutable_offered_resources()->Add()->CopyFrom(resource);
   }
 
@@ -2238,6 +2243,8 @@ Future<Response> Master::Http::reserve(
       return BadRequest(error.get().message);
     }
 
+    convertResourceFormat(&resource.get(), POST_RESERVATION_REFINEMENT);
+
     resources += resource.get();
   }
 
@@ -2268,8 +2275,6 @@ Future<Response> Master::Http::_reserve(
         "Invalid RESERVE operation on agent " + stringify(*slave) + ": " +
         error.get().message);
   }
-
-  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
 
   return master->authorizeReserveResources(operation.reserve(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
@@ -2353,20 +2358,21 @@ Future<Response> Master::Http::slaves(
                              const Resources& resources,
                              reserved) {
                   writer->field(role, [&resources](JSON::ArrayWriter* writer) {
-                    foreach (const Resource& resource, resources) {
+                    foreach (Resource resource, resources) {
+                      convertResourceFormat(&resource, ENDPOINT);
                       writer->element(JSON::Protobuf(resource));
                     }
                   });
                 }
               });
 
-
           Resources unreservedResources = slave->totalResources.unreserved();
 
           writer->field(
               "unreserved_resources_full",
               [&unreservedResources](JSON::ArrayWriter* writer) {
-                foreach (const Resource& resource, unreservedResources) {
+                foreach (Resource resource, unreservedResources) {
+                  convertResourceFormat(&resource, ENDPOINT);
                   writer->element(JSON::Protobuf(resource));
                 }
               });
@@ -2376,7 +2382,8 @@ Future<Response> Master::Http::slaves(
           writer->field(
               "used_resources_full",
               [&usedResources](JSON::ArrayWriter* writer) {
-                foreach (const Resource& resource, usedResources) {
+                foreach (Resource resource, usedResources) {
+                  convertResourceFormat(&resource, ENDPOINT);
                   writer->element(JSON::Protobuf(resource));
                 }
               });
@@ -2386,7 +2393,8 @@ Future<Response> Master::Http::slaves(
           writer->field(
               "offered_resources_full",
               [&offeredResources](JSON::ArrayWriter* writer) {
-                foreach (const Resource& resource, offeredResources) {
+                foreach (Resource resource, offeredResources) {
+                  convertResourceFormat(&resource, ENDPOINT);
                   writer->element(JSON::Protobuf(resource));
                 }
               });
@@ -4984,6 +4992,8 @@ Future<Response> Master::Http::unreserve(
       return BadRequest(error.get().message);
     }
 
+    convertResourceFormat(&resource.get(), POST_RESERVATION_REFINEMENT);
+
     resources += resource.get();
   }
 
@@ -5012,8 +5022,6 @@ Future<Response> Master::Http::_unreserve(
     return BadRequest(
         "Invalid UNRESERVE operation: " + error.get().message);
   }
-
-  convertResourceFormat(&operation, POST_RESERVATION_REFINEMENT);
 
   return master->authorizeUnreserveResources(operation.unreserve(), principal)
     .then(defer(master->self(), [=](bool authorized) -> Future<Response> {
