@@ -14,11 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <stout/error.hpp>
 #include <stout/foreach.hpp>
 #include <stout/stringify.hpp>
 
 #include "common/resources_utils.hpp"
+
+using google::protobuf::RepeatedPtrField;
 
 namespace mesos {
 
@@ -176,7 +177,7 @@ void convertResourceFormat(Resource* resource, ResourceFormat format)
 
 
 void convertResourceFormat(
-    google::protobuf::RepeatedPtrField<Resource>* resources,
+    RepeatedPtrField<Resource>* resources,
     ResourceFormat format)
 {
   foreach (Resource& resource, *resources) {
@@ -195,8 +196,7 @@ void convertResourceFormat(
 }
 
 
-Option<Error> validateAndUpgradeResources(
-    google::protobuf::RepeatedPtrField<Resource>* resources)
+Option<Error> validateAndUpgradeResources(RepeatedPtrField<Resource>* resources)
 {
   Option<Error> error = Resources::validate(*resources);
   if (error.isSome()) {
@@ -209,8 +209,7 @@ Option<Error> validateAndUpgradeResources(
 }
 
 
-Try<Nothing> downgradeResources(
-    google::protobuf::RepeatedPtrField<Resource>* resources)
+Try<Nothing> downgradeResources(RepeatedPtrField<Resource>* resources)
 {
   foreach (const Resource& resource, *resources) {
     CHECK(!resource.has_role());
