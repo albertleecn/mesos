@@ -27,6 +27,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <mesos/type_utils.hpp>
@@ -412,6 +413,17 @@ void Slave::initialize()
       << mkdir.error();
   }
 
+  Try<Owned<LocalResourceProviderDaemon>> _localResourceProviderDaemon =
+    LocalResourceProviderDaemon::create(flags);
+
+  if (_localResourceProviderDaemon.isError()) {
+    EXIT(EXIT_FAILURE)
+      << "Failed to create local resource provider daemon: "
+      << _localResourceProviderDaemon.error();
+  }
+
+  localResourceProviderDaemon = std::move(_localResourceProviderDaemon.get());
+
   Try<Resources> resources = Containerizer::resources(flags);
   if (resources.isError()) {
     EXIT(EXIT_FAILURE)
@@ -694,6 +706,15 @@ void Slave::initialize()
                const Option<Principal>& principal) {
           logRequest(request);
           return http.executor(request, principal);
+        });
+
+  route("/api/v1/resource_provider",
+        READWRITE_HTTP_AUTHENTICATION_REALM,
+        Http::RESOURCE_PROVIDER_HELP(),
+        [this](const process::http::Request& request,
+               const Option<Principal>& principal) {
+          logRequest(request);
+          return resourceProviderManager.api(request, principal);
         });
 
   // TODO(ijimenez): Remove this endpoint at the end of the

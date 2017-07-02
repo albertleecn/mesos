@@ -889,6 +889,20 @@ message ResourceProviderInfo {
   optional ResourceProviderID id = 1;
   repeated Attribute attributes = 2;
   repeated Resource resources = 3;
+
+  // The type of the resource provider. This uniquely identifies a
+  // resource provider implementation. For instance:
+  //     org.apache.mesos.rp.local.storage
+  //
+  // Please follow to Java package naming convention
+  // (https://en.wikipedia.org/wiki/Java_package#Package_naming_conventions)
+  // to avoid conflicts on type names.
+  required string type = 4;
+
+  // The name of the resource provider. There could be multiple
+  // instances of a type of resource provider. The name field is used
+  // to distinguish these instances.
+  required string name = 5;
 }
 
 
@@ -2611,8 +2625,16 @@ message CapabilityInfo {
  * E.g, capabilities, limits etc.
  */
 message LinuxInfo {
-  // Represents the capability whitelist.
-  optional CapabilityInfo capability_info = 1;
+  // Since 1.4.0, deprecated in favor of `effective_capabilities`.
+  optional CapabilityInfo capability_info = 1 [deprecated = true];
+
+  // The set of capabilities that are allowed but not initially
+  // granted to tasks.
+  optional CapabilityInfo bounding_capabilities = 2;
+
+  // Represents the set of capabilities that the task will
+  // be executed with.
+  optional CapabilityInfo effective_capabilities = 3;
 }
 
 

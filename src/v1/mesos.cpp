@@ -511,6 +511,14 @@ ostream& operator<<(
 }
 
 
+ostream& operator<<(
+    ostream& stream,
+    const ResourceProviderInfo& resourceProviderInfo)
+{
+  return stream << JSON::protobuf(resourceProviderInfo);
+}
+
+
 ostream& operator<<(ostream& stream, const RLimitInfo& limits)
 {
   return stream << JSON::protobuf(limits);
@@ -565,20 +573,6 @@ ostream& operator<<(ostream& stream, const TaskGroupInfo& taskGroupInfo)
 ostream& operator<<(ostream& stream, const TaskState& state)
 {
   return stream << TaskState_Name(state);
-}
-
-
-ostream& operator<<(ostream& stream, const vector<TaskID>& taskIds)
-{
-  stream << "[ ";
-  for (auto it = taskIds.begin(); it != taskIds.end(); ++it) {
-    if (it != taskIds.begin()) {
-      stream << ", ";
-    }
-    stream << *it;
-  }
-  stream << " ]";
-  return stream;
 }
 
 
