@@ -102,6 +102,7 @@ using process::Owned;
 using process::PID;
 using process::Promise;
 
+using process::http::Accepted;
 using process::http::OK;
 using process::http::Response;
 using process::http::Unauthorized;
@@ -7673,6 +7674,251 @@ TEST_P(MasterTestPrePostReservationRefinement,
 
   driver.stop();
   driver.join();
+}
+
+
+// This test verifies that hitting the `/state` endpoint before '_accept()'
+// is called results in pending tasks being reported correctly.
+TEST_P(MasterTestPrePostReservationRefinement, StateEndpointPendingTasks)
+{
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.set_role(DEFAULT_TEST_ROLE);
+
+  // TODO(mpark): Remove this once `RESERVATION_REFINEMENT`
+  // is removed from `DEFAULT_FRAMEWORK_INFO`.
+  frameworkInfo.clear_capabilities();
+
+  if (GetParam()) {
+    frameworkInfo.add_capabilities()->set_type(
+        FrameworkInfo::Capability::RESERVATION_REFINEMENT);
+  }
+
+  MockAuthorizer authorizer;
+  Try<Owned<cluster::Master>> master = StartMaster(&authorizer);
+  ASSERT_SOME(master);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get());
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  ASSERT_NE(0u, offers->size());
+
+  Offer offer = offers->front();
+
+  TaskInfo task;
+  task.set_name("");
+  task.mutable_task_id()->set_value("1");
+  task.mutable_slave_id()->MergeFrom(offer.slave_id());
+  task.mutable_resources()->MergeFrom(offer.resources());
+  task.mutable_executor()->MergeFrom(DEFAULT_EXECUTOR_INFO);
+
+  // Return a pending future from authorizer.
+  Future<Nothing> authorize;
+  Promise<bool> promise;
+  EXPECT_CALL(authorizer, authorized(_))
+    .WillOnce(DoAll(FutureSatisfy(&authorize),
+                    Return(promise.future())));
+
+  driver.launchTasks(offer.id(), {task});
+
+  // Wait until authorization is in progress.
+  AWAIT_READY(authorize);
+
+  Future<Response> response = process::http::get(
+      master.get()->pid,
+      "state",
+      None(),
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response);
+
+  Try<JSON::Object> parse = JSON::parse<JSON::Object>(response->body);
+  ASSERT_SOME(parse);
+
+  JSON::Value result = parse.get();
+
+  JSON::Object expected = {
+    {
+      "frameworks",
+      JSON::Array {
+        JSON::Object {
+          {
+            "tasks",
+            JSON::Array {
+              JSON::Object {
+                { "id", "1" },
+                { "role", frameworkInfo.role() },
+                { "state", "TASK_STAGING" }
+              }
+            }
+          }
+        }
+      }
+    }
+  };
+
+  EXPECT_TRUE(result.contains(expected));
+
+  driver.stop();
+  driver.join();
+}
+
+
+// This test verifies that an operator can reserve and unreserve
+// resources through the master operator API in both
+// "(pre|post)-reservation-refinement" formats.
+TEST_P(MasterTestPrePostReservationRefinement, ReserveAndUnreserveResourcesV1)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  // For capturing the SlaveID.
+  Future<SlaveRegisteredMessage> slaveRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get());
+  ASSERT_SOME(slave);
+
+  AWAIT_READY(slaveRegisteredMessage);
+  SlaveID slaveId = slaveRegisteredMessage->slave_id();
+
+  v1::master::Call v1ReserveResourcesCall;
+  v1ReserveResourcesCall.set_type(v1::master::Call::RESERVE_RESOURCES);
+  v1::master::Call::ReserveResources* reserveResources =
+    v1ReserveResourcesCall.mutable_reserve_resources();
+
+  Resources unreserved = Resources::parse("cpus:1;mem:512").get();
+  Resources dynamicallyReserved =
+    unreserved.pushReservation(createDynamicReservationInfo(
+        DEFAULT_TEST_ROLE, DEFAULT_CREDENTIAL.principal()));
+
+  reserveResources->mutable_agent_id()->CopyFrom(evolve(slaveId));
+  reserveResources->mutable_resources()->CopyFrom(
+      evolve<v1::Resource>(outboundResources(dynamicallyReserved)));
+
+  ContentType contentType = ContentType::PROTOBUF;
+
+  Future<Response> v1ReserveResourcesResponse = process::http::post(
+    master.get()->pid,
+    "api/v1",
+    createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+    serialize(contentType, v1ReserveResourcesCall),
+    stringify(contentType));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      Accepted().status, v1ReserveResourcesResponse);
+
+  v1::master::Call v1UnreserveResourcesCall;
+  v1UnreserveResourcesCall.set_type(v1::master::Call::UNRESERVE_RESOURCES);
+  v1::master::Call::UnreserveResources* unreserveResources =
+    v1UnreserveResourcesCall.mutable_unreserve_resources();
+
+  unreserveResources->mutable_agent_id()->CopyFrom(evolve(slaveId));
+
+  unreserveResources->mutable_resources()->CopyFrom(
+      evolve<v1::Resource>(outboundResources(dynamicallyReserved)));
+
+  Future<Response> v1UnreserveResourcesResponse = process::http::post(
+      master.get()->pid,
+      "api/v1",
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+      serialize(contentType, v1UnreserveResourcesCall),
+      stringify(contentType));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      Accepted().status, v1UnreserveResourcesResponse);
+}
+
+
+// This test verifies that an operator can create and destroy
+// persistent volumes through the master operator API in both
+// "(pre|post)-reservation-refinement" formats.
+TEST_P(MasterTestPrePostReservationRefinement, CreateAndDestroyVolumesV1)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  // For capturing the SlaveID so we can use it in the create/destroy volumes
+  // API call.
+  Future<SlaveRegisteredMessage> slaveRegisteredMessage =
+    FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  slave::Flags slaveFlags = CreateSlaveFlags();
+  // Do Static reservation so we can create persistent volumes from it.
+  slaveFlags.resources = "disk(role1):1024";
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), slaveFlags);
+
+  ASSERT_SOME(slave);
+
+  AWAIT_READY(slaveRegisteredMessage);
+  SlaveID slaveId = slaveRegisteredMessage->slave_id();
+
+  // Create the persistent volume.
+  v1::master::Call v1CreateVolumesCall;
+  v1CreateVolumesCall.set_type(v1::master::Call::CREATE_VOLUMES);
+  v1::master::Call_CreateVolumes* createVolumes =
+    v1CreateVolumesCall.mutable_create_volumes();
+
+  Resources volume = createPersistentVolume(
+      Megabytes(64),
+      "role1",
+      "id1",
+      "path1",
+      None(),
+      None(),
+      DEFAULT_CREDENTIAL.principal());
+
+  createVolumes->mutable_agent_id()->CopyFrom(evolve(slaveId));
+  createVolumes->mutable_volumes()->CopyFrom(
+      evolve<v1::Resource>(outboundResources(volume)));
+
+  ContentType contentType = ContentType::PROTOBUF;
+
+  Future<Response> v1CreateVolumesResponse = process::http::post(
+      master.get()->pid,
+      "api/v1",
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+      serialize(contentType, v1CreateVolumesCall),
+      stringify(contentType));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Accepted().status, v1CreateVolumesResponse);
+
+  // Destroy the persistent volume.
+  v1::master::Call v1DestroyVolumesCall;
+  v1DestroyVolumesCall.set_type(v1::master::Call::DESTROY_VOLUMES);
+  v1::master::Call_DestroyVolumes* destroyVolumes =
+    v1DestroyVolumesCall.mutable_destroy_volumes();
+
+  destroyVolumes->mutable_agent_id()->CopyFrom(evolve(slaveId));
+  destroyVolumes->mutable_volumes()->CopyFrom(
+      evolve<v1::Resource>(outboundResources(volume)));
+
+  Future<Response> v1DestroyVolumesResponse = process::http::post(
+      master.get()->pid,
+      "api/v1",
+      createBasicAuthHeaders(DEFAULT_CREDENTIAL),
+      serialize(contentType, v1DestroyVolumesCall),
+      stringify(contentType));
+
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Accepted().status, v1DestroyVolumesResponse);
 }
 
 } // namespace tests {
