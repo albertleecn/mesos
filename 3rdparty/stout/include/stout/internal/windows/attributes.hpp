@@ -10,43 +10,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_ACCESS_HPP__
-#define __STOUT_OS_ACCESS_HPP__
+#ifndef __STOUT_INTERNAL_WINDOWS_ATTRIBUTES_HPP__
+#define __STOUT_INTERNAL_WINDOWS_ATTRIBUTES_HPP__
 
 #include <string>
 
 #include <stout/error.hpp>
+#include <stout/stringify.hpp>
 #include <stout/try.hpp>
-
-#ifdef __WINDOWS__
 #include <stout/windows.hpp>
-#include <stout/internal/windows/longpath.hpp>
-#endif // __WINDOWS__
 
-namespace os {
 
-inline Try<bool> access(const std::string& path, int how)
-{
-  int result;
+namespace internal {
+namespace windows {
 
-#ifdef __WINDOWS__
-  std::wstring longpath = ::internal::windows::longpath(path);
-  result = ::_waccess(longpath.data(), how);
-#else
-  result = ::access(path.data(), how);
-#endif
-
-  if (result < 0) {
-    if (errno == EACCES) {
-      return false;
-    } else {
-      return ErrnoError();
-    }
+inline Try<DWORD> get_file_attributes(const std::wstring& path) {
+  const DWORD attributes = ::GetFileAttributesW(path.data());
+  if (attributes == INVALID_FILE_ATTRIBUTES) {
+    return WindowsError(
+        "Failed to get attributes for file '" + stringify(path) + "'");
   }
-
-  return true;
+  return attributes;
 }
 
-} // namespace os {
+} // namespace windows {
+} // namespace internal {
 
-#endif // __STOUT_OS_ACCESS_HPP__
+#endif // __STOUT_INTERNAL_WINDOWS_ATTRIBUTES_HPP__

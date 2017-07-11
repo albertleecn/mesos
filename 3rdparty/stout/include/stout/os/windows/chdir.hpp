@@ -10,43 +10,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_ACCESS_HPP__
-#define __STOUT_OS_ACCESS_HPP__
+#ifndef __STOUT_OS_WINDOWS_CHDIR_HPP__
+#define __STOUT_OS_WINDOWS_CHDIR_HPP__
 
 #include <string>
 
 #include <stout/error.hpp>
+#include <stout/nothing.hpp>
 #include <stout/try.hpp>
-
-#ifdef __WINDOWS__
 #include <stout/windows.hpp>
+
 #include <stout/internal/windows/longpath.hpp>
-#endif // __WINDOWS__
+
 
 namespace os {
 
-inline Try<bool> access(const std::string& path, int how)
+inline Try<Nothing> chdir(const std::string& directory)
 {
-  int result;
-
-#ifdef __WINDOWS__
-  std::wstring longpath = ::internal::windows::longpath(path);
-  result = ::_waccess(longpath.data(), how);
-#else
-  result = ::access(path.data(), how);
-#endif
-
-  if (result < 0) {
-    if (errno == EACCES) {
-      return false;
-    } else {
-      return ErrnoError();
-    }
+  std::wstring longpath = ::internal::windows::longpath(directory);
+  if (::SetCurrentDirectoryW(longpath.data()) == 0) {
+    return WindowsError();
   }
 
-  return true;
+  return Nothing();
 }
 
 } // namespace os {
 
-#endif // __STOUT_OS_ACCESS_HPP__
+
+#endif // __STOUT_OS_WINDOWS_CHDIR_HPP__
