@@ -358,6 +358,10 @@ Master::Master(
   info_.mutable_address()->set_ip(stringify(self().address.ip));
   info_.mutable_address()->set_port(self().address.port);
   info_.mutable_address()->set_hostname(hostname);
+
+  if (flags.domain.isSome()) {
+    info_.mutable_domain()->CopyFrom(flags.domain.get());
+  }
 }
 
 
@@ -764,7 +768,8 @@ void Master::initialize()
       defer(self(), &Master::offer, lambda::_1, lambda::_2),
       defer(self(), &Master::inverseOffer, lambda::_1, lambda::_2),
       flags.fair_sharing_excluded_resource_names,
-      flags.filter_gpu_resources);
+      flags.filter_gpu_resources,
+      flags.domain);
 
   // Parse the whitelist. Passing Allocator::updateWhitelist()
   // callback is safe because we shut down the whitelistWatcher in
@@ -2175,6 +2180,35 @@ void Master::detected(const Future<Option<MasterInfo>>& _leader)
 
     if (wasElected) {
       EXIT(EXIT_FAILURE) << "Lost leadership... committing suicide!";
+    }
+
+    // If this master and the current leader both have a configured
+    // domain and the current leader is located in a different region,
+    // exit with an error message: this indicates a configuration
+    // error, since all masters must be in the same region.
+    if (leader->has_domain() && info_.has_domain()) {
+      const DomainInfo& leaderDomain = leader->domain();
+      const DomainInfo& selfDomain = info_.domain();
+
+      // We currently reject configured domains without fault domains,
+      // but that might change in the future. For compatibility with
+      // future versions of Mesos, we treat a master with a configured
+      // domain but no fault domain as equivalent to a master with no
+      // configured domain.
+      if (leaderDomain.has_fault_domain() && selfDomain.has_fault_domain()) {
+        const DomainInfo::FaultDomain::RegionInfo& leaderRegion =
+          leaderDomain.fault_domain().region();
+        const DomainInfo::FaultDomain::RegionInfo& selfRegion =
+          selfDomain.fault_domain().region();
+
+        if (leaderRegion != selfRegion) {
+          EXIT(EXIT_FAILURE) << "Leading master uses domain "
+                             << leaderDomain << "; this master is "
+                             << "configured to use domain "
+                             << selfDomain << "; all masters in the "
+                             << "same cluster must use the same region";
+        }
+      }
     }
   }
 
@@ -5741,6 +5775,20 @@ void Master::_registerSlave(
     return;
   }
 
+  // If the agent is configured with a domain but the master is not,
+  // we can't determine whether the agent is remote. To be safe, we
+  // don't allow the agent to register. We don't shutdown the agent so
+  // that any tasks on the agent can continue to run.
+  //
+  // TODO(neilc): Consider sending a warning to agent (MESOS-7615).
+  if (slaveInfo.has_domain() && !info_.has_domain()) {
+    LOG(WARNING) << "Agent at " << pid << " is configured with "
+                 << "domain " << slaveInfo.domain() << " "
+                 << "but the master has no configured domain. "
+                 << "Ignoring agent registration attempt";
+    return;
+  }
+
   // Check if this slave is already registered (because it retries).
   if (Slave* slave = slaves.registered.get(pid)) {
     if (!slave->connected) {
@@ -6033,6 +6081,20 @@ void Master::_reregisterSlave(
                  << pid << ": agent version is " << parsedVersion.get()
                  << ", minimum supported agent version is "
                  << MINIMUM_AGENT_VERSION;
+    return;
+  }
+
+  // If the agent is configured with a domain but the master is not,
+  // we can't determine whether the agent is remote. To be safe, we
+  // don't allow the agent to re-register. We don't shutdown the agent
+  // so that any tasks on the agent can continue to run.
+  //
+  // TODO(neilc): Consider sending a warning to agent (MESOS-7615).
+  if (slaveInfo.has_domain() && !info_.has_domain()) {
+    LOG(WARNING) << "Agent at " << pid << " is configured with "
+                 << "domain " << slaveInfo.domain() << " "
+                 << "but the master has no configured domain."
+                 << "Ignoring agent re-registration attempt";
     return;
   }
 
@@ -7475,6 +7537,10 @@ void Master::offer(
       offer->mutable_resources()->MergeFrom(offered);
       offer->mutable_attributes()->MergeFrom(slave->info.attributes());
       offer->mutable_allocation_info()->set_role(role);
+
+      if (slave->info.has_domain()) {
+        offer->mutable_domain()->MergeFrom(slave->info.domain());
+      }
 
       // Add all framework's executors running on this slave.
       if (slave->executors.contains(framework->id())) {

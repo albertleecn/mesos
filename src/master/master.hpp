@@ -1607,6 +1607,7 @@ private:
   friend struct Framework;
   friend struct Metrics;
   friend struct Slave;
+  friend struct SlavesWriter;
 
   // NOTE: Since 'getOffer', 'getInverseOffer' and 'slaves' are
   // protected, we need to make the following functions friends.
@@ -2882,7 +2883,7 @@ struct Role
     frameworks.erase(framework->id());
   }
 
-  Resources resources() const
+  Resources allocatedResources() const
   {
     Resources resources;
 
