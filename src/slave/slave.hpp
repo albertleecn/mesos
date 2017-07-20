@@ -749,6 +749,8 @@ public:
   // Returns the task group associated with the task.
   Option<TaskGroupInfo> getQueuedTaskGroup(const TaskID& taskId);
 
+  Resources allocatedResources() const;
+
   enum State
   {
     REGISTERING,  // Executor is launched but not (re-)registered yet.
@@ -792,9 +794,6 @@ public:
   //           *                 *       Some       None            HTTP
   Option<HttpConnection> http;
   Option<process::UPID> pid;
-
-  // Currently consumed resources.
-  Resources resources;
 
   // Tasks can be found in one of the following four data structures:
   //
