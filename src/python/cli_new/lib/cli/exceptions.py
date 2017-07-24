@@ -15,7 +15,11 @@
 # limitations under the License.
 
 """
-Client library for the Mesos HTTP ReST API
+CLIException Class
 """
 
-__version__ = '0.0.0.dev'
+class CLIException(Exception):
+    """
+    Exceptions class to handle all CLI errors.
+    """
+    pass

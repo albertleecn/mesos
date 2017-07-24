@@ -15,7 +15,11 @@
 # limitations under the License.
 
 """
-Client library for the Mesos HTTP ReST API
+A collection of constants useful for the CLI unit tests.
 """
 
-__version__ = '0.0.0.dev'
+DEFAULT_MASTER_IP = "127.0.0.1"
+DEFAULT_MASTER_PORT = "9090"
+
+DEFAULT_AGENT_IP = "127.0.0.1"
+DEFAULT_AGENT_PORT = "9091"

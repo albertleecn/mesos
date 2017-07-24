@@ -15,7 +15,10 @@
 # limitations under the License.
 
 """
-Client library for the Mesos HTTP ReST API
+Mesos CLI Module
 """
 
-__version__ = '0.0.0.dev'
+from . import config
+from . import exceptions
+from . import plugins
+from . import util

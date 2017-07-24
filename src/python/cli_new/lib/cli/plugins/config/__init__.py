@@ -15,7 +15,8 @@
 # limitations under the License.
 
 """
-Client library for the Mesos HTTP ReST API
+Config module.
 """
 
-__version__ = '0.0.0.dev'
+# pylint: disable=wildcard-import
+from .main import *

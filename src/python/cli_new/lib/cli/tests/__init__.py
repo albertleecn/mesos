@@ -15,7 +15,9 @@
 # limitations under the License.
 
 """
-Client library for the Mesos HTTP ReST API
+Mesos CLI unit tests module.
 """
 
-__version__ = '0.0.0.dev'
+# pylint: disable=W0401
+from .base import *
+from .tests import *
