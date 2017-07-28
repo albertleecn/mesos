@@ -2701,6 +2701,11 @@ void Master::_subscribe(
     // Start the heartbeat after sending SUBSCRIBED event.
     framework->heartbeat();
 
+    if (!subscribers.subscribed.empty()) {
+      subscribers.send(
+          protobuf::master::event::createFrameworkAdded(*framework));
+    }
+
     return;
   }
 
@@ -2745,6 +2750,11 @@ void Master::_subscribe(
       http.close();
       return;
     }
+  }
+
+  if (!subscribers.subscribed.empty()) {
+    subscribers.send(
+        protobuf::master::event::createFrameworkUpdated(*framework));
   }
 
   // Broadcast the new framework pid to all the slaves. We have to
@@ -2996,6 +3006,11 @@ void Master::_subscribe(
     message.mutable_master_info()->MergeFrom(info_);
     framework->send(message);
 
+    if (!subscribers.subscribed.empty()) {
+      subscribers.send(
+          protobuf::master::event::createFrameworkAdded(*framework));
+    }
+
     return;
   }
 
@@ -3067,6 +3082,11 @@ void Master::_subscribe(
       // if necesssary.
       LOG(INFO) << "Framework " << *framework << " failed over";
       failoverFramework(framework, from);
+
+      if (!subscribers.subscribed.empty()) {
+        subscribers.send(
+            protobuf::master::event::createFrameworkUpdated(*framework));
+      }
     } else {
       LOG(INFO) << "Allowing framework " << *framework
                 << " to subscribe with an already used id";
@@ -3114,6 +3134,11 @@ void Master::_subscribe(
       message.mutable_framework_id()->MergeFrom(frameworkInfo.id());
       message.mutable_master_info()->MergeFrom(info_);
       framework->send(message);
+
+      if (!subscribers.subscribed.empty()) {
+        subscribers.send(
+            protobuf::master::event::createFrameworkUpdated(*framework));
+      }
       return;
     }
   } else {
@@ -3129,6 +3154,11 @@ void Master::_subscribe(
       message.set_message(activate.error());
       send(from, message);
       return;
+    }
+
+    if (!subscribers.subscribed.empty()) {
+      subscribers.send(
+          protobuf::master::event::createFrameworkUpdated(*framework));
     }
   }
 
@@ -8469,6 +8499,11 @@ void Master::removeFramework(Framework* framework)
 
   // The framework pointer is now owned by `frameworks.completed`.
   frameworks.completed.set(framework->id(), Owned<Framework>(framework));
+
+  if (!subscribers.subscribed.empty()) {
+    subscribers.send(
+        protobuf::master::event::createFrameworkRemoved(framework->info));
+  }
 }
 
 
