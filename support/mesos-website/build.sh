@@ -16,13 +16,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This is a wrapper for building Mesos website locally.
+# This is a script for building Mesos website.
+set -e
+set -o pipefail
 
 function exit_hook {
   # Remove generated documents when exit.
-  bundle exec rake clean_docs
+  cd /mesos/site && bundle exec rake clean_docs
 }
 
 trap exit_hook EXIT
 
-bundle exec rake && bundle exec rake dev
+# Build mesos to get the latest master and agent binaries.
+./bootstrap
+mkdir -p build
+pushd build
+../configure --disable-python
+make -j6
+popd # build
+
+# Generate the endpoint docs from the latest mesos and agent binaries.
+./support/generate-endpoint-help.py
+
+# Build the website.
+pushd site
+bundle exec rake
+popd # site

@@ -16,13 +16,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This is a wrapper for building Mesos website locally.
+# This is a wrapper script for building Mesos website as a non-root user.
+set -e
+set -o pipefail
 
-function exit_hook {
-  # Remove generated documents when exit.
-  bundle exec rake clean_docs
-}
+# This needs to be run under `root` user for `bundle exec rake` to
+# work properly. See MESOS-7859.
+pushd site
+bundle install
+popd # site
 
-trap exit_hook EXIT
+# Create a local user account.
+useradd -u $LOCAL_USER_ID -s /bin/bash -m tempuser
 
-bundle exec rake && bundle exec rake dev
+# Build mesos and the website as the new user.
+su -c support/mesos-website/build.sh tempuser
