@@ -2515,6 +2515,14 @@ quotas for container sandbox directories. Valid project IDs range from
   </tr>
   <tr>
     <td>
+      --enable-parallel-test-execution
+    </td>
+    <td>
+      Whether to attempt to run tests in parallel.
+    </td>
+  </tr>
+  <tr>
+    <td>
       --disable-python
     </td>
     <td>
@@ -2580,6 +2588,14 @@ quotas for container sandbox directories. Valid project IDs range from
     <td>
       Enables the lock-free event queue to be used in libprocess which
       greatly improves message passing performance!
+    </td>
+  </tr>
+  <tr>
+    <td>
+      --disable-werror
+    </td>
+    <td>
+      Disables treating compiler warnings as fatal errors.
     </td>
   </tr>
 </table>

@@ -84,7 +84,6 @@ using process::http::OK;
 using process::metrics::Gauge;
 using process::metrics::Counter;
 
-
 // NOTE: Per-task resources are nominal because all of the resources for the
 // container are provisioned when the executor is created. The executor can
 // run multiple tasks at once, but uses a constant amount of resources
@@ -94,6 +93,11 @@ const int32_t MEM_PER_TASK = 1;
 
 const double CPUS_PER_EXECUTOR = 0.1;
 const int32_t MEM_PER_EXECUTOR = 32;
+
+constexpr char EXECUTOR_BINARY[] = "long-lived-executor";
+constexpr char EXECUTOR_NAME[] = "Long Lived Executor (C++)";
+constexpr char FRAMEWORK_NAME[] = "Long Lived Framework (C++)";
+constexpr char FRAMEWORK_METRICS_PREFIX[] = "long_lived_framework";
 
 
 // This scheduler picks one agent and repeatedly launches sleep tasks on it,
@@ -132,13 +136,14 @@ protected:
   {
     // We initialize the library here to ensure that callbacks are only invoked
     // after the process has spawned.
-    mesos.reset(new Mesos(
-      master,
-      mesos::ContentType::PROTOBUF,
-      process::defer(self(), &Self::connected),
-      process::defer(self(), &Self::disconnected),
-      process::defer(self(), &Self::received, lambda::_1),
-      credential));
+    mesos.reset(
+        new Mesos(
+            master,
+            mesos::ContentType::PROTOBUF,
+            process::defer(self(), &Self::connected),
+            process::defer(self(), &Self::disconnected),
+            process::defer(self(), &Self::received, lambda::_1),
+            credential));
   }
 
   void connected()
@@ -186,8 +191,7 @@ protected:
 
       switch (event.type()) {
         case Event::SUBSCRIBED: {
-          framework.mutable_id()->
-            CopyFrom(event.subscribed().framework_id());
+          framework.mutable_id()->CopyFrom(event.subscribed().framework_id());
 
           LOG(INFO) << "Subscribed with ID '" << framework.id() << "'";
 
@@ -259,11 +263,11 @@ protected:
         // No active executor running in the cluster.
         // Launch a new task with executor.
 
-        if (Resources(offer.resources()).toUnreserved()
-            .contains(taskResources + executorResources)) {
-          LOG(INFO)
-            << "Starting executor and task " << tasksLaunched
-            << " on " << offer.hostname();
+        if (Resources(offer.resources())
+              .toUnreserved()
+              .contains(taskResources + executorResources)) {
+          LOG(INFO) << "Starting executor and task " << tasksLaunched << " on "
+                    << offer.hostname();
 
           launch(offer);
 
@@ -278,8 +282,8 @@ protected:
         if (Resources(offer.resources())
               .toUnreserved()
               .contains(taskResources)) {
-          LOG(INFO)
-            << "Starting task " << tasksLaunched << " on " << offer.hostname();
+          LOG(INFO) << "Starting task " << tasksLaunched << " on "
+                    << offer.hostname();
 
           launch(offer);
         } else {
@@ -437,14 +441,17 @@ private:
   {
     Metrics(const LongLivedScheduler& scheduler)
       : uptime_secs(
-            "long_lived_framework/uptime_secs",
+            string(FRAMEWORK_METRICS_PREFIX) + "/uptime_secs",
             defer(scheduler, &LongLivedScheduler::_uptime_secs)),
         subscribed(
-            "long_lived_framework/subscribed",
+            string(FRAMEWORK_METRICS_PREFIX) + "/subscribed",
             defer(scheduler, &LongLivedScheduler::_subscribed)),
-        offers_received("long_lived_framework/offers_received"),
-        tasks_launched("long_lived_framework/tasks_launched"),
-        abnormal_terminations("long_lived_framework/abnormal_terminations")
+        offers_received(
+            string(FRAMEWORK_METRICS_PREFIX) + "/offers_received"),
+        tasks_launched(
+            string(FRAMEWORK_METRICS_PREFIX) + "/tasks_launched"),
+        abnormal_terminations(
+            string(FRAMEWORK_METRICS_PREFIX) + "/abnormal_terminations")
     {
       process::metrics::add(uptime_secs);
       process::metrics::add(subscribed);
@@ -580,8 +587,7 @@ int main(int argc, char** argv)
   ExecutorInfo executor;
   executor.mutable_executor_id()->set_value("default");
   executor.mutable_resources()->CopyFrom(resources);
-  executor.set_name("Long Lived Executor (C++)");
-  executor.set_source("cpp_long_lived_framework");
+  executor.set_name(EXECUTOR_NAME);
 
   // Determine the command to run the executor based on three possibilities:
   //   1) `--executor_command` was set, which overrides the below cases.
@@ -595,12 +601,10 @@ int main(int argc, char** argv)
   if (flags.executor_command.isSome()) {
     command = flags.executor_command.get();
   } else if (flags.build_dir.isSome()) {
-    command = path::join(
-        flags.build_dir.get(), "src", "long-lived-executor");
+    command = path::join(flags.build_dir.get(), "src", EXECUTOR_BINARY);
   } else {
-    command = path::join(
-        os::realpath(Path(argv[0]).dirname()).get(),
-        "long-lived-executor");
+    command =
+      path::join(os::realpath(Path(argv[0]).dirname()).get(), EXECUTOR_BINARY);
   }
 
   executor.mutable_command()->set_value(command);
@@ -636,7 +640,7 @@ int main(int argc, char** argv)
 
   FrameworkInfo framework;
   framework.set_user(os::user().get());
-  framework.set_name("Long Lived Framework (C++)");
+  framework.set_name(FRAMEWORK_NAME);
   framework.set_checkpoint(flags.checkpoint);
   framework.add_capabilities()->set_type(
       FrameworkInfo::Capability::RESERVATION_REFINEMENT);

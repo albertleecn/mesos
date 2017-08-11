@@ -63,11 +63,21 @@ const double CPUS_PER_TASK = 0.1;
 const double CPUS_PER_EXECUTOR = 0.1;
 const int32_t MEM_PER_EXECUTOR = 64;
 
+constexpr char EXECUTOR_BINARY[] = "balloon-executor";
+constexpr char FRAMEWORK_PRINCIPAL[] = "balloon-framework-cpp";
+constexpr char FRAMEWORK_METRICS_PREFIX[] = "balloon_framework";
+
+
 class Flags : public virtual flags::FlagsBase
 {
 public:
   Flags()
   {
+    add(&Flags::name,
+        "name",
+        "Name to be used by the framework.",
+        "Balloon Framework");
+
     add(&Flags::master,
         "master",
         "Master to connect to.");
@@ -143,6 +153,7 @@ public:
         false);
   }
 
+  string name;
   string master;
   Bytes task_memory_usage_limit;
   Bytes task_memory;
@@ -223,15 +234,15 @@ public:
       LOG(INFO) << "Launching task " << taskId;
 
       TaskInfo task;
-      task.set_name("Balloon Task");
+      task.set_name(flags.name + " Task");
       task.mutable_task_id()->set_value(stringify(taskId));
       task.mutable_slave_id()->MergeFrom(offer.slave_id());
       task.mutable_resources()->CopyFrom(taskResources);
       task.set_data(stringify(flags.task_memory_usage_limit));
 
       task.mutable_executor()->CopyFrom(executor);
-      task.mutable_executor()->mutable_executor_id()
-        ->set_value(stringify(taskId));
+      task.mutable_executor()->mutable_executor_id()->set_value(
+          stringify(taskId));
 
       driver->launchTasks(offer.id(), {task});
 
@@ -318,15 +329,16 @@ private:
   {
     Metrics(const BalloonSchedulerProcess& _scheduler)
       : uptime_secs(
-            "balloon_framework/uptime_secs",
+            string(FRAMEWORK_METRICS_PREFIX) + "/uptime_secs",
             defer(_scheduler, &BalloonSchedulerProcess::_uptime_secs)),
         registered(
-            "balloon_framework/registered",
+            string(FRAMEWORK_METRICS_PREFIX) + "/registered",
             defer(_scheduler, &BalloonSchedulerProcess::_registered)),
-        tasks_finished("balloon_framework/tasks_finished"),
-        tasks_oomed("balloon_framework/tasks_oomed"),
-        launch_failures("balloon_framework/launch_failures"),
-        abnormal_terminations("balloon_framework/abnormal_terminations")
+        tasks_finished(string(FRAMEWORK_METRICS_PREFIX) + "/tasks_finished"),
+        tasks_oomed(string(FRAMEWORK_METRICS_PREFIX) + "/tasks_oomed"),
+        launch_failures(string(FRAMEWORK_METRICS_PREFIX) + "/launch_failures"),
+        abnormal_terminations(
+            string(FRAMEWORK_METRICS_PREFIX) + "/abnormal_terminations")
     {
       process::metrics::add(uptime_secs);
       process::metrics::add(registered);
@@ -386,27 +398,21 @@ public:
   {
     LOG(INFO) << "Registered with framework ID: " << frameworkId;
 
-    process::dispatch(
-        &process,
-        &BalloonSchedulerProcess::registered);
+    process::dispatch(&process, &BalloonSchedulerProcess::registered);
   }
 
   virtual void reregistered(SchedulerDriver*, const MasterInfo& masterInfo)
   {
     LOG(INFO) << "Reregistered";
 
-    process::dispatch(
-        &process,
-        &BalloonSchedulerProcess::registered);
+    process::dispatch(&process, &BalloonSchedulerProcess::registered);
   }
 
   virtual void disconnected(SchedulerDriver* driver)
   {
     LOG(INFO) << "Disconnected";
 
-    process::dispatch(
-        &process,
-        &BalloonSchedulerProcess::disconnected);
+    process::dispatch(&process, &BalloonSchedulerProcess::disconnected);
   }
 
   virtual void resourceOffers(
@@ -422,21 +428,18 @@ public:
         offers);
   }
 
-  virtual void offerRescinded(
-      SchedulerDriver* driver,
-      const OfferID& offerId)
+  virtual void offerRescinded(SchedulerDriver* driver, const OfferID& offerId)
   {
     LOG(INFO) << "Offer rescinded";
   }
 
   virtual void statusUpdate(SchedulerDriver* driver, const TaskStatus& status)
   {
-    LOG(INFO)
-      << "Task " << status.task_id() << " in state "
-      << TaskState_Name(status.state())
-      << ", Source: " << status.source()
-      << ", Reason: " << status.reason()
-      << (status.has_message() ? ", Message: " + status.message() : "");
+    LOG(INFO) << "Task " << status.task_id() << " in state "
+              << TaskState_Name(status.state())
+              << ", Source: " << status.source()
+              << ", Reason: " << status.reason()
+              << (status.has_message() ? ", Message: " + status.message() : "");
 
     process::dispatch(
         &process,
@@ -493,7 +496,7 @@ int main(int argc, char** argv)
 
   ExecutorInfo executor;
   executor.mutable_resources()->CopyFrom(resources);
-  executor.set_name("Balloon Executor");
+  executor.set_name(flags.name + " Executor");
 
   // Determine the command to run the executor based on three possibilities:
   //   1) `--executor_command` was set, which overrides the below cases.
@@ -507,12 +510,10 @@ int main(int argc, char** argv)
   if (flags.executor_command.isSome()) {
     command = flags.executor_command.get();
   } else if (flags.build_dir.isSome()) {
-    command = path::join(
-        flags.build_dir.get(), "src", "balloon-executor");
+    command = path::join(flags.build_dir.get(), "src", EXECUTOR_BINARY);
   } else {
-    command = path::join(
-        os::realpath(Path(argv[0]).dirname()).get(),
-        "balloon-executor");
+    command =
+      path::join(os::realpath(Path(argv[0]).dirname()).get(), EXECUTOR_BINARY);
   }
 
   executor.mutable_command()->set_value(command);
@@ -548,7 +549,7 @@ int main(int argc, char** argv)
 
   FrameworkInfo framework;
   framework.set_user(os::user().get());
-  framework.set_name("Balloon Framework (C++)");
+  framework.set_name(flags.name);
   framework.set_checkpoint(flags.checkpoint);
   framework.set_role("*");
   framework.add_capabilities()->set_type(
@@ -590,10 +591,9 @@ int main(int argc, char** argv)
     driver = new MesosSchedulerDriver(
         &scheduler, framework, flags.master, credential);
   } else {
-    framework.set_principal("balloon-framework-cpp");
+    framework.set_principal(FRAMEWORK_PRINCIPAL);
 
-    driver = new MesosSchedulerDriver(
-        &scheduler, framework, flags.master);
+    driver = new MesosSchedulerDriver(&scheduler, framework, flags.master);
   }
 
   int status = driver->run() == DRIVER_STOPPED ? 0 : 1;

@@ -205,6 +205,11 @@ AC_ARG_ENABLE([debug],
                               option won't change them]),
               [], [enable_debug=no])
 
+AC_ARG_ENABLE([grpc],
+              AS_HELP_STRING([--enable-grpc],
+                             [enable grpc support]),
+              [], [enable_grpc=no])
+
 AC_ARG_ENABLE([port-mapping-isolator],
               AS_HELP_STRING([--enable-port-mapping-isolator],
                              [enable port mapping network isolator]),
@@ -273,16 +278,14 @@ AC_ARG_ENABLE([xfs-disk-isolator],
                              [builds the XFS disk isolator]),
               [], [enable_xfs_disk_isolator=no])
 
-AC_ARG_ENABLE([zlib],
-            AS_HELP_STRING([--disable-zlib],
-                           [disables zlib compression, which means the webui
-                           will be far less responsive; not recommended]),
-            [], [enable_zlib=yes])
-
 AC_ARG_ENABLE([parallel_test_execution],
               AS_HELP_STRING([--enable-parallel-test-execution],
-                             [execute tests in parallel where possible]),
-            [], [enable_parallel_test_execution=no])
+                             [execute tests in parallel where possible]))
+
+AC_ARG_ENABLE([werror],
+              AS_HELP_STRING([--disable-werror],
+                             [do not treat compiler warnings as fatal errors]))
+
 
 ###############################################################################
 # Optional packages.
@@ -332,6 +335,13 @@ AC_ARG_WITH([gmock],
                             package in lieu of an installed version at a
                             location prefixed by the given path]),
             [without_bundled_gmock=yes], [])
+
+AC_ARG_WITH([grpc],
+            AS_HELP_STRING([--with-grpc@<:@=DIR@:>@],
+                           [excludes building and using the bundled grpc
+                            package in lieu of an installed version at a
+                            location prefixed by the given path]),
+            [without_bundled_grpc=yes], [])
 
 AC_ARG_WITH([http-parser],
             AS_HELP_STRING([--with-http-parser@<:@=DIR@:>@],
@@ -677,6 +687,12 @@ AS_IF([test "x$enable_parallel_test_execution" = "xyes"],
       [AC_SUBST([TEST_DRIVER],
        '${abs_top_srcdir}/support/mesos-gtest-runner.py'[' --sequential='*ROOT_*'']]))
 
+# Define `WERROR` if the use of `-Werror` was not disabled, leave
+# unset otherwise. An unset variable evaluates to an empty string
+# in autoconf's substitution.
+AS_IF([test "x$enable_werror" != "xno"],
+      [AC_SUBST([WERROR], [-Werror])])
+
 # Check for libunwind, and link it in if present.
 if test "x$OS_NAME" = "xfreebsd"; then
   AC_CHECK_LIB(execinfo, backtrace, LIBS="$LIBS -lexecinfo")
@@ -694,13 +710,6 @@ if test "x$found_gflags" = "xyes"; then
 else
   GFLAGS_LIBS=""
 fi
-
-AC_CHECK_LIB([z], [gzread], [],
-             [AC_MSG_ERROR([cannot find libz
--------------------------------------------------------------------
-libz is required for mesos to build.
--------------------------------------------------------------------
-])])
 
 AC_CHECK_TOOL([PATCHCOMMAND_TEST], [patch], [], [$PATH])
 if test -z "`echo $PATCHCOMMAND_TEST`"; then
@@ -1466,8 +1475,11 @@ AM_CONDITIONAL([WITH_BUNDLED_NVML],
 # CPPFLAGS while extending it by /include and to LDFLAGS while
 # extending it by /lib.
 if test -n "`echo $with_protobuf`"; then
-  CPPFLAGS="$CPPFLAGS -isystem ${with_protobuf}/include"
-  LDFLAGS="$LDFLAGS -L${with_protobuf}/lib"
+  PROTOBUF_CPPFLAGS="-isystem ${with_protobuf}/include"
+  PROTOBUF_LINKERFLAGS="-L${with_protobuf}/lib"
+
+  CPPFLAGS="$PROTOBUF_CPPFLAGS $CPPFLAGS"
+  LDFLAGS="$PROTOBUF_LINKERFLAGS $LDFLAGS"
 fi
 
 # Check if user has asked us to use a preinstalled protobuf, or if
@@ -1544,8 +1556,11 @@ fi
 AM_CONDITIONAL([WITH_BUNDLED_PROTOBUF],
                [test "x$with_bundled_protobuf" = "xyes"])
 
+AC_SUBST([PROTOBUF_CPPFLAGS])
 AC_SUBST([PROTOBUF_JAR])
+AC_SUBST([PROTOBUF_LINKERFLAGS])
 AC_SUBST([PROTOCOMPILER])
+
 
 if test -n "`echo $with_libev`"; then
   CPPFLAGS="$CPPFLAGS -isystem ${with_libev}/include"
@@ -1703,7 +1718,7 @@ __EOF__
 # distcheck failure on OSX by leaking build artefacts (.dsym).
 AS_IF([test "x${ac_cv_env_CFLAGS_set}" = "x"],
       [SASL_TEST_CFLAGS=""], [SASL_TEST_CFLAGS=$CFLAGS])
-$CC crammd5_installed.c $CPPFLAGS $SASL_TEST_CFLAGS $LDFLAGS -lsasl2 $LIBS \
+$CC crammd5_installed.c $CPPFLAGS $SASL_TEST_CFLAGS $LDFLAGS -lsasl2 \
   -o crammd5_installed 2>&1 >/dev/null
 
 # Run the test binary and get its output.
@@ -1731,31 +1746,40 @@ if test -z "`echo $with_ssl`" &&
 fi
 
 if test -n "`echo $with_ssl`"; then
-  CPPFLAGS="-isystem ${with_ssl}/include $CPPFLAGS"
-  LDFLAGS="-L${with_ssl}/lib $LDFLAGS"
+  SSL_CPPFLAGS="-isystem ${with_ssl}/include"
+  SSL_LINKERFLAGS="-L${with_ssl}/lib"
+
+  CPPFLAGS="$SSL_CPPFLAGS $CPPFLAGS"
+  LDFLAGS="$SSL_LINKERFLAGS $LDFLAGS"
 fi
 
-if test "x$enable_ssl" = "xyes"; then
-  AC_CHECK_HEADERS([openssl/ssl.h],
-                   [AC_CHECK_LIB([ssl],
-                                 [SSL_CTX_new],
-                                 [],
-                                 [AC_MSG_ERROR([cannot find libssl
--------------------------------------------------------------------
-libssl is required for an SSL-enabled build.
--------------------------------------------------------------------
-                                 ])])],
-                   [AC_MSG_ERROR([cannot find libssl headers
--------------------------------------------------------------------
-libssl is required for an SSL-enabled build.
--------------------------------------------------------------------
-  ])])
+AC_CHECK_LIB([crypto], [RAND_poll], [found_crypto=yes])
 
-  AC_CHECK_LIB([crypto], [RAND_poll], [], [AC_MSG_ERROR([cannot find libcrypto
+AC_CHECK_HEADERS([openssl/ssl.h],
+                 [AC_CHECK_LIB([ssl],
+                               [SSL_CTX_new],
+                               [found_ssl=yes],
+                               [],
+                               [-lcrypto])])
+
+if test "x$enable_ssl" = "xyes"; then
+  if test "x$found_ssl" != "xyes"; then
+    AC_MSG_ERROR([cannot find libssl
+-------------------------------------------------------------------
+libssl is required for an SSL-enabled build.
+-------------------------------------------------------------------
+    ])
+  fi
+
+  if test "x$found_crypto" != "xyes"; then
+    AC_MSG_ERROR([cannot find libcrypto
 -------------------------------------------------------------------
 libcrypto is required for an SSL-enabled build.
 -------------------------------------------------------------------
-  ])])
+    ])
+  fi
+
+  LIBS="-lssl -lcrypto $LIBS"
 
   if test "x$enable_libevent" = "xyes"; then
     AC_CHECK_HEADERS([event2/bufferevent_ssl.h],
@@ -1779,6 +1803,9 @@ libevent_openssl version 2+ headers are required for an SSL-enabled build.
 fi
 
 AM_CONDITIONAL([ENABLE_SSL], [test x"$enable_ssl" = "xyes"])
+
+AC_SUBST([SSL_CPPFLAGS])
+AC_SUBST([SSL_LINKERFLAGS])
 
 
 # Check if user has asked us to use a preinstalled stout, or if
@@ -1903,21 +1930,119 @@ AM_CONDITIONAL([ENABLE_XFS_DISK_ISOLATOR], [test "x$enable_xfs_disk_isolator" = 
 # the CPPFLAGS and LDFLAGS with respective /include and /lib path
 # suffixes.
 if test -n "`echo $with_zlib`" ; then
-    CPPFLAGS="-isystem ${with_zlib}/include $CPPFLAGS"
-    LDFLAGS="-L${with_zlib}/lib $LDFLAGS"
+  ZLIB_CPPFLAGS="-isystem ${with_zlib}/include"
+  ZLIB_LINKERFLAGS="-L${with_zlib}/lib"
+
+  CPPFLAGS="$ZLIB_CPPFLAGS $CPPFLAGS"
+  LDFLAGS="$ZLIB_LINKERFLAGS $LDFLAGS"
 fi
 
-# Check if we should/can build with libz.
-if test "x$enable_zlib" = "xyes"; then
-  AC_CHECK_LIB([z], [deflate, gzread, gzwrite, inflate], [],
-               [AC_MSG_ERROR([cannot find libz
+AC_CHECK_HEADERS([zlib.h],
+                 [AC_CHECK_LIB([z], [deflate, gzread, gzwrite, inflate], [],
+                               [AC_MSG_ERROR([cannot find libz
 -------------------------------------------------------------------
-This means HTTP responses will be slower because we cannot use
-compression; you probably want to download and install zlib, but
-you can get away without it by doing --disable-zlib.
+libz is required for Mesos to build.
 -------------------------------------------------------------------
-  ])])
+                               ])])],
+                 [AC_MSG_ERROR([cannot find libz headers
+-------------------------------------------------------------------
+libz headers are required for Mesos to build.
+-------------------------------------------------------------------
+                 ])])
+
+AC_SUBST([ZLIB_CPPFLAGS])
+AC_SUBST([ZLIB_LINKERFLAGS])
+
+
+# Check if grpc prefix path was supplied and if so, add it to the
+# CPPFLAGS and LDFLAGS with respective /include and /lib path suffixes.
+if test -n "`echo $with_grpc`"; then
+  if test "x$without_bundled_protobuf" != "xyes"; then
+    AC_MSG_ERROR([protobuf not specified
+-------------------------------------------------------------------
+You have requested the use of a non-bundled grpc without specifying
+the protobuf library it uses. This is prohibited to avoid using
+conflicting versions of protobuf libraries. Please specify the
+location of protobuf used by grpc by providing a prefix path via
+--with-protobuf=DIR.
+-------------------------------------------------------------------
+    ])
+  fi
+
+  CPPFLAGS="$CPPFLAGS -isystem ${with_grpc}/include"
+  LDFLAGS="$LDFLAGS -L${with_grpc}/lib"
 fi
+
+if test "x$enable_grpc" = "xyes"; then
+  # Check if user has asked us to use a preinstalled grpc, or if they
+  # asked us to ignore all bundled libraries while compiling and linking.
+  if test "x$without_bundled_grpc" = "xyes" || \
+     test "x$enable_bundled" != "xyes"; then
+    # Use the system default prefix if not specified.
+    if test -n "`echo $with_grpc`"; then
+      GRPCPREFIX="${with_grpc}"
+    elif test "x$enable_bundled" != "xyes"; then
+      GRPCPREFIX="/usr"
+    fi
+
+    # Check if headers and library were located.
+    saved_LIBS="$LIBS"
+    LIBS="-lgrpc++ -lgrpc -lgpr $LIBS"
+    AC_LANG_PUSH([C++])
+    AC_CHECK_HEADERS([grpc++/grpc++.h],
+                     [AC_LINK_IFELSE(
+                         [AC_LANG_PROGRAM([#include <grpc++/grpc++.h>],
+                                          [grpc::Version();])],
+                         [found_grpc=yes],
+                         [found_grpc=no])],
+                     [found_grpc=no])
+    AC_LANG_POP()
+    LIBS="$saved_LIBS"
+
+    if test "x$found_grpc" = "xyes"; then
+      with_bundled_grpc=no
+
+      AC_CHECK_TOOL([GRPC_CXX_PLUGIN_TEST],
+                    [grpc_cpp_plugin],
+                    [],
+                    [$GRPCPREFIX/bin])
+
+      if test -z "`echo $GRPC_CXX_PLUGIN_TEST`"; then
+        AC_MSG_ERROR([grpc_cpp_plugin not found in PATH])
+      fi
+
+      GRPC_CXX_PLUGIN="$GRPCPREFIX/bin/grpc_cpp_plugin"
+
+    else
+      AC_MSG_ERROR([cannot find grpc
+-------------------------------------------------------------------
+You have requested the use of a non-bundled grpc but no suitable
+grpc could be found.
+
+You may want specify the location of grpc by providing a prefix
+path via --with-grpc=DIR, or check that the path you provided is
+correct if you are already doing this.
+-------------------------------------------------------------------
+      ])
+    fi
+  else
+    if test "x$found_ssl" != "xyes"; then
+      AC_MSG_ERROR([cannot find libssl
+-------------------------------------------------------------------
+libssl is required for gRPC to build.
+-------------------------------------------------------------------
+      ])
+    fi
+
+    with_bundled_grpc=yes
+  fi
+fi
+
+AM_CONDITIONAL([ENABLE_GRPC], [test "x$enable_grpc" = "xyes"])
+AM_CONDITIONAL([WITH_BUNDLED_GRPC],
+               [test "x$with_bundled_grpc" = "xyes"])
+
+AC_SUBST([GRPC_CXX_PLUGIN])
 
 
 # Check if ZooKeeper prefix path was supplied and if so, add it to
@@ -1971,6 +2096,10 @@ AM_CONDITIONAL([WITH_BUNDLED_ZOOKEEPER],
 # affected by libcxx undefined behavior,
 # https://llvm.org/bugs/show_bug.cgi?id=28469.
 AC_MSG_CHECKING([C++ standard library for undefined behaviour with selected optimization level])
+# NOTE: We clear `LIBS` here to prevent linking in libraries unrelated
+# to the test. These libraries might not be in the linker lookup paths.
+saved_LIBS="$LIBS"
+LIBS=""
 AC_LANG_PUSH([C++])
 AC_RUN_IFELSE([
   AC_LANG_SOURCE([[
@@ -1996,6 +2125,7 @@ AC_RUN_IFELSE([
   ]
 )
 AC_LANG_POP([C++])
+LIBS="$saved_LIBS"
 
 
 # NOTE: Do not update any compiler or linker settings (e.g. CXXFLAGS,
