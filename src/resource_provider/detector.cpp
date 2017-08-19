@@ -14,34 +14,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "resource_provider/local.hpp"
+#include "resource_provider/detector.hpp"
 
-#include "resource_provider/storage/provider.hpp"
+namespace http = process::http;
 
-using process::Owned;
+using process::Future;
 
 namespace mesos {
 namespace internal {
 
-Try<Owned<LocalResourceProvider>> LocalResourceProvider::create(
-    const process::http::URL& url,
-    const ResourceProviderInfo& info)
+ConstantEndpointDetector::ConstantEndpointDetector(const http::URL& _url)
+  : url(_url) {}
+
+
+Future<Option<http::URL>> ConstantEndpointDetector::detect(
+    const Option<http::URL>& previous)
 {
-  // TODO(jieyu): Document the built-in local resource providers.
-  if (info.type() == "org.apache.mesos.rp.local.storage") {
-    Try<Owned<LocalResourceProvider>> provider =
-      StorageLocalResourceProvider::create(url, info);
-
-    if (provider.isError()) {
-      return Error(
-          "Failed to create storage local resource provider: " +
-          provider.error());
-    }
-
-    return provider.get();
+  if (previous.isNone() || stringify(previous.get()) != stringify(url)) {
+    return url;
+  } else {
+    return Future<Option<http::URL>>(); // A pending future.
   }
-
-  return Error("Unknown resource provider type '" + info.type() + "'");
 }
 
 } // namespace internal {

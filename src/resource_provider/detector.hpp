@@ -14,35 +14,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "resource_provider/local.hpp"
+#ifndef __RESOURCE_PROVIDER_DETECTOR_HPP__
+#define __RESOURCE_PROVIDER_DETECTOR_HPP__
 
-#include "resource_provider/storage/provider.hpp"
-
-using process::Owned;
+#include <process/future.hpp>
+#include <process/http.hpp>
 
 namespace mesos {
 namespace internal {
 
-Try<Owned<LocalResourceProvider>> LocalResourceProvider::create(
-    const process::http::URL& url,
-    const ResourceProviderInfo& info)
+class EndpointDetector
 {
-  // TODO(jieyu): Document the built-in local resource providers.
-  if (info.type() == "org.apache.mesos.rp.local.storage") {
-    Try<Owned<LocalResourceProvider>> provider =
-      StorageLocalResourceProvider::create(url, info);
+public:
+  virtual ~EndpointDetector() {}
 
-    if (provider.isError()) {
-      return Error(
-          "Failed to create storage local resource provider: " +
-          provider.error());
-    }
+  virtual process::Future<Option<process::http::URL>> detect(
+      const Option<process::http::URL>& previous) = 0;
+};
 
-    return provider.get();
-  }
 
-  return Error("Unknown resource provider type '" + info.type() + "'");
-}
+class ConstantEndpointDetector : public EndpointDetector
+{
+public:
+  explicit ConstantEndpointDetector(const process::http::URL& url);
+
+  process::Future<Option<process::http::URL>> detect(
+      const Option<process::http::URL>& previous) override;
+
+private:
+  const process::http::URL& url;
+};
 
 } // namespace internal {
 } // namespace mesos {
+
+#endif // __RESOURCE_PROVIDER_DETECTOR_HPP__

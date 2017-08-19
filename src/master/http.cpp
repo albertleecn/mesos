@@ -855,6 +855,10 @@ Future<Response> Master::Http::subscribe(
 
           http.send<mesos::master::Event, v1::master::Event>(event);
 
+          mesos::master::Event heartbeatEvent;
+          heartbeatEvent.set_type(mesos::master::Event::HEARTBEAT);
+          http.send<mesos::master::Event, v1::master::Event>(heartbeatEvent);
+
           return ok;
     }));
 }
@@ -1498,7 +1502,7 @@ string Master::Http::FRAMEWORKS_HELP()
         "",
         "Query parameters:",
         ">        framework_id=VALUE   The ID of the framework returned "
-        "(when no framework ID specified, all frameworks will be returned)."),
+        "(if no framework ID is specified, all frameworks will be returned)."),
     AUTHENTICATION(true),
     AUTHORIZATION(
         "This endpoint might be filtered based on the user accessing it.",

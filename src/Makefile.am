@@ -967,6 +967,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   oci/spec.cpp								\
   posix/rlimits.cpp							\
   resource_provider/daemon.cpp						\
+  resource_provider/detector.cpp					\
   resource_provider/driver.cpp						\
   resource_provider/local.cpp						\
   resource_provider/manager.cpp						\
@@ -1106,6 +1107,8 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   module/manager.hpp							\
   posix/rlimits.hpp							\
   resource_provider/daemon.hpp						\
+  resource_provider/detector.hpp					\
+  resource_provider/http_connection.hpp					\
   resource_provider/local.hpp						\
   resource_provider/manager.hpp						\
   resource_provider/message.hpp						\
@@ -2373,7 +2376,7 @@ mesos_tests_SOURCES =						\
   tests/reservation_endpoints_tests.cpp				\
   tests/reservation_tests.cpp					\
   tests/resource_offers_tests.cpp				\
-  tests/resource_provider_http_api_tests.cpp			\
+  tests/resource_provider_manager_tests.cpp			\
   tests/resource_provider_validation_tests.cpp			\
   tests/resources_tests.cpp					\
   tests/resources_utils.cpp					\
