@@ -32,6 +32,7 @@
 #include <mesos/authentication/http/basic_authenticator_factory.hpp>
 
 #include <process/clock.hpp>
+#include <process/collect.hpp>
 #include <process/future.hpp>
 #include <process/gmock.hpp>
 #include <process/http.hpp>
@@ -121,6 +122,7 @@ using process::http::Unauthorized;
 
 using process::http::authentication::Principal;
 
+using std::list;
 using std::map;
 using std::shared_ptr;
 using std::string;
@@ -4039,7 +4041,7 @@ TEST_F(SlaveTest, KillTaskBetweenRunTaskParts)
     .WillOnce(Invoke(&slave, &MockSlave::unmocked_runTask));
 
   // Saved arguments from Slave::_run().
-  Future<bool> future;
+  Future<list<bool>> unschedules;
   FrameworkInfo frameworkInfo;
   ExecutorInfo executorInfo;
   Option<TaskGroupInfo> taskGroup;
@@ -4050,7 +4052,7 @@ TEST_F(SlaveTest, KillTaskBetweenRunTaskParts)
   Future<Nothing> _run;
   EXPECT_CALL(slave, _run(_, _, _, _, _))
     .WillOnce(DoAll(FutureSatisfy(&_run),
-                    SaveArg<0>(&future),
+                    SaveArg<0>(&unschedules),
                     SaveArg<1>(&frameworkInfo),
                     SaveArg<2>(&executorInfo),
                     SaveArg<3>(&task_),
@@ -4065,22 +4067,21 @@ TEST_F(SlaveTest, KillTaskBetweenRunTaskParts)
     .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_killTask),
                     FutureSatisfy(&killTask)));
 
-  driver.killTask(task.task_id());
-
-  AWAIT_READY(killTask);
-
-  // Since this is the only task ever for this framework, the
-  // framework should get removed in Slave::_run().
-  // Thus we can observe that this happens before Shutdown().
   Future<Nothing> removeFramework;
   EXPECT_CALL(slave, removeFramework(_))
     .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_removeFramework),
                     FutureSatisfy(&removeFramework)));
 
-  slave.unmocked__run(
-      future, frameworkInfo, executorInfo, task_, taskGroup);
+  driver.killTask(task.task_id());
 
+  AWAIT_READY(killTask);
+
+  // The agent will remove the framework when killing this task
+  // since there remain no more tasks.
   AWAIT_READY(removeFramework);
+
+  slave.unmocked__run(
+      unschedules, frameworkInfo, executorInfo, task_, taskGroup);
 
   AWAIT_READY(status);
   EXPECT_EQ(TASK_KILLED, status->state());
@@ -4093,9 +4094,140 @@ TEST_F(SlaveTest, KillTaskBetweenRunTaskParts)
 }
 
 
-// This test ensures that if a `killTask()` for an executor is received by the
-// agent before the executor registers, the executor is properly cleaned up.
-TEST_F(SlaveTest, KillTaskUnregisteredExecutor)
+// This test ensures was added due to MESOS-7863, where the
+// agent previously dropped TASK_KILLED in the cases outlined
+// in the issue.
+TEST_F(SlaveTest, KillMultiplePendingTasks)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  MockExecutor exec(DEFAULT_EXECUTOR_ID);
+  TestContainerizer containerizer(&exec);
+
+  StandaloneMasterDetector detector(master.get()->pid);
+
+  MockSlave slave(CreateSlaveFlags(), &detector, &containerizer);
+  spawn(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_NE(0u, offers->size());
+
+  // We only pause the clock after receiving the offer since the
+  // agent uses a delay to re-register.
+  //
+  // TODO(bmahler): Remove the initial agent delay within the tests.
+  Clock::pause();
+
+  Resources taskResources = Resources::parse("cpus:0.1;mem:32;disk:32").get();
+
+  TaskInfo task1 = createTask(
+      offers->at(0).slave_id(), taskResources, "echo hi");
+
+  TaskInfo task2 = createTask(
+      offers->at(0).slave_id(), taskResources, "echo hi");
+
+  EXPECT_CALL(containerizer, launch(_, _, _, _))
+    .Times(0);
+
+  Future<TaskStatus> status1, status2;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status1))
+    .WillOnce(FutureArg<1>(&status2));
+
+  EXPECT_CALL(slave, runTask(_, _, _, _, _))
+    .WillOnce(Invoke(&slave, &MockSlave::unmocked_runTask))
+    .WillOnce(Invoke(&slave, &MockSlave::unmocked_runTask));
+
+  // Skip what Slave::_run() normally does, save its arguments for
+  // later, tie reaching the critical moment when to kill the task to
+  // a future.
+  Future<list<bool>> unschedules1, unschedules2;
+  FrameworkInfo frameworkInfo1, frameworkInfo2;
+  ExecutorInfo executorInfo1, executorInfo2;
+  Option<TaskGroupInfo> taskGroup1, taskGroup2;
+  Option<TaskInfo> task_1, task_2;
+
+  Future<Nothing> _run1, _run2;
+  EXPECT_CALL(slave, _run(_, _, _, _, _))
+    .WillOnce(DoAll(FutureSatisfy(&_run1),
+                    SaveArg<0>(&unschedules1),
+                    SaveArg<1>(&frameworkInfo1),
+                    SaveArg<2>(&executorInfo1),
+                    SaveArg<3>(&task_1),
+                    SaveArg<4>(&taskGroup1)))
+    .WillOnce(DoAll(FutureSatisfy(&_run2),
+                    SaveArg<0>(&unschedules2),
+                    SaveArg<1>(&frameworkInfo2),
+                    SaveArg<2>(&executorInfo2),
+                    SaveArg<3>(&task_2),
+                    SaveArg<4>(&taskGroup2)));
+
+  driver.launchTasks(offers.get()[0].id(), {task1, task2});
+
+  AWAIT_READY(process::await(_run1, _run2));
+
+  Future<Nothing> killTask1, killTask2;
+  EXPECT_CALL(slave, killTask(_, _))
+    .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_killTask),
+                    FutureSatisfy(&killTask1)))
+    .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_killTask),
+                    FutureSatisfy(&killTask2)));
+
+  Future<Nothing> removeFramework;
+  EXPECT_CALL(slave, removeFramework(_))
+    .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_removeFramework),
+                    FutureSatisfy(&removeFramework)));
+
+  driver.killTask(task1.task_id());
+  driver.killTask(task2.task_id());
+
+  AWAIT_READY(process::await(killTask1, killTask2));
+
+  // We expect the tasks to be killed and framework removed.
+  AWAIT_READY(status1);
+  EXPECT_EQ(TASK_KILLED, status1->state());
+
+  AWAIT_READY(status2);
+  EXPECT_EQ(TASK_KILLED, status2->state());
+
+  AWAIT_READY(removeFramework);
+
+  // The `__run` continuations should have no effect.
+  slave.unmocked__run(
+      unschedules1, frameworkInfo1, executorInfo1, task_1, taskGroup1);
+
+  slave.unmocked__run(
+      unschedules2, frameworkInfo2, executorInfo2, task_2, taskGroup2);
+
+  Clock::settle();
+
+  driver.stop();
+  driver.join();
+
+  terminate(slave);
+  wait(slave);
+}
+
+
+// This test verifies that when the agent gets a `killTask`
+// message for a queued task on a registering executor, a
+// the agent will generate a TASK_KILLED and will shut down
+// the executor.
+TEST_F(SlaveTest, KillQueuedTaskDuringExecutorRegistration)
 {
   // Start a master.
   Try<Owned<cluster::Master>> master = StartMaster();
@@ -4163,7 +4295,7 @@ TEST_F(SlaveTest, KillTaskUnregisteredExecutor)
 
   AWAIT_READY(status);
   EXPECT_EQ(TASK_KILLED, status->state());
-  EXPECT_EQ(TaskStatus::REASON_EXECUTOR_UNREGISTERED, status->reason());
+  EXPECT_EQ(TaskStatus::REASON_TASK_KILLED_DURING_LAUNCH, status->reason());
 
   // Now let the executor register by spoofing the message.
   RegisterExecutorMessage registerExecutor;
@@ -6905,7 +7037,7 @@ TEST_F(SlaveTest, KillTaskGroupBetweenRunTaskParts)
     .WillOnce(Invoke(&slave, &MockSlave::unmocked_runTaskGroup));
 
   // Saved arguments from `Slave::_run()`.
-  Future<bool> future;
+  Future<list<bool>> unschedules;
   FrameworkInfo frameworkInfo;
   ExecutorInfo executorInfo_;
   Option<TaskGroupInfo> taskGroup_;
@@ -6917,7 +7049,7 @@ TEST_F(SlaveTest, KillTaskGroupBetweenRunTaskParts)
   Future<Nothing> _run;
   EXPECT_CALL(slave, _run(_, _, _, _, _))
     .WillOnce(DoAll(FutureSatisfy(&_run),
-                    SaveArg<0>(&future),
+                    SaveArg<0>(&unschedules),
                     SaveArg<1>(&frameworkInfo),
                     SaveArg<2>(&executorInfo_),
                     SaveArg<3>(&task_),
@@ -6965,6 +7097,13 @@ TEST_F(SlaveTest, KillTaskGroupBetweenRunTaskParts)
     .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_killTask),
                     FutureSatisfy(&killTask)));
 
+  // Since this is the only task group for this framework, the
+  // framework should get removed when the task is killed.
+  Future<Nothing> removeFramework;
+  EXPECT_CALL(slave, removeFramework(_))
+    .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_removeFramework),
+                    FutureSatisfy(&removeFramework)));
+
   {
     Call call;
     call.mutable_framework_id()->CopyFrom(frameworkId);
@@ -6979,17 +7118,10 @@ TEST_F(SlaveTest, KillTaskGroupBetweenRunTaskParts)
 
   AWAIT_READY(killTask);
 
-  // Since this is the only task group for this framework, the
-  // framework should get removed in `Slave::_run()`.
-  Future<Nothing> removeFramework;
-  EXPECT_CALL(slave, removeFramework(_))
-    .WillOnce(DoAll(Invoke(&slave, &MockSlave::unmocked_removeFramework),
-                    FutureSatisfy(&removeFramework)));
+  AWAIT_READY(removeFramework);
 
   slave.unmocked__run(
-      future, frameworkInfo, executorInfo_, task_, taskGroup_);
-
-  AWAIT_READY(removeFramework);
+      unschedules, frameworkInfo, executorInfo_, task_, taskGroup_);
 
   AWAIT_READY(update1);
   AWAIT_READY(update2);
