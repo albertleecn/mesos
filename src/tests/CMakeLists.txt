@@ -95,6 +95,7 @@ set(MESOS_TESTS_SRC
   authentication_tests.cpp
   check_tests.cpp
   command_executor_tests.cpp
+  common_validation_tests.cpp
   credentials_tests.cpp
   default_executor_tests.cpp
   exception_tests.cpp
@@ -238,6 +239,7 @@ if (LINUX)
     containerizer/rootfs.cpp
     containerizer/runtime_isolator_tests.cpp
     containerizer/sched_tests.cpp
+    containerizer/volume_host_path_isolator_tests.cpp
     containerizer/volume_image_isolator_tests.cpp
     containerizer/volume_secret_isolator_tests.cpp
     )

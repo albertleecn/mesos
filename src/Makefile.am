@@ -1277,6 +1277,7 @@ MESOS_LINUX_FILES =									\
   slave/containerizer/mesos/isolators/namespaces/pid.cpp				\
   slave/containerizer/mesos/isolators/network/cni/cni.cpp				\
   slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/port_mapper.cpp	\
+  slave/containerizer/mesos/isolators/volume/host_path.cpp				\
   slave/containerizer/mesos/isolators/volume/image.cpp					\
   slave/containerizer/mesos/isolators/volume/secret.cpp					\
   slave/containerizer/mesos/provisioner/backends/aufs.cpp				\
@@ -1324,6 +1325,7 @@ MESOS_LINUX_FILES +=									\
   slave/containerizer/mesos/isolators/namespaces/pid.hpp				\
   slave/containerizer/mesos/isolators/network/cni/cni.hpp				\
   slave/containerizer/mesos/isolators/network/cni/plugins/port_mapper/port_mapper.hpp	\
+  slave/containerizer/mesos/isolators/volume/host_path.hpp				\
   slave/containerizer/mesos/isolators/volume/image.hpp					\
   slave/containerizer/mesos/isolators/volume/secret.hpp					\
   slave/containerizer/mesos/provisioner/backends/aufs.hpp				\
@@ -2353,6 +2355,7 @@ mesos_tests_SOURCES =						\
   tests/check_tests.cpp						\
   tests/cluster.cpp						\
   tests/command_executor_tests.cpp				\
+  tests/common_validation_tests.cpp				\
   tests/container_logger_tests.cpp				\
   tests/containerizer.cpp					\
   tests/cram_md5_authentication_tests.cpp			\
@@ -2512,6 +2515,7 @@ mesos_tests_SOURCES +=						\
   tests/containerizer/runtime_isolator_tests.cpp		\
   tests/containerizer/sched_tests.cpp				\
   tests/containerizer/setns_test_helper.cpp			\
+  tests/containerizer/volume_host_path_isolator_tests.cpp	\
   tests/containerizer/volume_image_isolator_tests.cpp		\
   tests/containerizer/volume_secret_isolator_tests.cpp
 endif

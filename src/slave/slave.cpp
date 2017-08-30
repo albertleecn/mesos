@@ -1585,6 +1585,30 @@ void Slave::doReliableRegistration(Duration maxBackoff)
       }
     }
 
+    // If the resources don't have reservation refinements, send them
+    // to the master in "pre-reservation-refinement" format for backward
+    // compatibility with old masters. If downgrading is not possible
+    // without losing information, send the resources in the
+    // "post-reservation-refinement" format. We ignore the return value of
+    // `downgradeResources` because for now, we send the result either way.
+    //
+    // TODO(mpark): Do something smarter with the result once something
+    // like a master capability is introduced.
+    foreach (Task& task, *message.mutable_tasks()) {
+      downgradeResources(task.mutable_resources());
+    }
+
+    foreach (ExecutorInfo& executor, *message.mutable_executor_infos()) {
+      downgradeResources(executor.mutable_resources());
+    }
+
+    foreach (Archive::Framework& completedFramework,
+             *message.mutable_completed_frameworks()) {
+      foreach (Task& task, *completedFramework.mutable_tasks()) {
+        downgradeResources(task.mutable_resources());
+      }
+    }
+
     CHECK_SOME(master);
     send(master.get(), message);
   }
@@ -6098,6 +6122,14 @@ Future<Nothing> Slave::recover(const Try<state::State>& state)
       // Cleaning up the slave state to avoid any state recovery for the
       // old agent.
       slaveState = None();
+
+      // Remove the "latest" symlink if it exists to "checkpoint" the
+      // decision to recover as a new agent.
+      const string& latest = paths::getLatestSlavePath(metaDir);
+      if (os::exists(latest)) {
+        CHECK_SOME(os::rm(latest))
+          << "Failed to remove latest symlink '" << latest << "'";
+      }
     } else {
       info = slaveState->info.get(); // Recover the slave info.
 
