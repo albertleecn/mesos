@@ -611,7 +611,6 @@ protected:
 
   void ___reregisterSlave(
       Slave* slave,
-      const std::vector<Task>& tasks,
       const std::vector<FrameworkInfo>& frameworks);
 
   // 'future' is the future returned by the authenticator.
@@ -951,7 +950,9 @@ private:
       const process::Future<bool>& authorized);
 
   // Subscribes a client to the 'api/vX' endpoint.
-  void subscribe(const HttpConnection& http);
+  void subscribe(
+      const HttpConnection& http,
+      const Option<process::http::authentication::Principal>& principal);
 
   void teardown(Framework* framework);
 
@@ -1677,6 +1678,7 @@ private:
   friend struct Metrics;
   friend struct Slave;
   friend struct SlavesWriter;
+  friend struct Subscriber;
 
   // NOTE: Since 'getOffer', 'getInverseOffer' and 'slaves' are
   // protected, we need to make the following functions friends.
@@ -1896,7 +1898,13 @@ private:
     // might only be interested in a subset of events.
     struct Subscriber
     {
-      Subscriber(const HttpConnection& _http) : http(_http)
+      Subscriber(
+          Master* _master,
+          const HttpConnection& _http,
+          const Option<process::http::authentication::Principal> _principal)
+        : master(_master),
+          http(_http),
+          principal(_principal)
       {
         mesos::master::Event event;
         event.set_type(mesos::master::Event::HEARTBEAT);
@@ -1917,6 +1925,12 @@ private:
       Subscriber(const Subscriber&) = delete;
       Subscriber& operator=(const Subscriber&) = delete;
 
+      void send(const mesos::master::Event& event,
+          const process::Owned<AuthorizationAcceptor>& authorizeRole,
+          const process::Owned<AuthorizationAcceptor>& authorizeFramework,
+          const process::Owned<AuthorizationAcceptor>& authorizeTask,
+          const process::Owned<AuthorizationAcceptor>& authorizeExecutor);
+
       ~Subscriber()
       {
         // TODO(anand): Refactor `HttpConnection` to being a RAII class instead.
@@ -1929,9 +1943,11 @@ private:
         wait(heartbeater.get());
       }
 
+      Master* master;
       HttpConnection http;
       process::Owned<Heartbeater<mesos::master::Event, v1::master::Event>>
         heartbeater;
+      const Option<process::http::authentication::Principal> principal;
     };
 
     // Sends the event to all subscribers connected to the 'api/vX' endpoint.
