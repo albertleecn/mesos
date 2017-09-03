@@ -14,11 +14,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO(josephw): Enable this on Windows after sorting out the dependencies.
-if (NOT WIN32)
-  # THE MESOS EXECUTE.
-  # Utility used to schedule and run a command in a mesos cluster.
-  ################################################################
-  add_executable(mesos-execute execute.cpp)
-  target_link_libraries(mesos-execute PRIVATE mesos)
-endif ()
+find_package(Threads REQUIRED)
+
+add_library(stout INTERFACE)
+target_include_directories(stout INTERFACE include)
+
+target_link_libraries(
+  stout INTERFACE
+  apr
+  boost
+  curl
+  elfio
+  glog
+  picojson
+  protobuf
+  Threads::Threads
+  zlib
+  $<$<PLATFORM_ID:Linux>:rt dl svn>
+  $<$<PLATFORM_ID:Darwin>:svn>
+  $<$<PLATFORM_ID:Windows>:Ws2_32 IPHlpAPI Mswsock Secur32 Userenv>)
+
+add_subdirectory(tests)

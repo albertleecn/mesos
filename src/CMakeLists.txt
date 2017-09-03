@@ -19,121 +19,218 @@
 include(MesosProtobuf)
 
 # Build the protobuf structs.
-PROTOC_TO_INCLUDE_DIR(ACLS                  mesos/authorizer/acls)
-PROTOC_TO_INCLUDE_DIR(AGENT                 mesos/agent/agent)
-PROTOC_TO_INCLUDE_DIR(ALLOCATOR             mesos/allocator/allocator)
-PROTOC_TO_INCLUDE_DIR(APPC_SPEC             mesos/appc/spec)
-PROTOC_TO_INCLUDE_DIR(AUTHENTICATION        mesos/authentication/authentication)
-PROTOC_TO_INCLUDE_DIR(AUTHORIZATION         mesos/authorizer/authorizer)
-PROTOC_TO_INCLUDE_DIR(CONTAINERIZER         mesos/slave/containerizer)
-PROTOC_TO_INCLUDE_DIR(DOCKER_SPEC           mesos/docker/spec)
-PROTOC_TO_INCLUDE_DIR(DOCKER_V1             mesos/docker/v1)
-PROTOC_TO_INCLUDE_DIR(DOCKER_V2             mesos/docker/v2)
-PROTOC_TO_INCLUDE_DIR(EXECUTOR              mesos/executor/executor)
-PROTOC_TO_INCLUDE_DIR(FETCHER               mesos/fetcher/fetcher)
-PROTOC_TO_INCLUDE_DIR(HOOK                  mesos/module/hook)
-PROTOC_TO_INCLUDE_DIR(MAINTENANCE           mesos/maintenance/maintenance)
-PROTOC_TO_INCLUDE_DIR(MASTER                mesos/master/master)
-PROTOC_TO_INCLUDE_DIR(MESOS                 mesos/mesos)
-PROTOC_TO_INCLUDE_DIR(MODULE                mesos/module/module)
-PROTOC_TO_INCLUDE_DIR(OVERSUBSCRIPTION      mesos/slave/oversubscription)
-PROTOC_TO_INCLUDE_DIR(OCI_SPEC              mesos/oci/spec)
-PROTOC_TO_INCLUDE_DIR(QUOTA                 mesos/quota/quota)
-PROTOC_TO_INCLUDE_DIR(RESOURCE_PROVIDER     mesos/resource_provider/resource_provider)
-PROTOC_TO_INCLUDE_DIR(SCHEDULER             mesos/scheduler/scheduler)
-PROTOC_TO_INCLUDE_DIR(STATE                 mesos/state/state)
-PROTOC_TO_INCLUDE_DIR(URI                   mesos/uri/uri)
-PROTOC_TO_INCLUDE_DIR(V1_AGENT              mesos/v1/agent/agent)
-PROTOC_TO_INCLUDE_DIR(V1_ALLOCATOR          mesos/v1/allocator/allocator)
-PROTOC_TO_INCLUDE_DIR(V1_EXECUTOR           mesos/v1/executor/executor)
-PROTOC_TO_INCLUDE_DIR(V1_MAINTENANCE        mesos/v1/maintenance/maintenance)
-PROTOC_TO_INCLUDE_DIR(V1_MASTER             mesos/v1/master/master)
-PROTOC_TO_INCLUDE_DIR(V1_MESOS              mesos/v1/mesos)
-PROTOC_TO_INCLUDE_DIR(V1_QUOTA              mesos/v1/quota/quota)
-PROTOC_TO_INCLUDE_DIR(V1_RESOURCE_PROVIDER  mesos/v1/resource_provider/resource_provider)
-PROTOC_TO_INCLUDE_DIR(V1_SCHEDULER          mesos/v1/scheduler/scheduler)
+#
+# NOTE: `PROTOC_GENERATE` will list append to `PUBLIC_PROTOBUF_SRC`,
+# `INTERNAL_PROTOBUF_SRC`, and/or `JAVA_PROTOBUF_SRC` depending on the
+# `INTERNAL` and `JAVA` options.
+set(PUBLIC_PROTOBUF_SRC "")
+PROTOC_GENERATE(TARGET mesos/agent/agent)
+PROTOC_GENERATE(TARGET mesos/allocator/allocator)
+PROTOC_GENERATE(TARGET mesos/appc/spec)
+PROTOC_GENERATE(TARGET mesos/authentication/authentication)
+PROTOC_GENERATE(TARGET mesos/authorizer/acls)
+PROTOC_GENERATE(TARGET mesos/authorizer/authorizer)
+PROTOC_GENERATE(TARGET mesos/docker/spec)
+PROTOC_GENERATE(TARGET mesos/docker/v1)
+PROTOC_GENERATE(TARGET mesos/docker/v2)
+PROTOC_GENERATE(TARGET mesos/maintenance/maintenance)
+PROTOC_GENERATE(TARGET mesos/master/master)
+PROTOC_GENERATE(TARGET mesos/module/hook)
+PROTOC_GENERATE(TARGET mesos/module/module)
+PROTOC_GENERATE(TARGET mesos/oci/spec)
+PROTOC_GENERATE(TARGET mesos/quota/quota)
+PROTOC_GENERATE(TARGET mesos/resource_provider/resource_provider)
+PROTOC_GENERATE(TARGET mesos/slave/containerizer)
+PROTOC_GENERATE(TARGET mesos/slave/oversubscription)
+PROTOC_GENERATE(TARGET mesos/state/state)
+PROTOC_GENERATE(TARGET mesos/uri/uri)
 
-PROTOC_TO_SRC_DIR(INTERNAL_FLAGS                messages/flags)
-PROTOC_TO_SRC_DIR(INTERNAL_LOG                  messages/log)
-PROTOC_TO_SRC_DIR(INTERNAL_MESSAGES             messages/messages)
-PROTOC_TO_SRC_DIR(INTERNAL_STATE                messages/state)
-PROTOC_TO_SRC_DIR(ISOLATOR_CNI_SPEC             slave/containerizer/mesos/isolators/network/cni/spec)
-PROTOC_TO_SRC_DIR(ISOLATOR_DOCKER_VOLUME_STATE  slave/containerizer/mesos/isolators/docker/volume/state)
-PROTOC_TO_SRC_DIR(PROVISIONER_DOCKER            slave/containerizer/mesos/provisioner/docker/message)
-PROTOC_TO_SRC_DIR(REGISTRY                      master/registry)
+# NOTE: The JAVA option is a noop if Java is disabled.
+set(JAVA_PROTOBUF_SRC "")
+PROTOC_GENERATE(JAVA TARGET mesos/executor/executor)
+PROTOC_GENERATE(JAVA TARGET mesos/fetcher/fetcher)
+PROTOC_GENERATE(JAVA TARGET mesos/mesos)
+PROTOC_GENERATE(JAVA TARGET mesos/scheduler/scheduler)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/agent/agent)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/allocator/allocator)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/executor/executor)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/maintenance/maintenance)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/master/master)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/mesos)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/quota/quota)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/resource_provider/resource_provider)
+PROTOC_GENERATE(JAVA TARGET mesos/v1/scheduler/scheduler)
 
-set(PUBLIC_PROTOBUF_SRC
-  ${ACLS_PROTO_CC}
-  ${AGENT_PROTO_CC}
-  ${ALLOCATOR_PROTO_CC}
-  ${APPC_SPEC_PROTO_CC}
-  ${AUTHENTICATION_PROTO_CC}
-  ${AUTHORIZATION_PROTO_CC}
-  ${CONTAINERIZER_PROTO_CC}
-  ${DOCKER_SPEC_PROTO_CC}
-  ${DOCKER_V1_PROTO_CC}
-  ${DOCKER_V2_PROTO_CC}
-  ${EXECUTOR_PROTO_CC}
-  ${FETCHER_PROTO_CC}
-  ${HOOK_PROTO_CC}
-  ${MAINTENANCE_PROTO_CC}
-  ${MASTER_PROTO_CC}
-  ${MESOS_PROTO_CC}
-  ${MODULE_PROTO_CC}
-  ${OCI_SPEC_PROTO_CC}
-  ${OVERSUBSCRIPTION_PROTO_CC}
-  ${QUOTA_PROTO_CC}
-  ${RESOURCE_PROVIDER_PROTO_CC}
-  ${SCHEDULER_PROTO_CC}
-  ${STATE_PROTO_CC}
-  ${URI_PROTO_CC}
-  ${V1_AGENT_PROTO_CC}
-  ${V1_ALLOCATOR_PROTO_CC}
-  ${V1_EXECUTOR_PROTO_CC}
-  ${V1_MAINTENANCE_PROTO_CC}
-  ${V1_MASTER_PROTO_CC}
-  ${V1_MESOS_PROTO_CC}
-  ${V1_QUOTA_PROTO_CC}
-  ${V1_RESOURCE_PROVIDER_PROTO_CC}
-  ${V1_SCHEDULER_PROTO_CC}
-  )
-
-set(INTERNAL_PROTOBUF_SRC
-  ${INTERNAL_FLAGS_PROTO_CC}
-  ${INTERNAL_LOG_PROTO_CC}
-  ${INTERNAL_MESSAGES_PROTO_CC}
-  ${INTERNAL_STATE_PROTO_CC}
-  ${ISOLATOR_CNI_SPEC_PROTO_CC}
-  ${ISOLATOR_DOCKER_VOLUME_STATE_PROTO_CC}
-  ${PROVISIONER_DOCKER_PROTO_CC}
-  ${REGISTRY_PROTO_CC}
-  )
+set(INTERNAL_PROTOBUF_SRC "")
+PROTOC_GENERATE(INTERNAL TARGET messages/flags)
+PROTOC_GENERATE(INTERNAL TARGET messages/log)
+PROTOC_GENERATE(INTERNAL TARGET messages/messages)
+PROTOC_GENERATE(INTERNAL TARGET messages/state)
+PROTOC_GENERATE(INTERNAL TARGET slave/containerizer/mesos/isolators/network/cni/spec)
+PROTOC_GENERATE(INTERNAL TARGET slave/containerizer/mesos/isolators/docker/volume/state)
+PROTOC_GENERATE(INTERNAL TARGET slave/containerizer/mesos/provisioner/docker/message)
+PROTOC_GENERATE(INTERNAL TARGET master/registry)
 
 
 # BUILD PROTOBUFS.
 ##################
-include_directories(
-  ${MESOS_PROTOBUF_HEADER_INCLUDE_DIRS}
-  ${PROTOBUF_INCLUDE_DIR})
-
-link_directories(${PROTOBUF_LIB_DIR})
+# This must always be built as a shared library because of the following issue:
+# https://github.com/google/protobuf/issues/1941
+#
+# Unfortunately, this is not supported on Windows. But because modules are not
+# yet supported either, for now we can build it statically.
+if (WIN32)
+  set(MESOS_PROTOBUFS_LINKAGE STATIC)
+else ()
+  set(MESOS_PROTOBUFS_LINKAGE SHARED)
+endif ()
 
 add_library(
-  ${MESOS_PROTOBUF_TARGET}
-  ${MESOS_DEFAULT_LIBRARY_LINKAGE}
+  mesos-protobufs ${MESOS_PROTOBUFS_LINKAGE}
   ${PUBLIC_PROTOBUF_SRC}
-  ${INTERNAL_PROTOBUF_SRC}
-  )
+  ${INTERNAL_PROTOBUF_SRC})
 
-add_dependencies(${MESOS_PROTOBUF_TARGET} ${PROTOBUF_TARGET})
-
-target_link_libraries(${MESOS_PROTOBUF_TARGET} ${PROTOBUF_LFLAG})
+target_link_libraries(mesos-protobufs PUBLIC protobuf)
+target_include_directories(
+  mesos-protobufs PUBLIC ${MESOS_PROTOBUF_HEADER_INCLUDE_DIRS})
 
 if (WIN32)
   # Disable all compiler warnings on Protocol Buffers source.
-  set_target_properties(
-    ${MESOS_PROTOBUF_TARGET}
-    PROPERTIES COMPILE_FLAGS "/w")
+  target_compile_options(mesos-protobufs PRIVATE "/w")
+endif ()
+
+
+# BUILD JAVA ARTIFACTS.
+#######################
+if (HAS_JAVA)
+  # Build the Mesos JAR.
+  #
+  # NOTE: We do not utilize CMake's `UseJava` module for a few reasons:
+  #   (1) `add_jar()` calls `javac`, but we use Maven.
+  #   (2) `add_jar()` does not support something like `IMPORTED`.
+  #   (3) `create_javah()` checks the existence of each JAR in the given class
+  #       path at configuration time, even though it depends on `mesos-jar` to
+  #       run Maven at build time. Coupled with (1) and (2) this makes it
+  #       impossible to use.
+  set(MESOS_JAR ${CMAKE_CURRENT_BINARY_DIR}/java/target/mesos-${MESOS_PACKAGE_VERSION}.jar)
+  set(PROTOBUF_JAR ${CMAKE_CURRENT_BINARY_DIR}/java/target/dependency/protobuf-java-3.3.0.jar)
+
+  # This file is generated into the build tree.
+  set(MESOS_JAVA_LIBRARY java/generated/org/apache/mesos/MesosNativeLibrary.java)
+  configure_file(${MESOS_JAVA_LIBRARY}.in ${MESOS_JAVA_LIBRARY})
+
+  set(MESOS_JAR_SRC
+    java/src/org/apache/mesos/ExecutorDriver.java
+    java/src/org/apache/mesos/Executor.java
+    java/src/org/apache/mesos/Log.java
+    java/src/org/apache/mesos/MesosExecutorDriver.java
+    java/src/org/apache/mesos/MesosSchedulerDriver.java
+    java/src/org/apache/mesos/SchedulerDriver.java
+    java/src/org/apache/mesos/Scheduler.java
+    java/src/org/apache/mesos/state/AbstractState.java
+    java/src/org/apache/mesos/state/InMemoryState.java
+    java/src/org/apache/mesos/state/LevelDBState.java
+    java/src/org/apache/mesos/state/LogState.java
+    java/src/org/apache/mesos/state/State.java
+    java/src/org/apache/mesos/state/Variable.java
+    java/src/org/apache/mesos/state/ZooKeeperState.java
+    java/src/org/apache/mesos/v1/scheduler/V1Mesos.java
+    java/src/org/apache/mesos/v1/scheduler/Mesos.java
+    java/src/org/apache/mesos/v1/scheduler/Scheduler.java
+    java/src/org/apache/mesos/v1/scheduler/V0Mesos.java
+    ${CMAKE_CURRENT_BINARY_DIR}/${MESOS_JAVA_LIBRARY})
+
+  configure_file(java/mesos.pom.in java/mesos.pom)
+
+  add_custom_command(
+    COMMENT "Building ${MESOS_JAR} using Maven..."
+    OUTPUT ${MESOS_JAR}
+    COMMAND mvn -B -f mesos.pom clean package
+    DEPENDS ${MESOS_JAR_SRC} ${JAVA_PROTOBUF_SRC}
+    WORKING_DIRECTORY java)
+
+  add_custom_target(mesos-jar DEPENDS ${MESOS_JAR})
+
+  # TODO(andschwa): Build the Example JAR.
+  set(EXAMPLE_JAR_SRC
+    examples/java/TestExceptionFramework.java
+    examples/java/TestExecutor.java
+    examples/java/TestFramework.java
+    examples/java/TestLog.java
+    examples/java/TestMultipleExecutorsFramework.java
+    examples/java/V1TestFramework.java)
+
+  set(JAVA_SRC
+    java/jni/convert.cpp
+    java/jni/construct.cpp
+    java/jni/org_apache_mesos_Log.cpp
+    java/jni/org_apache_mesos_MesosExecutorDriver.cpp
+    java/jni/org_apache_mesos_MesosNativeLibrary.cpp
+    java/jni/org_apache_mesos_MesosSchedulerDriver.cpp
+    java/jni/org_apache_mesos_state_AbstractState.cpp
+    java/jni/org_apache_mesos_state_LevelDBState.cpp
+    java/jni/org_apache_mesos_state_LogState.cpp
+    java/jni/org_apache_mesos_state_Variable.cpp
+    java/jni/org_apache_mesos_state_ZooKeeperState.cpp
+    java/jni/org_apache_mesos_v1_scheduler_V1Mesos.cpp
+    java/jni/org_apache_mesos_v1_scheduler_V0Mesos.cpp
+    jvm/jvm.cpp
+    jvm/org/apache/log4j.cpp
+    jvm/org/apache/zookeeper.cpp)
+
+  # These are generated and so must be included.
+  set(JAVA_H
+    java/jni/org_apache_mesos_Log.h
+    java/jni/org_apache_mesos_MesosExecutorDriver.h
+    java/jni/org_apache_mesos_MesosSchedulerDriver.h
+    java/jni/org_apache_mesos_state_AbstractState.h
+    java/jni/org_apache_mesos_state_LevelDBState.h
+    java/jni/org_apache_mesos_state_LogState.h
+    java/jni/org_apache_mesos_state_Variable.h
+    java/jni/org_apache_mesos_state_ZooKeeperState.h
+    java/jni/org_apache_mesos_v1_scheduler_V1Mesos.h
+    java/jni/org_apache_mesos_v1_scheduler_V0Mesos.h)
+
+  set(JAVA_CLASSES
+    org.apache.mesos.Log
+    org.apache.mesos.MesosExecutorDriver
+    org.apache.mesos.MesosSchedulerDriver
+    org.apache.mesos.state.AbstractState
+    org.apache.mesos.state.LevelDBState
+    org.apache.mesos.state.LogState
+    org.apache.mesos.state.Variable
+    org.apache.mesos.state.ZooKeeperState
+    org.apache.mesos.v1.scheduler.V1Mesos
+    org.apache.mesos.v1.scheduler.V0Mesos)
+
+  # This generates the header files.
+  if (WIN32)
+    set(COLON ";")
+  else ()
+    set(COLON ":")
+  endif ()
+
+  add_custom_command(
+    OUTPUT ${JAVA_H}
+    COMMAND ${Java_JAVAH_EXECUTABLE} -d java/jni -classpath "${MESOS_JAR}${COLON}${PROTOBUF_JAR}" ${JAVA_CLASSES}
+    DEPENDS mesos-jar make_bin_jni_dir)
+
+  # We include the headers here to establish the dependency
+  # on the above custom command.
+  add_library(mesos-java ${JAVA_SRC} ${JAVA_H})
+
+  target_link_libraries(
+    mesos-java
+    mesos-protobufs
+    process
+    zookeeper
+    ${JNI_LIBRARIES})
+
+  target_include_directories(
+    mesos-java PUBLIC
+    ${JNI_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_BINARY_DIR}/java/jni
+    ${MESOS_PUBLIC_INCLUDE_DIR})
 endif ()
 
 
@@ -141,13 +238,12 @@ endif ()
 ########################
 configure_file(
   ${MESOS_PUBLIC_INCLUDE_DIR}/mesos/version.hpp.in
-  ${MESOS_BIN_INCLUDE_DIR}/mesos/version.hpp
-  )
+  ${MESOS_BIN_INCLUDE_DIR}/mesos/version.hpp)
+
 
 # SOURCE FILES FOR THE MESOS LIBRARY.
 #####################################
 set(AGENT_SRC
-  ${AGENT_SRC}
   slave/constants.cpp
   slave/container_logger.cpp
   slave/flags.cpp
@@ -191,12 +287,10 @@ set(AGENT_SRC
   slave/containerizer/mesos/provisioner/docker/puller.cpp
   slave/containerizer/mesos/provisioner/docker/registry_puller.cpp
   slave/containerizer/mesos/provisioner/docker/store.cpp
-  slave/resource_estimators/noop.cpp
-  )
+  slave/resource_estimators/noop.cpp)
 
 if (NOT WIN32)
-  set(AGENT_SRC
-    ${AGENT_SRC}
+  list(APPEND AGENT_SRC
     slave/containerizer/mesos/isolators/environment_secret.cpp
     slave/containerizer/mesos/isolators/docker/volume/driver.cpp
     slave/containerizer/mesos/isolators/docker/volume/paths.cpp
@@ -205,40 +299,32 @@ if (NOT WIN32)
     slave/containerizer/mesos/isolators/network/cni/spec.cpp
     slave/containerizer/mesos/isolators/posix/disk.cpp
     slave/containerizer/mesos/isolators/posix/rlimits.cpp
-    slave/containerizer/mesos/isolators/volume/sandbox_path.cpp
-    )
+    slave/containerizer/mesos/isolators/volume/sandbox_path.cpp)
 endif ()
 
 set(APPC_SRC
-  appc/spec.cpp
-  )
+  appc/spec.cpp)
 
 set(AUTHENTICATION_SRC
   authentication/http/basic_authenticator_factory.cpp
-  authentication/http/combined_authenticator.cpp
-  )
+  authentication/http/combined_authenticator.cpp)
 
 if (NOT WIN32)
-  set(AUTHENTICATION_SRC
-    ${AUTHENTICATION_SRC}
+  list(APPEND AUTHENTICATION_SRC
     authentication/cram_md5/authenticatee.cpp
     authentication/cram_md5/authenticator.cpp
-    authentication/cram_md5/auxprop.cpp
-    )
+    authentication/cram_md5/auxprop.cpp)
 endif ()
 
 if (ENABLE_SSL)
-  set(AUTHENTICATION_SRC
-    ${AUTHENTICATION_SRC}
-    authentication/executor/jwt_secret_generator.cpp
-    )
+  list(APPEND AUTHENTICATION_SRC
+    authentication/executor/jwt_secret_generator.cpp)
 endif ()
 
 set(AUTHORIZER_SRC
   authorizer/acls.cpp
   authorizer/authorizer.cpp
-  authorizer/local/authorizer.cpp
-  )
+  authorizer/local/authorizer.cpp)
 
 set(COMMON_SRC
   common/attributes.cpp
@@ -251,42 +337,33 @@ set(COMMON_SRC
   common/roles.cpp
   common/type_utils.cpp
   common/validation.cpp
-  common/values.cpp
-  )
+  common/values.cpp)
 
 set(DOCKER_SRC
   docker/docker.cpp
-  docker/spec.cpp
-  )
+  docker/spec.cpp)
 
 set(EXECUTOR_SRC
   exec/exec.cpp
   executor/executor.cpp
-  executor/v0_v1executor.cpp
-  )
+  executor/v0_v1executor.cpp)
 
 set(FILES_SRC
-  files/files.cpp
-  )
+  files/files.cpp)
 
 set(HDFS_SRC
-  ${HDFS_SRC}
-  hdfs/hdfs.cpp
-  )
+  hdfs/hdfs.cpp)
 
 set(HEALTH_CHECK_SRC
   checks/checker.cpp
   checks/checker_process.cpp
-  checks/health_checker.cpp
-  )
+  checks/health_checker.cpp)
 
 set(INTERNAL_SRC
   internal/devolve.cpp
-  internal/evolve.cpp
-  )
+  internal/evolve.cpp)
 
 set(LINUX_SRC
-  ${LINUX_SRC}
   linux/capabilities.cpp
   linux/cgroups.cpp
   linux/fs.cpp
@@ -326,15 +403,12 @@ set(LINUX_SRC
   slave/containerizer/mesos/isolators/volume/secret.cpp
   slave/containerizer/mesos/provisioner/backends/aufs.cpp
   slave/containerizer/mesos/provisioner/backends/bind.cpp
-  slave/containerizer/mesos/provisioner/backends/overlay.cpp
-  )
+  slave/containerizer/mesos/provisioner/backends/overlay.cpp)
 
 set(LOCAL_SRC
-  local/local.cpp
-  )
+  local/local.cpp)
 
 set(LOG_SRC
-  ${LOG_SRC}
   log/catchup.cpp
   log/consensus.cpp
   log/coordinator.cpp
@@ -347,16 +421,13 @@ set(LOG_SRC
   log/tool/benchmark.cpp
   log/tool/initialize.cpp
   log/tool/read.cpp
-  log/tool/replica.cpp
-  )
+  log/tool/replica.cpp)
 
 set(LOGGING_SRC
   logging/flags.cpp
-  logging/logging.cpp
-  )
+  logging/logging.cpp)
 
 set(MASTER_SRC
-  ${MASTER_SRC}
   master/flags.cpp
   master/http.cpp
   master/maintenance.cpp
@@ -378,26 +449,20 @@ set(MASTER_SRC
   master/contender/zookeeper.cpp
   master/detector/detector.cpp
   master/detector/standalone.cpp
-  master/detector/zookeeper.cpp
-  )
+  master/detector/zookeeper.cpp)
 
 set(MESSAGES_SRC
-  ${MESSAGES_SRC}
-  messages/messages.cpp
-  )
+  messages/messages.cpp)
 
 set(MODULE_SRC
   hook/manager.cpp
-  module/manager.cpp
-  )
+  module/manager.cpp)
 
 set(OCI_SRC
-  oci/spec.cpp
-  )
+  oci/spec.cpp)
 
 set(POSIX_SRC
-  posix/rlimits.cpp
-  )
+  posix/rlimits.cpp)
 
 set(RESOURCE_PROVIDER_SRC
   resource_provider/daemon.cpp
@@ -406,82 +471,65 @@ set(RESOURCE_PROVIDER_SRC
   resource_provider/local.cpp
   resource_provider/manager.cpp
   resource_provider/validation.cpp
-  resource_provider/storage/provider.cpp
-  )
+  resource_provider/storage/provider.cpp)
 
 set(SCHEDULER_SRC
   sched/sched.cpp
-  scheduler/scheduler.cpp
-  )
+  scheduler/scheduler.cpp)
 
 set(SECRET_SRC
-  secret/resolver.cpp
-  )
+  secret/resolver.cpp)
 
 set(STATE_SRC
-  ${STATE_SRC}
-  state/in_memory.cpp
-  )
+  state/in_memory.cpp)
 
 if (NOT WIN32)
-  set(STATE_SRC
-    ${STATE_SRC}
+  list(APPEND STATE_SRC
     state/leveldb.cpp
     state/log.cpp
-    )
+    state/zookeeper.cpp)
 endif ()
 
 set(URI_SRC
   uri/fetcher.cpp
   uri/utils.cpp
   uri/fetchers/copy.cpp
-  uri/fetchers/curl.cpp
-  )
+  uri/fetchers/curl.cpp)
 
 if (NOT WIN32)
-  set(URI_SRC
-    ${URI_SRC}
+  list(APPEND URI_SRC
     uri/fetchers/docker.cpp
-    uri/fetchers/hadoop.cpp
-    )
+    uri/fetchers/hadoop.cpp)
 endif ()
 
 set(USAGE_SRC
-  usage/usage.cpp
-  )
+  usage/usage.cpp)
 
 set(V1_SRC
   v1/attributes.cpp
   v1/mesos.cpp
   v1/resources.cpp
-  v1/values.cpp
-  )
+  v1/values.cpp)
 
 set(VERSION_SRC
-  version/version.cpp
-  )
+  version/version.cpp)
 
 set(WATCHER_SRC
-  watcher/whitelist_watcher.cpp
-  )
+  watcher/whitelist_watcher.cpp)
 
 set(WIN32_SRC
-  ${WIN32_SRC}
   slave/containerizer/mesos/isolators/environment_secret.cpp
   slave/containerizer/mesos/isolators/filesystem/posix.cpp
-  slave/containerizer/mesos/isolators/filesystem/windows.cpp
-  )
+  slave/containerizer/mesos/isolators/filesystem/windows.cpp)
 
 set(ZOOKEEPER_SRC
   zookeeper/authentication.cpp
   zookeeper/contender.cpp
   zookeeper/detector.cpp
   zookeeper/zookeeper.cpp
-  zookeeper/group.cpp
-  )
+  zookeeper/group.cpp)
 
 set(MESOS_SRC
-  ${MESOS_SRC}
   ${AGENT_SRC}
   ${APPC_SRC}
   ${AUTHENTICATION_SRC}
@@ -507,16 +555,13 @@ set(MESOS_SRC
   ${V1_SRC}
   ${VERSION_SRC}
   ${WATCHER_SRC}
-  ${ZOOKEEPER_SRC}
-  )
+  ${ZOOKEEPER_SRC})
 
 if (NOT WIN32)
-  set(MESOS_SRC
-    ${MESOS_SRC}
+  list(APPEND MESOS_SRC
     ${HDFS_SRC}
     ${LOG_SRC}
-    ${POSIX_SRC}
-    )
+    ${POSIX_SRC})
 endif ()
 
 # Include source for linux build.
@@ -528,12 +573,6 @@ endif ()
 if (WIN32)
   set(MESOS_SRC ${MESOS_SRC} ${WIN32_SRC})
 endif ()
-
-# INCLUDE DIRECTIVES FOR MESOS LIBRARY (generates, e.g., -I/path/to/thing
-# on Linux).
-#########################################################################
-include_directories(SYSTEM ${AGENT_3RDPARTY_INCLUDE_DIRS})
-include_directories(${AGENT_INCLUDE_DIRS})
 
 # Generate all binaries in the same folder.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src)
@@ -549,67 +588,63 @@ if (WIN32)
   SET(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/src/.libs)
 endif ()
 
-# LINKING LIBRARIES BY DIRECTORY (might generate, e.g., -L/path/to/thing on
-# Linux).
-###########################################################################
-link_directories(${AGENT_LIB_DIRS})
 
-# THE MESOS LIBRARY (generates, e.g., libmesos.so, etc., on Linux).
-###################################################################
-add_library(${MESOS_LIBS_TARGET} ${MESOS_DEFAULT_LIBRARY_LINKAGE} ${MESOS_SRC})
+# THE MESOS LIBRARY (generates, e.g., libmesos.so on Linux).
+############################################################
+add_library(mesos ${MESOS_SRC})
+
 set_target_properties(
-  ${MESOS_LIBS_TARGET} PROPERTIES
+  mesos PROPERTIES
   VERSION ${MESOS_PACKAGE_VERSION}
-  SOVERSION ${MESOS_PACKAGE_SOVERSION}
-  )
+  SOVERSION ${MESOS_PACKAGE_SOVERSION})
 
-if (ENABLE_PRECOMPILED_HEADERS)
-  # These exluded headers either cause namespace resolution issues or
-  # are problematic for incremental builds.
-  set_property(DIRECTORY
-    PROPERTY COTIRE_PREFIX_HEADER_IGNORE_PATH
-      "${CMAKE_SOURCE_DIR}/include/mesos/authentication/http/basic_authenticator_factory.hpp"
-      "${CMAKE_SOURCE_DIR}/include/mesos/authentication/http/combined_authenticator.hpp"
-      "${CMAKE_SOURCE_DIR}/src/sched/constants.hpp"
-      "${CMAKE_SOURCE_DIR}/src/sched/flags.hpp"
-      "${CMAKE_BINARY_DIR}/src/common/build_config.hpp")
+target_include_directories(
+  mesos PUBLIC
+  ${MESOS_PUBLIC_INCLUDE_DIR}
 
-  # For now, we include agent headers, because the Windows build currently
-  # does not build all of the Mesos master (only enough for testing the agent).
-  set_property(DIRECTORY
-    PROPERTY COTIRE_PREFIX_HEADER_INCLUDE_PATH
-      "${AGENT_INCLUDE_DIRS};${AGENT_3RDPARTY_INCLUDE_DIRS}")
+  # Contains (e.g.) compiled *.pb.h files.
+  ${MESOS_BIN_INCLUDE_DIR}
+  ${MESOS_BIN_INCLUDE_DIR}/mesos
+  ${MESOS_BIN_SRC_DIR}
+  ${MESOS_SRC_DIR})
 
-  cotire(${MESOS_LIBS_TARGET})
+target_link_libraries(
+  mesos PUBLIC
+  process
+  zookeeper
+  mesos-protobufs
+  $<$<PLATFORM_ID:Linux>:nvml>
+  $<$<BOOL:${HAS_JAVA}>:mesos-java>)
+
+if (NOT WIN32)
+  target_link_libraries(mesos PUBLIC leveldb sasl2)
 endif ()
 
-# ADD LIBRARY DEPENDENCIES (tells CMake what to compile/build first).
-####################################################################
-add_dependencies(${MESOS_TARGET} ${MESOS_LIBS_TARGET})
-add_dependencies(
-  ${MESOS_LIBS_TARGET}
-  ${MESOS_PROTOBUF_TARGET}
-  ${AGENT_DEPENDENCIES}
-  )
+if (ENABLE_PRECOMPILED_HEADERS)
+  set_target_properties(
+    mesos PROPERTIES
+    COTIRE_ADD_UNITY_BUILD FALSE
+    COTIRE_PREFIX_HEADER_INCLUDE_PATH "${CMAKE_SOURCE_DIR}/3rdparty;${CMAKE_BINARY_DIR}/3rdparty")
 
-# ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
-######################################################
-target_link_libraries(${MESOS_LIBS_TARGET} ${MESOS_PROTOBUF_TARGET} ${AGENT_LIBS})
+  cotire(mesos)
+endif ()
+
 
 # BUILD THE MESOS EXECUTABLES.
 ##############################
-add_subdirectory(checks/)
-add_subdirectory(cli/)
-add_subdirectory(docker/)
-add_subdirectory(examples/)
-add_subdirectory(launcher/)
-add_subdirectory(local/)
-add_subdirectory(log/)
-add_subdirectory(master/)
-add_subdirectory(slave/)
-add_subdirectory(slave/containerizer/mesos/)
-add_subdirectory(usage/)
+add_subdirectory(checks)
+add_subdirectory(cli)
+add_subdirectory(docker)
+add_subdirectory(examples)
+add_subdirectory(launcher)
+add_subdirectory(local)
+add_subdirectory(log)
+add_subdirectory(master)
+add_subdirectory(slave)
+add_subdirectory(slave/containerizer/mesos)
+add_subdirectory(usage)
+
 
 # BUILD THE MESOS TESTS.
-#########################################################
-add_subdirectory(tests/)
+########################
+add_subdirectory(tests)

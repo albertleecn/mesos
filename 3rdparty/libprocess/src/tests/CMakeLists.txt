@@ -17,7 +17,6 @@
 # PROCESS TESTS.
 ################
 set(PROCESS_TESTS_SRC
-  ${PROCESS_TESTS_SRC}
   main.cpp
   after_tests.cpp
   collect_tests.cpp
@@ -40,73 +39,39 @@ set(PROCESS_TESTS_SRC
   subprocess_tests.cpp
   system_tests.cpp
   time_tests.cpp
-  timeseries_tests.cpp
-  )
+  timeseries_tests.cpp)
 
 if (NOT WIN32)
-  set(PROCESS_TESTS_SRC
-    ${PROCESS_TESTS_SRC}
+  list(APPEND PROCESS_TESTS_SRC
     io_tests.cpp
-    reap_tests.cpp
-    )
+    reap_tests.cpp)
 endif ()
 
 if (ENABLE_SSL)
-  set(PROCESS_TESTS_SRC
-    ${PROCESS_TESTS_SRC}
+  list(APPEND PROCESS_TESTS_SRC
     jwt_tests.cpp
-    ssl_tests.cpp
-    )
+    ssl_tests.cpp)
 endif ()
 
+add_library(process-interface INTERFACE)
+target_link_libraries(process-interface INTERFACE process googletest)
+target_include_directories(process-interface INTERFACE ..)
 
-# ADDITIONAL CPP FLAGS FOR PROCESS TEST BINARY (e.g., -DBUILD_DIR=...).
-#######################################################################
-add_definitions("-DBUILD_DIR=\"${CMAKE_CURRENT_BINARY_DIR}\"")
+add_executable(libprocess-tests EXCLUDE_FROM_ALL ${PROCESS_TESTS_SRC})
+target_link_libraries(libprocess-tests PRIVATE process-interface)
 
-# INCLUDE DIRECTIVES FOR PROCESS TEST BINARY (generates, e.g., -I/path/to/thing
-# on Linux).
-###############################################################################
-include_directories(${PROCESS_TEST_INCLUDE_DIRS})
+target_compile_definitions(
+  libprocess-tests PRIVATE
+  BUILD_DIR="${CMAKE_CURRENT_BINARY_DIR}")
 
-# LINKING LIBRARIES BY DIRECTORY (might generate, e.g., -L/path/to/thing on
-# Linux).
-###########################################################################
-link_directories(${PROCESS_TEST_LIB_DIRS})
-
-# THE PROCESS TEST EXECUTABLE (generates, e.g., libprocess-tests, etc., on Linux).
-###############################################################################
-add_executable(${PROCESS_TESTS_TARGET} EXCLUDE_FROM_ALL ${PROCESS_TESTS_SRC})
-
-GROUP_STOUT_HEADERS()
-GROUP_PROCESS_HEADERS()
-
-GROUP_SOURCE(
-  "tests"
-  "${CMAKE_CURRENT_SOURCE_DIR}"
-  "${CMAKE_CURRENT_SOURCE_DIR}"
-  "*.[ch]*")
-
-# ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
-######################################################
-target_link_libraries(${PROCESS_TESTS_TARGET} ${PROCESS_TEST_LIBS})
-
-# ADD BINARY DEPENDENCIES (tells CMake what to compile/build first).
-####################################################################
-add_dependencies(${PROCESS_TESTS_TARGET} ${PROCESS_TEST_DEPENDENCIES})
-
-# ADDITIONAL EXECUTABLE(s).
-###########################
 add_executable(test-linkee EXCLUDE_FROM_ALL test_linkee.cpp)
-target_link_libraries(test-linkee ${PROCESS_TEST_LIBS})
-add_dependencies(${PROCESS_TESTS_TARGET} test-linkee)
+target_link_libraries(test-linkee PRIVATE process-interface)
+add_dependencies(libprocess-tests test-linkee)
 
 if (ENABLE_SSL)
   add_executable(ssl-client EXCLUDE_FROM_ALL ssl_client.cpp)
-  target_link_libraries(ssl-client ${PROCESS_TEST_LIBS})
-  add_dependencies(${PROCESS_TESTS_TARGET} ssl-client)
+  target_link_libraries(ssl-client PRIVATE process-interface)
+  add_dependencies(libprocess-tests ssl-client)
 endif ()
 
-# ADD TEST TARGET (runs when you do, e.g., `make check`).
-#########################################################
-add_test(NAME ProcessTests COMMAND ${PROCESS_TESTS_TARGET})
+add_test(NAME ProcessTests COMMAND libprocess-tests)
