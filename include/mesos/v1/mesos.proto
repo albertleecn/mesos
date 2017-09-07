@@ -1296,12 +1296,13 @@ message Resource {
     optional Volume volume = 2;
 
     // Describes where a disk originates from.
-    // TODO(jmlvanre): Add support for BLOCK devices.
     message Source {
       enum Type {
         UNKNOWN = 0;
         PATH = 1;
         MOUNT = 2;
+        BLOCK = 3;
+        RAW = 4;
       }
 
       // A folder that can be located on a separate disk device. This
@@ -1775,6 +1776,10 @@ message Offer {
       UNRESERVE = 3;
       CREATE = 4;
       DESTROY = 5;
+      CREATE_VOLUME = 7;
+      DESTROY_VOLUME = 8;
+      CREATE_BLOCK = 9;
+      DESTROY_BLOCK = 10;
     }
 
     // TODO(vinod): Deprecate this in favor of `LaunchGroup` below.
@@ -1811,6 +1816,23 @@ message Offer {
       repeated Resource volumes = 1;
     }
 
+    message CreateVolume {
+      required Resource source = 1;
+      required Resource.DiskInfo.Source.Type target_type = 2;
+    }
+
+    message DestroyVolume {
+      required Resource volume = 1;
+    }
+
+    message CreateBlock {
+      required Resource source = 1;
+    }
+
+    message DestroyBlock {
+      required Resource block = 1;
+    }
+
     optional Type type = 1;
     optional Launch launch = 2;
     optional LaunchGroup launch_group = 7;
@@ -1818,6 +1840,10 @@ message Offer {
     optional Unreserve unreserve = 4;
     optional Create create = 5;
     optional Destroy destroy = 6;
+    optional CreateVolume create_volume = 8;
+    optional DestroyVolume destroy_volume = 9;
+    optional CreateBlock create_block = 10;
+    optional DestroyBlock destroy_block = 11;
   }
 }
 
