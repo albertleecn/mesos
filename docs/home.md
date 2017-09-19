@@ -20,12 +20,13 @@ layout: documentation
 * [Authorization](authorization.md)
 * [Configuration](configuration.md) and [CMake configuration](configuration-cmake.md) for command-line arguments.
 * [Container Image](container-image.md) for supporting container images in Mesos containerizer.
+* [Container Volume](container-volume.md) for using container volumes.
 * [Containerizers](containerizers.md) for containerizer overview and use cases.
   * [Containerizer Internals](containerizer-internals.md) for implementation details of containerizers.
   * [Docker Containerizer](docker-containerizer.md) for launching a Docker image as a Task, or as an Executor.
   * [Mesos Containerizer](mesos-containerizer.md) default containerizer, supports both Linux and POSIX systems.
     * [CNI support](cni.md)
-    * [Docker Volume Support](docker-volume.md)
+    * [Docker Volume Support](isolators/docker-volume.md)
 * [Framework Rate Limiting](framework-rate-limiting.md)
 * [Task Health Checking](health-checks.md)
 * [High Availability](high-availability.md) for running multiple masters simultaneously.
@@ -51,7 +52,7 @@ layout: documentation
 * [Multiple Disks](multiple-disk.md) for how to allow tasks to use multiple isolated disk resources.
 * [Networking](networking.md)
   * [Container Network Interface (CNI)](cni.md)
-  * [Port Mapping Isolator](port-mapping-isolator.md)
+  * [Port Mapping Isolator](isolators/network-port-mapping.md)
 * [Nvidia GPU Support](gpu-support.md) for how to run Mesos with Nvidia GPU support.
 * [Oversubscription](oversubscription.md) for how to configure Mesos to take advantage of unused resources to launch "best-effort" tasks.
 * [Persistent Volume](persistent-volume.md) for how to allow tasks to access persistent storage resources.

@@ -540,17 +540,16 @@ public:
 int main(int argc, char** argv)
 {
   Flags flags;
-
   Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
-
-  if (load.isError()) {
-    cerr << flags.usage(load.error()) << endl;
-    return EXIT_FAILURE;
-  }
 
   if (flags.help) {
     cout << flags.usage() << endl;
     return EXIT_SUCCESS;
+  }
+
+  if (load.isError()) {
+    cerr << flags.usage(load.error()) << endl;
+    return EXIT_FAILURE;
   }
 
   if (flags.master.isNone()) {
@@ -558,7 +557,7 @@ int main(int argc, char** argv)
     return EXIT_FAILURE;
   }
 
-  logging::initialize(argv[0], flags, true); // Catch signals.
+  logging::initialize(argv[0], true, flags); // Catch signals.
 
   // Log any flag warnings (after logging is initialized).
   foreach (const flags::Warning& warning, load->warnings) {

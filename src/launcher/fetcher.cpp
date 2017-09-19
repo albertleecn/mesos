@@ -517,9 +517,17 @@ int main(int argc, char* argv[])
 
   Try<flags::Warnings> load = flags.load("MESOS_", argc, argv);
 
-  CHECK_SOME(load) << "Could not load flags: " << load.error();
+  if (flags.help) {
+    std::cout << flags.usage() << std::endl;
+    return EXIT_SUCCESS;
+  }
 
-  logging::initialize(argv[0], flags, true); // Catch signals.
+  if (load.isError()) {
+    std::cerr << flags.usage(load.error()) << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  logging::initialize(argv[0], true, flags); // Catch signals.
 
   // Log any flag warnings (after logging is initialized).
   foreach (const flags::Warning& warning, load->warnings) {
