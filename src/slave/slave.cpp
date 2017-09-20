@@ -809,11 +809,13 @@ void Slave::initialize()
   // Expose the log file for the webui. Fall back to 'log_dir' if
   // an explicit file was not specified.
   if (flags.external_log_file.isSome()) {
-    files->attach(flags.external_log_file.get(), "/slave/log", authorize)
+    files->attach(
+        flags.external_log_file.get(), AGENT_LOG_VIRTUAL_PATH, authorize)
       .onAny(defer(self(),
                    &Self::fileAttached,
                    lambda::_1,
-                   flags.external_log_file.get()));
+                   flags.external_log_file.get(),
+                   AGENT_LOG_VIRTUAL_PATH));
   } else if (flags.log_dir.isSome()) {
     Try<string> log =
       logging::getLogFile(logging::getLogSeverity(flags.logging_level));
@@ -821,8 +823,12 @@ void Slave::initialize()
     if (log.isError()) {
       LOG(ERROR) << "Agent log file cannot be found: " << log.error();
     } else {
-      files->attach(log.get(), "/slave/log", authorize)
-        .onAny(defer(self(), &Self::fileAttached, lambda::_1, log.get()));
+      files->attach(log.get(), AGENT_LOG_VIRTUAL_PATH, authorize)
+        .onAny(defer(self(),
+                     &Self::fileAttached,
+                     lambda::_1,
+                     log.get(),
+                     AGENT_LOG_VIRTUAL_PATH));
     }
   }
 
@@ -936,12 +942,17 @@ void Slave::shutdown(const UPID& from, const string& message)
 }
 
 
-void Slave::fileAttached(const Future<Nothing>& result, const string& path)
+void Slave::fileAttached(
+    const Future<Nothing>& result,
+    const string& path,
+    const string& virtualPath)
 {
   if (result.isReady()) {
-    VLOG(1) << "Successfully attached file '" << path << "'";
+    VLOG(1) << "Successfully attached '" << path << "'"
+            << " to virtual path '" << virtualPath << "'";
   } else {
-    LOG(ERROR) << "Failed to attach file '" << path << "': "
+    LOG(ERROR) << "Failed to attach '" << path << "'"
+               << " to virtual path '" << virtualPath << "': "
                << (result.isFailed() ? result.failure() : "discarded");
   }
 }
@@ -5557,16 +5568,27 @@ void Slave::removeExecutor(Framework* framework, Executor* executor)
     const string path = paths::getExecutorPath(
         flags.work_dir, info.id(), framework->id(), executor->id);
 
-    // Make sure we detach the "latest" symlink.
+    // Make sure we detach both real and virtual paths for "latest"
+    // symlink. We prefer users to use the virtual paths because
+    // they do not expose the `work_dir` and agent ID, but the real
+    // paths remains for compatibility reason.
     const string latestPath = paths::getExecutorLatestRunPath(
         flags.work_dir,
         info.id(),
         framework->id(),
         executor->id);
 
+    const string virtualLatestPath = paths::getExecutorVirtualPath(
+        framework->id(),
+        executor->id);
+
     os::utime(path); // Update the modification time.
     garbageCollect(path)
-      .then(defer(self(), &Self::detachFile, latestPath));
+      .then(defer(self(), [=]() {
+        detachFile(latestPath);
+        detachFile(virtualLatestPath);
+        return Nothing();
+      }));
   }
 
   if (executor->checkpoint) {
@@ -7276,20 +7298,55 @@ Executor* Framework::addExecutor(const ExecutorInfo& executorInfo)
           executorId);
     };
 
-  // Attach the "latest" symlink. This allows for frameworks to
-  // easily construct paths to the sandbox directory for a given task
-  // without having to know the container id.
-  string latestPath = paths::getExecutorLatestRunPath(
+  // We expose the executor's sandbox in the /files endpoints
+  // via the following paths:
+  //
+  //  (1) /agent_workdir/frameworks/FID/executors/EID/runs/CID
+  //  (2) /agent_workdir/frameworks/FID/executors/EID/runs/latest
+  //  (3) /frameworks/FID/executors/EID/runs/latest
+  //
+  // Originally we just exposed the real path (1) and later
+  // exposed the 'latest' symlink (2) since it's not easy for
+  // users to know the run's container ID. We deprecated
+  // (1) and (2) by exposing a virtual path (3) since we do not
+  // want to expose the agent's work directory and it's not
+  // something users care about in this context.
+  //
+  // TODO(zhitao): Remove (1) and (2) per MESOS-7960 once we
+  // pass 2.0. They remain now for backwards compatibility.
+  const string latestPath = paths::getExecutorLatestRunPath(
       slave->flags.work_dir,
       slave->info.id(),
       id(),
       executorInfo.executor_id());
 
+  const string virtualLatestPath = paths::getExecutorVirtualPath(
+      id(),
+      executorInfo.executor_id());
+
   slave->files->attach(executor->directory, latestPath, authorize)
-    .onAny(defer(slave, &Slave::fileAttached, lambda::_1, executor->directory));
+    .onAny(defer(
+        slave,
+        &Slave::fileAttached,
+        lambda::_1,
+        executor->directory,
+        latestPath));
+
+  slave->files->attach(executor->directory, virtualLatestPath, authorize)
+    .onAny(defer(
+        slave,
+        &Slave::fileAttached,
+        lambda::_1,
+        executor->directory,
+        virtualLatestPath));
 
   slave->files->attach(executor->directory, executor->directory, authorize)
-    .onAny(defer(slave, &Slave::fileAttached, lambda::_1, executor->directory));
+    .onAny(defer(
+        slave,
+        &Slave::fileAttached,
+        lambda::_1,
+        executor->directory,
+        executor->directory));
 
   return executor;
 }
@@ -7449,21 +7506,56 @@ void Framework::recoverExecutor(
           executorId);
     };
 
-  // Attach the "latest" symlink. This allows for frameworks to
-  // easily construct paths to the sandbox directory for a given task
-  // without having to know the container id.
-  string latestPath = paths::getExecutorLatestRunPath(
+  // We expose the executor's sandbox in the /files endpoints
+  // via the following paths:
+  //
+  //  (1) /agent_workdir/frameworks/FID/executors/EID/runs/CID
+  //  (2) /agent_workdir/frameworks/FID/executors/EID/runs/latest
+  //  (3) /frameworks/FID/executors/EID/runs/latest
+  //
+  // Originally we just exposed the real path (1) and later
+  // exposed the 'latest' symlink (2) since it's not easy for
+  // users to know the run's container ID. We deprecated
+  // (1) and (2) by exposing a virtual path (3) since we do not
+  // want to expose the agent's work directory and it's not
+  // something users care about in this context.
+  //
+  // TODO(zhitao): Remove (1) and (2) per MESOS-7960 once we
+  // pass 2.0. They remain now for backwards compatibility.
+  const string latestPath = paths::getExecutorLatestRunPath(
       slave->flags.work_dir,
       slave->info.id(),
       id(),
       state.id);
 
+  const string virtualLatestPath = paths::getExecutorVirtualPath(
+      id(),
+      state.id);
+
   slave->files->attach(executor->directory, latestPath, authorize)
-    .onAny(defer(slave, &Slave::fileAttached, lambda::_1, executor->directory));
+    .onAny(defer(
+        slave,
+        &Slave::fileAttached,
+        lambda::_1,
+        executor->directory,
+        latestPath));
+
+  slave->files->attach(executor->directory, virtualLatestPath, authorize)
+    .onAny(defer(
+        slave,
+        &Slave::fileAttached,
+        lambda::_1,
+        executor->directory,
+        virtualLatestPath));
 
   // Expose the executor's files.
   slave->files->attach(executor->directory, executor->directory, authorize)
-    .onAny(defer(slave, &Slave::fileAttached, lambda::_1, executor->directory));
+    .onAny(defer(
+        slave,
+        &Slave::fileAttached,
+        lambda::_1,
+        executor->directory,
+        executor->directory));
 
   // Add the executor to the framework.
   executors[executor->id] = executor;
