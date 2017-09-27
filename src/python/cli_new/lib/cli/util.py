@@ -22,7 +22,10 @@ import imp
 import importlib
 import os
 import re
+import socket
 import textwrap
+
+import cli.http as http
 
 from cli.exceptions import CLIException
 
@@ -152,6 +155,55 @@ def format_subcommands_help(cmd):
     return (arguments, short_help, long_help, flag_string)
 
 
+def verify_address_format(address):
+    """
+    Verify that an address ip and port are correct.
+    """
+    # We use 'basestring' as the type of address because it can be
+    # 'str' or 'unicode' depending on the source of the address (e.g.
+    # a config file or a flag). Both types inherit from basestring.
+    if not isinstance(address, basestring):
+        raise CLIException("The address must be a string")
+
+    address_pattern = re.compile(r'[0-9]+(?:\.[0-9]+){3}:[0-9]+')
+    if not address_pattern.match(address):
+        raise CLIException("The address '{address}' does not match"
+                           " the expected format '<ip>:<port>'"
+                           .format(address=address))
+
+    colon_pos = address.rfind(':')
+    ip = address[:colon_pos]
+    port = int(address[colon_pos+1:])
+
+    try:
+        socket.inet_aton(ip)
+    except socket.error as err:
+        raise CLIException("The IP '{ip}' is not valid: {error}"
+                           .format(ip=ip, error=err))
+
+    # A correct port number is between these two values.
+    if port < 0 or port > 65535:
+        raise CLIException("The port '{port}' is not valid")
+
+
+def get_agent_address(agent_id, master):
+    """
+    Given a master and an agent id, return the agent address
+    by checking the /slaves endpoint of the master.
+    """
+    try:
+        agents = http.get_json(master, "slaves")["slaves"]
+    except Exception as exception:
+        raise CLIException("Could not open '/slaves'"
+                           " endpoint at '{addr}': {error}"
+                           .format(addr=master,
+                                   error=exception))
+    for agent in agents:
+        if agent["id"] == agent_id:
+            return agent["pid"].split("@")[1]
+    raise CLIException("Unable to find agent '{id}'".format(id=agent_id))
+
+
 def join_plugin_paths(settings, config):
     """
     Return all the plugin paths combined
@@ -165,6 +217,15 @@ def join_plugin_paths(settings, config):
         raise CLIException("Error: {error}.".format(error=str(exception)))
 
     return builtin_paths + config_paths
+
+
+# TODO(agrillet): Implement this function appropriately (MESOS-8012).
+def zookeeper_resolve_leader(addresses, path):
+    """Resolve the leader using a znode path."""
+    # pylint: disable=unused-argument, unreachable
+    raise CLIException("Using ZooKeeper to resolve the leading master"
+                       " is not yet supported. See MESOS-8012")
+    return ""
 
 
 class Table(object):
