@@ -1723,6 +1723,11 @@ Future<Nothing> Master::_recover(const Registry& registry)
     slaves.unreachable[unreachable.id()] = unreachable.timestamp();
   }
 
+  foreach (const Registry::GoneSlave& gone,
+           registry.gone().slaves()) {
+    slaves.gone[gone.id()] = gone.timestamp();
+  }
+
   // Set up a timer for age-based registry GC.
   scheduleRegistryGc();
 
@@ -1843,69 +1848,81 @@ void Master::doRegistryGc()
   // concurrently). In this situation, we skip removing any elements
   // we don't find.
 
-  size_t unreachableCount = slaves.unreachable.size();
-  TimeInfo currentTime = protobuf::getCurrentTime();
-  hashset<SlaveID> toRemove;
+  auto prune = [this](const LinkedHashMap<SlaveID, TimeInfo>& slaves) {
+    size_t count = slaves.size();
+    TimeInfo currentTime = protobuf::getCurrentTime();
+    hashset<SlaveID> toRemove;
 
-  foreachpair (const SlaveID& slave,
-               const TimeInfo& unreachableTime,
-               slaves.unreachable) {
-    // Count-based GC.
-    CHECK(toRemove.size() <= unreachableCount);
+    foreachpair (const SlaveID& slave,
+                 const TimeInfo& removalTime,
+                 slaves) {
+      // Count-based GC.
+      CHECK(toRemove.size() <= count);
 
-    size_t liveCount = unreachableCount - toRemove.size();
-    if (liveCount > flags.registry_max_agent_count) {
-      toRemove.insert(slave);
-      continue;
+      size_t liveCount = count - toRemove.size();
+      if (liveCount > flags.registry_max_agent_count) {
+        toRemove.insert(slave);
+        continue;
+      }
+
+      // Age-based GC.
+      Duration age = Nanoseconds(
+          currentTime.nanoseconds() - removalTime.nanoseconds());
+
+      if (age > flags.registry_max_agent_age) {
+        toRemove.insert(slave);
+      }
     }
 
-    // Age-based GC.
-    Duration age = Nanoseconds(
-        currentTime.nanoseconds() - unreachableTime.nanoseconds());
+    return toRemove;
+  };
 
-    if (age > flags.registry_max_agent_age) {
-      toRemove.insert(slave);
-    }
-  }
+  hashset<SlaveID> toRemoveUnreachable = prune(slaves.unreachable);
+  hashset<SlaveID> toRemoveGone = prune(slaves.gone);
 
-  if (toRemove.empty()) {
+  if (toRemoveUnreachable.empty() && toRemoveGone.empty()) {
     VLOG(1) << "Skipping periodic registry garbage collection: "
             << "no agents qualify for removal";
     return;
   }
 
-  VLOG(1) << "Attempting to remove " << toRemove.size()
-          << " unreachable agents from the registry";
+  VLOG(1) << "Attempting to remove " << toRemoveUnreachable.size()
+          << " unreachable and " << toRemoveGone.size()
+          << " gone agents from the registry";
 
-  registrar->apply(Owned<Operation>(new PruneUnreachable(toRemove)))
+  registrar->apply(Owned<Operation>(
+      new Prune(toRemoveUnreachable, toRemoveGone)))
     .onAny(defer(self(),
                  &Self::_doRegistryGc,
-                 toRemove,
+                 toRemoveUnreachable,
+                 toRemoveGone,
                  lambda::_1));
 }
 
 
 void Master::_doRegistryGc(
-    const hashset<SlaveID>& toRemove,
+    const hashset<SlaveID>& toRemoveUnreachable,
+    const hashset<SlaveID>& toRemoveGone,
     const Future<bool>& registrarResult)
 {
   CHECK(!registrarResult.isDiscarded());
   CHECK(!registrarResult.isFailed());
 
-  // `PruneUnreachable` registry operation should never fail.
+  // `Prune` registry operation should never fail.
   CHECK(registrarResult.get());
 
   // Update in-memory state to be consistent with registry changes. If
   // there was a concurrent registry operation that also modified the
-  // unreachable list (e.g., an agent in `toRemove` concurrently
+  // unreachable/gone list (e.g., an agent in `toRemoveXXX` concurrently
   // reregistered), entries in `toRemove` might not appear in
-  // `slaves.unreachable`.
+  // `slaves.unreachable` or `slaves.gone`.
   //
   // TODO(neilc): It would be nice to verify that the effect of these
   // in-memory updates is equivalent to the changes made by the registry
   // operation, but there isn't an easy way to do that.
-  size_t numRemoved = 0;
-  foreach (const SlaveID& slave, toRemove) {
+
+  size_t numRemovedUnreachable = 0;
+  foreach (const SlaveID& slave, toRemoveUnreachable) {
     if (!slaves.unreachable.contains(slave)) {
       LOG(WARNING) << "Failed to garbage collect " << slave
                    << " from the unreachable list";
@@ -1913,12 +1930,25 @@ void Master::_doRegistryGc(
     }
 
     slaves.unreachable.erase(slave);
-    numRemoved++;
+    numRemovedUnreachable++;
+  }
+
+  size_t numRemovedGone = 0;
+  foreach (const SlaveID& slave, toRemoveGone) {
+    if (!slaves.gone.contains(slave)) {
+      LOG(WARNING) << "Failed to garbage collect " << slave
+                   << " from the gone list";
+      continue;
+    }
+
+    slaves.gone.erase(slave);
+    numRemovedGone++;
   }
 
   // TODO(neilc): Add a metric for # of agents discarded from the registry?
-  LOG(INFO) << "Garbage collected " << numRemoved
-            << " unreachable agents from the registry";
+  LOG(INFO) << "Garbage collected " << numRemovedUnreachable
+            << " unreachable and " << numRemovedGone
+            << " gone agents from the registry";
 }
 
 
@@ -2008,6 +2038,26 @@ Nothing Master::markUnreachableAfterFailover(const SlaveInfo& slave)
     LOG(INFO) << "Canceling transition of agent "
               << slave.id() << " (" << slave.hostname() << ")"
               << " to unreachable because it is re-registering";
+
+    ++metrics->slave_unreachable_canceled;
+    return Nothing();
+  }
+
+  if (slaves.markingGone.contains(slave.id())) {
+    LOG(INFO) << "Canceling transition of agent "
+              << slave.id() << " (" << slave.hostname() << ")"
+              << " to unreachable because an agent gone"
+              << " operation is in progress";
+
+    ++metrics->slave_unreachable_canceled;
+    return Nothing();
+  }
+
+  if (slaves.gone.contains(slave.id())) {
+    LOG(INFO) << "Canceling transition of agent "
+              << slave.id() << " (" << slave.hostname() << ")"
+              << " to unreachable because the agent has"
+              << " been marked gone";
 
     ++metrics->slave_unreachable_canceled;
     return Nothing();
@@ -6056,6 +6106,24 @@ void Master::reregisterSlave(
     return;
   }
 
+  if (slaves.markingGone.contains(slaveInfo.id())) {
+    LOG(INFO)
+      << "Ignoring re-register agent message from agent "
+      << slaveInfo.id() << " at " << from << " ("
+      << slaveInfo.hostname() << ") as a gone operation is already in progress";
+    return;
+  }
+
+  if (slaves.gone.contains(slaveInfo.id())) {
+    LOG(WARNING) << "Refusing re-registration of agent at " << from
+                 << " because it is already marked gone";
+
+    ShutdownMessage message;
+    message.set_message("Agent has been marked gone");
+    send(from, message);
+    return;
+  }
+
   Option<Error> error = validation::master::message::reregisterSlave(
       slaveInfo, tasks, checkpointedResources, executorInfos, frameworks);
 
@@ -7122,6 +7190,20 @@ void Master::markUnreachable(const SlaveID& slaveId, const string& message)
     return;
   }
 
+  if (slaves.markingGone.contains(slaveId)) {
+    LOG(INFO) << "Canceling transition of agent " << slaveId
+              << " to unreachable because an agent gone"
+              << " operation is in progress";
+    return;
+  }
+
+  if (slaves.gone.contains(slaveId)) {
+    LOG(INFO) << "Canceling transition of agent " << slaveId
+              << " to unreachable because the agent has"
+              << " been marked gone";
+    return;
+  }
+
   LOG(INFO) << "Marking agent " << *slave
             << " unreachable: " << message;
 
@@ -7175,107 +7257,26 @@ void Master::_markUnreachable(
   ++metrics->slave_removals;
   ++metrics->slave_removals_reason_unhealthy;
 
-  // We want to remove the slave first, to avoid the allocator
-  // re-allocating the recovered resources.
-  //
-  // NOTE: Removing the slave is not sufficient for recovering the
-  // resources in the allocator, because the "Sorters" are updated
-  // only within recoverResources() (see MESOS-621). The calls to
-  // recoverResources() below are therefore required, even though
-  // the slave is already removed.
-  allocator->removeSlave(slave->id);
-
-  // Transition tasks to TASK_UNREACHABLE / TASK_LOST and remove them.
-  // We only use TASK_UNREACHABLE if the framework has opted in to the
-  // PARTITION_AWARE capability.
-  foreachkey (const FrameworkID& frameworkId, utils::copy(slave->tasks)) {
-    Framework* framework = getFramework(frameworkId);
-    CHECK_NOTNULL(framework);
-
-    TaskState newTaskState = TASK_UNREACHABLE;
-    if (!framework->capabilities.partitionAware) {
-      newTaskState = TASK_LOST;
-    }
-
-    foreachvalue (Task* task, utils::copy(slave->tasks[frameworkId])) {
-      const StatusUpdate& update = protobuf::createStatusUpdate(
-          task->framework_id(),
-          task->slave_id(),
-          task->task_id(),
-          newTaskState,
-          TaskStatus::SOURCE_MASTER,
-          None(),
-          "Agent " + slave->info.hostname() + " is unreachable: " + message,
-          TaskStatus::REASON_SLAVE_REMOVED,
-          (task->has_executor_id() ?
-              Option<ExecutorID>(task->executor_id()) : None()),
-          None(),
-          None(),
-          None(),
-          None(),
-          unreachableTime);
-
-      updateTask(task, update);
-      removeTask(task);
-
-      if (!framework->connected()) {
-        LOG(WARNING) << "Dropping update " << update
-                     << " for disconnected "
-                     << " framework " << frameworkId;
-      } else {
-        forward(update, UPID(), framework);
-      }
-    }
-  }
-
-  // Remove executors from the slave for proper resource accounting.
-  foreachkey (const FrameworkID& frameworkId, utils::copy(slave->executors)) {
-    foreachkey (const ExecutorID& executorId,
-                utils::copy(slave->executors[frameworkId])) {
-      removeExecutor(slave, frameworkId, executorId);
-    }
-  }
-
-  foreach (Offer* offer, utils::copy(slave->offers)) {
-    // TODO(vinod): We don't need to call 'Allocator::recoverResources'
-    // once MESOS-621 is fixed.
-    allocator->recoverResources(
-        offer->framework_id(), slave->id, offer->resources(), None());
-
-    // Remove and rescind offers.
-    removeOffer(offer, true); // Rescind!
-  }
-
-  // Remove inverse offers because sending them for a slave that is
-  // unreachable doesn't make sense.
-  foreach (InverseOffer* inverseOffer, utils::copy(slave->inverseOffers)) {
-    // We don't need to update the allocator because we've already called
-    // `RemoveSlave()`.
-    // Remove and rescind inverse offers.
-    removeInverseOffer(inverseOffer, true); // Rescind!
-  }
-
-  // Mark the slave as being unreachable.
-  slaves.registered.remove(slave);
-  slaves.removed.put(slave->id, Nothing());
   slaves.unreachable[slave->id] = unreachableTime;
-  authenticated.erase(slave->pid);
 
-  // Remove the slave from the `machines` mapping.
-  CHECK(machines.contains(slave->machineId));
-  CHECK(machines[slave->machineId].slaves.contains(slave->id));
-  machines[slave->machineId].slaves.erase(slave->id);
+  __removeSlave(slave, message, unreachableTime);
+}
 
-  // Kill the slave observer.
-  terminate(slave->observer);
-  wait(slave->observer);
-  delete slave->observer;
 
-  // TODO(benh): unlink(slave->pid);
+void Master::markGone(Slave* slave, const TimeInfo& goneTime)
+{
+  CHECK_NOTNULL(slave);
+  CHECK(slaves.markingGone.contains(slave->info.id()));
+  slaves.markingGone.erase(slave->info.id());
 
-  sendSlaveLost(slave->info);
+  slaves.gone[slave->id] = goneTime;
 
-  delete slave;
+  // Shutdown the agent if it transitioned to gone.
+  ShutdownMessage message;
+  message.set_message("Agent has been marked gone");
+  send(slave->pid, message);
+
+  __removeSlave(slave, "Agent has been marked gone", None());
 }
 
 
@@ -7410,9 +7411,10 @@ void Master::_reconcileTasks(
   //   (3) Task is unknown, slave is registered: TASK_UNKNOWN.
   //   (4) Task is unknown, slave is transitioning: no-op.
   //   (5) Task is unknown, slave is unreachable: TASK_UNREACHABLE.
-  //   (6) Task is unknown, slave is unknown: TASK_UNKNOWN.
+  //   (6) Task is unknown, slave is gone: TASK_GONE_BY_OPERATOR.
+  //   (7) Task is unknown, slave is unknown: TASK_UNKNOWN.
   //
-  // For cases (3), (5), and (6), TASK_LOST is sent instead if the
+  // For cases (3), (5), (6) and (7) TASK_LOST is sent instead if the
   // framework has not opted-in to the PARTITION_AWARE capability.
   foreach (const TaskStatus& status, statuses) {
     Option<SlaveID> slaveId = None();
@@ -7509,8 +7511,26 @@ void Master::_reconcileTasks(
           None(),
           None(),
           unreachableTime);
+    } else if (slaveId.isSome() && slaves.gone.contains(slaveId.get())) {
+      // (6) Slave is gone: TASK_GONE_BY_OPERATOR. If the framework
+      // does not have the PARTITION_AWARE capability, send TASK_LOST
+      // for backward compatibility.
+      TaskState taskState = TASK_GONE_BY_OPERATOR;
+      if (!framework->capabilities.partitionAware) {
+        taskState = TASK_LOST;
+      }
+
+      update = protobuf::createStatusUpdate(
+          framework->id(),
+          slaveId.get(),
+          status.task_id(),
+          taskState,
+          TaskStatus::SOURCE_MASTER,
+          None(),
+          "Reconciliation: Task is gone",
+          TaskStatus::REASON_RECONCILIATION);
     } else {
-      // (6) Task is unknown, slave is unknown: TASK_UNKNOWN. If the
+      // (7) Task is unknown, slave is unknown: TASK_UNKNOWN. If the
       // framework does not have the PARTITION_AWARE capability, send
       // TASK_LOST for backward compatibility.
       TaskState taskState = TASK_UNKNOWN;
@@ -8763,6 +8783,12 @@ void Master::removeSlave(
     return;
   }
 
+  if (slaves.markingGone.contains(slave->id)) {
+    LOG(WARNING) << "Ignoring removal of agent " << *slave
+                 << " that is in the process of being marked gone";
+    return;
+  }
+
   // This should not be possible, but we protect against it anyway for
   // the sake of paranoia.
   if (slaves.removing.contains(slave->id)) {
@@ -8915,6 +8941,123 @@ void Master::_removeSlave(
   if (!subscribers.subscribed.empty()) {
     subscribers.send(protobuf::master::event::createAgentRemoved(slave->id));
   }
+
+  delete slave;
+}
+
+
+void Master::__removeSlave(
+    Slave* slave,
+    const string& message,
+    const Option<TimeInfo>& unreachableTime)
+{
+  // We want to remove the slave first, to avoid the allocator
+  // re-allocating the recovered resources.
+  //
+  // NOTE: Removing the slave is not sufficient for recovering the
+  // resources in the allocator, because the "Sorters" are updated
+  // only within recoverResources() (see MESOS-621). The calls to
+  // recoverResources() below are therefore required, even though
+  // the slave is already removed.
+  allocator->removeSlave(slave->id);
+
+  // Transition tasks to TASK_UNREACHABLE/TASK_GONE_BY_OPERATOR/TASK_LOST
+  // and remove them. We only use TASK_UNREACHABLE/TASK_GONE_BY_OPERATOR if
+  // the framework has opted in to the PARTITION_AWARE capability.
+  foreachkey (const FrameworkID& frameworkId, utils::copy(slave->tasks)) {
+    Framework* framework = getFramework(frameworkId);
+    CHECK_NOTNULL(framework);
+
+    TaskState newTaskState = TASK_UNREACHABLE;
+    TaskStatus::Reason newTaskReason = TaskStatus::REASON_SLAVE_REMOVED;
+
+    if (!framework->capabilities.partitionAware) {
+      newTaskState = TASK_LOST;
+    } else {
+      if (unreachableTime.isSome()) {
+        newTaskState = TASK_UNREACHABLE;
+      } else {
+        newTaskState = TASK_GONE_BY_OPERATOR;
+        newTaskReason = TaskStatus::REASON_SLAVE_REMOVED_BY_OPERATOR;
+      }
+    }
+
+    foreachvalue (Task* task, utils::copy(slave->tasks[frameworkId])) {
+      const StatusUpdate& update = protobuf::createStatusUpdate(
+          task->framework_id(),
+          task->slave_id(),
+          task->task_id(),
+          newTaskState,
+          TaskStatus::SOURCE_MASTER,
+          None(),
+          message,
+          newTaskReason,
+          (task->has_executor_id() ?
+              Option<ExecutorID>(task->executor_id()) : None()),
+          None(),
+          None(),
+          None(),
+          None(),
+          unreachableTime.isSome() ? unreachableTime : None());
+
+      updateTask(task, update);
+      removeTask(task);
+
+      if (!framework->connected()) {
+        LOG(WARNING) << "Dropping update " << update
+                     << " for disconnected "
+                     << " framework " << frameworkId;
+      } else {
+        forward(update, UPID(), framework);
+      }
+    }
+  }
+
+  // Remove executors from the slave for proper resource accounting.
+  foreachkey (const FrameworkID& frameworkId, utils::copy(slave->executors)) {
+    foreachkey (const ExecutorID& executorId,
+                utils::copy(slave->executors[frameworkId])) {
+      removeExecutor(slave, frameworkId, executorId);
+    }
+  }
+
+  foreach (Offer* offer, utils::copy(slave->offers)) {
+    // TODO(vinod): We don't need to call 'Allocator::recoverResources'
+    // once MESOS-621 is fixed.
+    allocator->recoverResources(
+        offer->framework_id(), slave->id, offer->resources(), None());
+
+    // Remove and rescind offers.
+    removeOffer(offer, true); // Rescind!
+  }
+
+  // Remove inverse offers because sending them for a slave that is
+  // unreachable doesn't make sense.
+  foreach (InverseOffer* inverseOffer, utils::copy(slave->inverseOffers)) {
+    // We don't need to update the allocator because we've already called
+    // `RemoveSlave()`.
+    // Remove and rescind inverse offers.
+    removeInverseOffer(inverseOffer, true); // Rescind!
+  }
+
+  // Mark the slave as being removed.
+  slaves.registered.remove(slave);
+  slaves.removed.put(slave->id, Nothing());
+  authenticated.erase(slave->pid);
+
+  // Remove the slave from the `machines` mapping.
+  CHECK(machines.contains(slave->machineId));
+  CHECK(machines[slave->machineId].slaves.contains(slave->id));
+  machines[slave->machineId].slaves.erase(slave->id);
+
+  // Kill the slave observer.
+  terminate(slave->observer);
+  wait(slave->observer);
+  delete slave->observer;
+
+  // TODO(benh): unlink(slave->pid);
+
+  sendSlaveLost(slave->info);
 
   delete slave;
 }

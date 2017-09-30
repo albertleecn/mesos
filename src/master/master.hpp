@@ -491,6 +491,8 @@ public:
       const SlaveID& slaveId,
       const std::string& message);
 
+  void markGone(Slave* slave, const TimeInfo& goneTime);
+
   void authenticate(
       const process::UPID& from,
       const process::UPID& pid);
@@ -731,6 +733,11 @@ protected:
       const process::Future<bool>& registrarResult,
       const std::string& removalCause,
       Option<process::metrics::Counter> reason = None());
+
+  void __removeSlave(
+      Slave* slave,
+      const std::string& message,
+      const Option<TimeInfo>& unreachableTime);
 
   // Validates that the framework is authenticated, if required.
   Option<Error> validateFrameworkAuthentication(
@@ -1021,7 +1028,8 @@ private:
   void doRegistryGc();
 
   void _doRegistryGc(
-      const hashset<SlaveID>& toRemove,
+      const hashset<SlaveID>& toRemoveUnreachable,
+      const hashset<SlaveID>& toRemoveGone,
       const process::Future<bool>& registrarResult);
 
   process::Future<bool> authorizeLogAccess(
@@ -1660,6 +1668,14 @@ private:
         const Option<process::http::authentication::Principal>& principal,
         ContentType contentType) const;
 
+    process::Future<process::http::Response> markAgentGone(
+        const mesos::master::Call& call,
+        const Option<process::http::authentication::Principal>& principal,
+        ContentType contentType) const;
+
+    process::Future<process::http::Response> _markAgentGone(
+        const SlaveID& slaveId) const;
+
     Master* master;
 
     // NOTE: The quota specific pieces of the Operator API are factored
@@ -1824,6 +1840,9 @@ private:
     // Slaves that are in the process of being marked unreachable.
     hashset<SlaveID> markingUnreachable;
 
+    // Slaves that are in the process of being marked gone.
+    hashset<SlaveID> markingGone;
+
     // This collection includes agents that have gracefully shutdown,
     // as well as those that have been marked unreachable. We keep a
     // cache here to prevent this from growing in an unbounded manner.
@@ -1843,6 +1862,13 @@ private:
     // GC behavior is governed by the `registry_gc_interval`,
     // `registry_max_agent_age`, and `registry_max_agent_count` flags.
     LinkedHashMap<SlaveID, TimeInfo> unreachable;
+
+    // Slaves that have been marked gone. We recover this from the
+    // registry, so it includes slaves marked as gone by other instances
+    // of the master. Note that we use a LinkedHashMap to ensure the order
+    // of elements here matches the order in the registry's gone list, which
+    // matches the order in which agents are marked gone.
+    LinkedHashMap<SlaveID, TimeInfo> gone;
 
     // This rate limiter is used to limit the removal of slaves failing
     // health checks.
@@ -2214,45 +2240,69 @@ private:
 };
 
 
-class PruneUnreachable : public Operation
+class Prune : public Operation
 {
 public:
-  explicit PruneUnreachable(const hashset<SlaveID>& _toRemove)
-    : toRemove(_toRemove) {}
+  explicit Prune(
+      const hashset<SlaveID>& _toRemoveUnreachable,
+      const hashset<SlaveID>& _toRemoveGone)
+    : toRemoveUnreachable(_toRemoveUnreachable),
+      toRemoveGone(_toRemoveGone) {}
 
 protected:
   virtual Try<bool> perform(Registry* registry, hashset<SlaveID>* /*slaveIDs*/)
   {
-    // Attempt to remove the SlaveIDs in `toRemove` from the
-    // unreachable list. Some SlaveIDs in `toRemove` might not appear
+    // Attempt to remove the SlaveIDs in the `toRemoveXXX` from the
+    // unreachable/gone list. Some SlaveIDs in `toRemoveXXX` might not appear
     // in the registry; this is possible if there was a concurrent
     // registry operation.
     //
     // TODO(neilc): This has quadratic worst-case behavior, because
     // `DeleteSubrange` for a `repeated` object takes linear time.
     bool mutate = false;
-    int i = 0;
-    while (i < registry->unreachable().slaves().size()) {
-      const Registry::UnreachableSlave& slave =
-        registry->unreachable().slaves(i);
 
-      if (toRemove.contains(slave.id())) {
-        Registry::UnreachableSlaves* unreachable =
-          registry->mutable_unreachable();
+    {
+      int i = 0;
+      while (i < registry->unreachable().slaves().size()) {
+        const Registry::UnreachableSlave& slave =
+          registry->unreachable().slaves(i);
 
-        unreachable->mutable_slaves()->DeleteSubrange(i, i+1);
-        mutate = true;
-        continue;
+        if (toRemoveUnreachable.contains(slave.id())) {
+          Registry::UnreachableSlaves* unreachable =
+            registry->mutable_unreachable();
+
+          unreachable->mutable_slaves()->DeleteSubrange(i, i+1);
+          mutate = true;
+          continue;
+        }
+
+        i++;
       }
+    }
 
-      i++;
+    {
+      int i = 0;
+      while (i < registry->gone().slaves().size()) {
+        const Registry::GoneSlave& slave = registry->gone().slaves(i);
+
+        if (toRemoveGone.contains(slave.id())) {
+          Registry::GoneSlaves* gone = registry->mutable_gone();
+
+          gone->mutable_slaves()->DeleteSubrange(i, i+1);
+          mutate = true;
+          continue;
+        }
+
+        i++;
+      }
     }
 
     return mutate;
   }
 
 private:
-  const hashset<SlaveID> toRemove;
+  const hashset<SlaveID> toRemoveUnreachable;
+  const hashset<SlaveID> toRemoveGone;
 };
 
 
@@ -2284,6 +2334,77 @@ protected:
 
 private:
   const SlaveInfo info;
+};
+
+
+// Move a slave from the list of admitted/unreachable slaves
+// to the list of gone slaves.
+class MarkSlaveGone : public Operation
+{
+public:
+  MarkSlaveGone(const SlaveID& _id, const TimeInfo& _goneTime)
+    : id(_id), goneTime(_goneTime) {}
+
+protected:
+  virtual Try<bool> perform(Registry* registry, hashset<SlaveID>* slaveIDs)
+  {
+    // Check whether the slave is already in the gone list. As currently
+    // implemented, this should not be possible: the master will not
+    // try to transition an already gone slave.
+    for (int i = 0; i < registry->gone().slaves().size(); i++) {
+      const Registry::GoneSlave& slave = registry->gone().slaves(i);
+
+      if (slave.id() == id) {
+        return Error("Agent " + stringify(id) + " already marked as gone");
+      }
+    }
+
+    // Check whether the slave is in the admitted/unreachable list.
+    bool found = false;
+    if (slaveIDs->contains(id)) {
+      found = true;
+      for (int i = 0; i < registry->slaves().slaves().size(); i++) {
+        const Registry::Slave& slave = registry->slaves().slaves(i);
+
+        if (slave.info().id() == id) {
+          registry->mutable_slaves()->mutable_slaves()->DeleteSubrange(i, 1);
+          slaveIDs->erase(id);
+          break;
+        }
+      }
+    }
+
+    if (!found) {
+      for (int i = 0; i < registry->unreachable().slaves().size(); i++) {
+        const Registry::UnreachableSlave& slave =
+          registry->unreachable().slaves(i);
+
+        if (slave.id() == id) {
+          registry->mutable_unreachable()->mutable_slaves()->DeleteSubrange(
+              i, 1);
+
+          found = true;
+          break;
+        }
+      }
+    }
+
+    if (found) {
+      Registry::GoneSlave* gone = registry->mutable_gone()->add_slaves();
+
+      gone->mutable_id()->CopyFrom(id);
+      gone->mutable_timestamp()->CopyFrom(goneTime);
+
+      return true; // Mutation;
+    }
+
+    // Should not happen.
+    return Error("Failed to find agent " + stringify(id));
+  }
+
+private:
+  const SlaveID id;
+  const TimeInfo goneTime;
 };
 
 
