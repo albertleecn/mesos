@@ -6782,59 +6782,98 @@ void Master::updateSlave(const UpdateSlaveMessage& message)
   // updating the agent in the allocator. This would lead us to
   // re-send out the stale oversubscribed resources!
 
-  // If the caller did not specify a type we assume we should set
-  // `oversubscribedResources` to be backwards-compatibility with
-  // older clients.
-  const UpdateSlaveMessage::Type type =
-    message.has_type() ? message.type() : UpdateSlaveMessage::OVERSUBSCRIBED;
+  // If the caller did not specify a resource category we assume we should set
+  // `oversubscribedResources` to be backwards-compatibility with older clients.
+  const bool hasOversubscribed =
+    (message.has_resource_categories() &&
+     message.resource_categories().has_oversubscribed() &&
+     message.resource_categories().oversubscribed()) ||
+    !message.has_resource_categories();
 
-  switch (type) {
-    case UpdateSlaveMessage::OVERSUBSCRIBED: {
-      const Resources oversubscribedResources =
-        message.oversubscribed_resources();
+  const bool hasTotal =
+    message.has_resource_categories() &&
+    message.resource_categories().has_total() &&
+    message.resource_categories().total();
 
-      LOG(INFO) << "Received update of agent " << *slave << " with total"
-                << " oversubscribed resources " << oversubscribedResources;
+  Option<Resources> newTotal;
+  Option<Resources> newOversubscribed;
 
-      slave->totalResources =
-        slave->totalResources.nonRevocable() +
-        oversubscribedResources.revocable();
-      break;
-    }
-    case UpdateSlaveMessage::TOTAL: {
-      const Resources totalResources =
-        message.total_resources();
+  if (hasTotal) {
+    const Resources& totalResources = message.total_resources();
 
-      LOG(INFO) << "Received update of agent " << *slave << " with total"
-                << " resources " << totalResources;
+    LOG(INFO) << "Received update of agent " << *slave << " with total"
+              << " resources " << totalResources;
 
-      slave->totalResources = totalResources;
-      break;
-    }
-    case UpdateSlaveMessage::UNKNOWN: {
-      LOG(WARNING) << "Ignoring update on agent " << slaveId
-                   << " since the update type is not understood";
-      return;
-    }
+    newTotal = totalResources;
   }
+
+  // Since `total` always overwrites an existing total, we apply
+  // `oversubscribed` after updating the total to be able to
+  // independently apply it regardless of whether `total` was sent.
+  if (hasOversubscribed) {
+    const Resources& oversubscribedResources =
+      message.oversubscribed_resources();
+
+    LOG(INFO) << "Received update of agent " << *slave << " with total"
+              << " oversubscribed resources " << oversubscribedResources;
+
+    newOversubscribed = oversubscribedResources;
+  }
+
+  const Resources newSlaveResources =
+    newTotal.getOrElse(slave->totalResources.nonRevocable()) +
+    newOversubscribed.getOrElse(slave->totalResources.revocable());
+
+  if (newSlaveResources == slave->totalResources) {
+    LOG(INFO) << "Ignoring update on agent " << *slave
+              << " as it reports no changes";
+    return;
+  }
+
+  slave->totalResources = newSlaveResources;
 
   // Now update the agent's resources in the allocator.
   allocator->updateSlave(slaveId, slave->totalResources);
 
-  // Then rescind any outstanding offers with revocable resources.
+  // Then rescind outstanding offers affected by the update.
   // NOTE: Need a copy of offers because the offers are removed inside the loop.
   foreach (Offer* offer, utils::copy(slave->offers)) {
+    bool rescind = false;
+
     const Resources& offered = offer->resources();
-    if (!offered.revocable().empty()) {
+    // Since updates of the agent's oversubscribed resources are sent at regular
+    // intervals, we only rescind offers containing revocable resources to
+    // reduce churn.
+    if (hasOversubscribed && !offered.revocable().empty()) {
       LOG(INFO) << "Removing offer " << offer->id()
-                << " with revocable resources " << offered
-                << " on agent " << *slave;
+                << " with revocable resources " << offered << " on agent "
+                << *slave;
 
-      allocator->recoverResources(
-          offer->framework_id(), offer->slave_id(), offered, None());
-
-      removeOffer(offer, true); // Rescind.
+      rescind = true;
     }
+
+    // For updates to the agent's total resources all offers are rescinded.
+    //
+    // TODO(bbannier): Only rescind offers possibly containing removed
+    // resources.
+    if (hasTotal) {
+      LOG(INFO) << "Removing offer " << offer->id() << " with resources "
+                << offered << " on agent " << *slave;
+
+      rescind = true;
+    }
+
+    if (!rescind) {
+      continue;
+    }
+
+    allocator->recoverResources(
+        offer->framework_id(),
+        offer->slave_id(),
+        offered,
+        None());
+
+    removeOffer(offer, true); // Rescind.
   }
 
   // NOTE: We don't need to rescind inverse offers here as they are unrelated to
