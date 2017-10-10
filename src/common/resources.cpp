@@ -146,7 +146,7 @@ bool operator==(
     return false;
   }
 
-  return left.root() == right.root();
+  return true;
 }
 
 
@@ -203,6 +203,14 @@ bool operator==(
   }
 
   if (left.has_metadata() && left.metadata() != right.metadata()) {
+    return false;
+  }
+
+  if (left.has_profile() != right.has_profile()) {
+    return false;
+  }
+
+  if (left.has_profile() && left.profile() != right.profile()) {
     return false;
   }
 

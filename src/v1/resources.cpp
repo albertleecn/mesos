@@ -174,7 +174,15 @@ bool operator==(
     return false;
   }
 
+  if (left.has_path() != right.has_path()) {
+    return false;
+  }
+
   if (left.has_path() && left.path() != right.path()) {
+    return false;
+  }
+
+  if (left.has_mount() != right.has_mount()) {
     return false;
   }
 
@@ -182,11 +190,27 @@ bool operator==(
     return false;
   }
 
+  if (left.has_id() != right.has_id()) {
+    return false;
+  }
+
   if (left.has_id() && left.id() != right.id()) {
     return false;
   }
 
+  if (left.has_metadata() != right.has_metadata()) {
+    return false;
+  }
+
   if (left.has_metadata() && left.metadata() != right.metadata()) {
+    return false;
+  }
+
+  if (left.has_profile() != right.has_profile()) {
+    return false;
+  }
+
+  if (left.has_profile() && left.profile() != right.profile()) {
     return false;
   }
 
