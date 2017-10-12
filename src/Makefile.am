@@ -627,12 +627,17 @@ authentication_HEADERS =						\
   $(top_srcdir)/include/mesos/authentication/authentication.hpp		\
   $(top_srcdir)/include/mesos/authentication/authentication.proto	\
   $(top_srcdir)/include/mesos/authentication/authenticator.hpp		\
-  $(top_srcdir)/include/mesos/authentication/secret_generator.hpp	\
-  $(top_srcdir)/include/mesos/authentication/http/basic_authenticator_factory.hpp	\
-  $(top_srcdir)/include/mesos/authentication/http/combined_authenticator.hpp
+  $(top_srcdir)/include/mesos/authentication/secret_generator.hpp
 
 nodist_authentication_HEADERS =						\
   ../include/mesos/authentication/authentication.pb.h
+
+httpauthenticationdir = $(pkgincludedir)/authentication/http
+
+httpauthentication_HEADERS =						\
+  $(top_srcdir)/include/mesos/authentication/http/authenticatee.hpp	\
+  $(top_srcdir)/include/mesos/authentication/http/basic_authenticator_factory.hpp	\
+  $(top_srcdir)/include/mesos/authentication/http/combined_authenticator.hpp
 
 authorizerdir = $(pkgincludedir)/authorizer
 
@@ -717,6 +722,7 @@ module_HEADERS =							\
   $(top_srcdir)/include/mesos/module/detector.hpp			\
   $(top_srcdir)/include/mesos/module/hook.hpp				\
   $(top_srcdir)/include/mesos/module/hook.proto				\
+  $(top_srcdir)/include/mesos/module/http_authenticatee.hpp		\
   $(top_srcdir)/include/mesos/module/http_authenticator.hpp		\
   $(top_srcdir)/include/mesos/module/isolator.hpp			\
   $(top_srcdir)/include/mesos/module/module.hpp				\
@@ -935,6 +941,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   authentication/cram_md5/authenticatee.cpp				\
   authentication/cram_md5/authenticator.cpp				\
   authentication/cram_md5/auxprop.cpp					\
+  authentication/http/basic_authenticatee.cpp				\
   authentication/http/basic_authenticator_factory.cpp			\
   authentication/http/combined_authenticator.cpp			\
   authorizer/acls.cpp							\
@@ -1079,6 +1086,7 @@ libmesos_no_3rdparty_la_SOURCES +=					\
   authentication/cram_md5/authenticatee.hpp				\
   authentication/cram_md5/authenticator.hpp				\
   authentication/cram_md5/auxprop.hpp					\
+  authentication/http/basic_authenticatee.hpp				\
   authorizer/local/authorizer.hpp					\
   checks/checker.hpp							\
   checks/checker_process.hpp						\

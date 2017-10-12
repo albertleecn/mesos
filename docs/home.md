@@ -18,7 +18,8 @@ layout: documentation
 * [Agent Recovery](agent-recovery.md) for doing seamless agent upgrades and allowing executors to survive `mesos-agent` crashes.
 * [Authentication](authentication.md)
 * [Authorization](authorization.md)
-* [Configuration](configuration.md) and [CMake configuration](configuration-cmake.md) for command-line arguments.
+* [CMake](cmake.md) for details about using the new CMake build system.
+* [Configuration](configuration.md) for command-line arguments.
 * [Container Image](container-image.md) for supporting container images in Mesos containerizer.
 * [Container Volume](container-volume.md) for using container volumes.
 * [Containerizers](containerizers.md) for containerizer overview and use cases.
