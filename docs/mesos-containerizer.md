@@ -28,8 +28,8 @@ Mesos supports the following built-in isolators.
 
 - [environment\_secret](secrets.md#environment-based-secrets)
 - appc/runtime
-- cgroups/blkio
-- cgroups/cpu
+- [cgroups/blkio](isolators/cgroups-blkio.md)
+- [cgroups/cpu](isolators/cgroups-cpu.md)
 - cgroups/cpuset
 - cgroups/devices
 - cgroups/hugetlb
