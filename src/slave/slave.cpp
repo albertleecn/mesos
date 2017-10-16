@@ -2493,7 +2493,7 @@ void Slave::___run(
 
       ContainerTermination termination;
       termination.set_state(taskState);
-      termination.add_reasons(TaskStatus::REASON_CONTAINER_UPDATE_FAILED);
+      termination.set_reason(TaskStatus::REASON_CONTAINER_UPDATE_FAILED);
       termination.set_message(
           "Failed to update resources for container: " +
           (future.isFailed() ? future.failure() : "discarded"));
@@ -2753,7 +2753,7 @@ void Slave::launchExecutor(
     // and perform cleanup via `executorTerminated`.
     ContainerTermination termination;
     termination.set_state(TASK_FAILED);
-    termination.add_reasons(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
+    termination.set_reason(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
     termination.set_message("Executor " + executorState);
 
     executorTerminated(frameworkId, executorId, termination);
@@ -2774,7 +2774,7 @@ void Slave::launchExecutor(
 
       ContainerTermination termination;
       termination.set_state(TASK_FAILED);
-      termination.add_reasons(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
+      termination.set_reason(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
       termination.set_message(
           "Secret generation failed: " +
           (future->isFailed() ? future->failure() : "discarded"));
@@ -4303,7 +4303,7 @@ void Slave::_reregisterExecutor(
 
       ContainerTermination termination;
       termination.set_state(taskState);
-      termination.add_reasons(TaskStatus::REASON_CONTAINER_UPDATE_FAILED);
+      termination.set_reason(TaskStatus::REASON_CONTAINER_UPDATE_FAILED);
       termination.set_message(
           "Failed to update resources for container: " +
           (future.isFailed() ? future.failure() : "discarded"));
@@ -4356,7 +4356,7 @@ void Slave::reregisterExecutorTimeout()
 
           ContainerTermination termination;
           termination.set_state(taskState);
-          termination.add_reasons(
+          termination.set_reason(
               TaskStatus::REASON_EXECUTOR_REREGISTRATION_TIMEOUT);
           termination.set_message(
               "Executor did not re-register within " +
@@ -4737,7 +4737,7 @@ void Slave::__statusUpdate(
 
       ContainerTermination termination;
       termination.set_state(taskState);
-      termination.add_reasons(TaskStatus::REASON_CONTAINER_UPDATE_FAILED);
+      termination.set_reason(TaskStatus::REASON_CONTAINER_UPDATE_FAILED);
       termination.set_message(
           "Failed to update resources for container: " +
           (future->isFailed() ? future->failure() : "discarded"));
@@ -5299,7 +5299,7 @@ void Slave::executorLaunched(
     if (executor != nullptr) {
       ContainerTermination termination;
       termination.set_state(TASK_FAILED);
-      termination.add_reasons(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
+      termination.set_reason(TaskStatus::REASON_CONTAINER_LAUNCH_FAILED);
       termination.set_message(
           "Failed to launch container: " +
           (future.isFailed() ? future.failure() : "discarded"));
@@ -5883,7 +5883,7 @@ void Slave::registerExecutorTimeout(
 
       ContainerTermination termination;
       termination.set_state(TASK_FAILED);
-      termination.add_reasons(TaskStatus::REASON_EXECUTOR_REGISTRATION_TIMEOUT);
+      termination.set_reason(TaskStatus::REASON_EXECUTOR_REGISTRATION_TIMEOUT);
       termination.set_message(
           "Executor did not register within " +
           stringify(flags.executor_registration_timeout));
@@ -6681,7 +6681,7 @@ void Slave::_qosCorrections(const Future<list<QoSCorrection>>& future)
 
           ContainerTermination termination;
           termination.set_state(taskState);
-          termination.add_reasons(TaskStatus::REASON_CONTAINER_PREEMPTED);
+          termination.set_reason(TaskStatus::REASON_CONTAINER_PREEMPTED);
           termination.set_message("Container preempted by QoS correction");
 
           executor->pendingTermination = termination;
@@ -6890,9 +6890,10 @@ void Slave::sendExecutorTerminatedStatusUpdate(
   TaskStatus::Reason reason;
   string message;
 
+  const bool haveTermination = termination.isReady() && termination->isSome();
+
   // Determine the task state for the status update.
-  if (termination.isReady() &&
-      termination->isSome() && termination->get().has_state()) {
+  if (haveTermination && termination->get().has_state()) {
     state = termination->get().state();
   } else if (executor->pendingTermination.isSome() &&
              executor->pendingTermination->has_state()) {
@@ -6902,13 +6903,11 @@ void Slave::sendExecutorTerminatedStatusUpdate(
   }
 
   // Determine the task reason for the status update.
-  // TODO(jieyu): Handle multiple reasons (MESOS-2657).
-  if (termination.isReady() &&
-      termination->isSome() && termination->get().reasons().size() > 0) {
-    reason = termination->get().reasons(0);
+  if (haveTermination && termination->get().has_reason()) {
+    reason = termination->get().reason();
   } else if (executor->pendingTermination.isSome() &&
-             executor->pendingTermination->reasons().size() > 0) {
-    reason = executor->pendingTermination->reasons(0);
+             executor->pendingTermination->has_reason()) {
+    reason = executor->pendingTermination->reason();
   } else {
     reason = TaskStatus::REASON_EXECUTOR_TERMINATED;
   }
@@ -6937,16 +6936,29 @@ void Slave::sendExecutorTerminatedStatusUpdate(
     message = strings::join("; ", messages);
   }
 
-  statusUpdate(protobuf::createStatusUpdate(
-      frameworkId,
-      info.id(),
-      taskId,
-      state,
-      TaskStatus::SOURCE_SLAVE,
-      UUID::random(),
-      message,
-      reason,
-      executor->id),
+  Option<Resources> limitedResources;
+
+  if (haveTermination && !termination->get().limited_resources().empty()) {
+    limitedResources = termination->get().limited_resources();
+  }
+
+  statusUpdate(
+      protobuf::createStatusUpdate(
+          frameworkId,
+          info.id(),
+          taskId,
+          state,
+          TaskStatus::SOURCE_SLAVE,
+          UUID::random(),
+          message,
+          reason,
+          executor->id,
+          None(),
+          None(),
+          None(),
+          None(),
+          None(),
+          limitedResources),
       UPID());
 }
 
