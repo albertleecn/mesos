@@ -113,6 +113,15 @@ class MasterAPITest
     public WithParamInterface<ContentType>
 {
 public:
+  virtual master::Flags CreateMasterFlags()
+  {
+    // Turn off periodic allocations to avoid the race between
+    // `HierarchicalAllocator::updateAvailable()` and periodic allocations.
+    master::Flags flags = MesosTest::CreateMasterFlags();
+    flags.allocation_interval = Seconds(1000);
+    return flags;
+  }
+
   // Helper function to post a request to "/api/v1" master endpoint and return
   // the response.
   Future<v1::master::Response> post(
@@ -973,11 +982,7 @@ TEST_P(MasterAPITest, ReserveResources)
 
   EXPECT_CALL(allocator, initialize(_, _, _, _, _, _));
 
-  // Set a low allocation interval to speed up this test.
-  master::Flags flags = MesosTest::CreateMasterFlags();
-  flags.allocation_interval = Milliseconds(50);
-
-  Try<Owned<cluster::Master>> master = StartMaster(&allocator, flags);
+  Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
@@ -1018,9 +1023,6 @@ TEST_P(MasterAPITest, ReserveResources)
   EXPECT_TRUE(Resources(offer.resources()).contains(
       allocatedResources(unreserved, frameworkInfo.role())));
 
-  EXPECT_CALL(sched, resourceOffers(&driver, _))
-    .WillOnce(FutureArg<1>(&offers));
-
   // Expect an offer to be rescinded!
   EXPECT_CALL(sched, offerRescinded(_, _));
 
@@ -1044,6 +1046,12 @@ TEST_P(MasterAPITest, ReserveResources)
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Accepted().status, response);
 
+  // Summon an offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  driver.reviveOffers();
+
   AWAIT_READY(offers);
 
   ASSERT_EQ(1u, offers->size());
@@ -1065,11 +1073,7 @@ TEST_P(MasterAPITest, UnreserveResources)
 
   EXPECT_CALL(allocator, initialize(_, _, _, _, _, _));
 
-  // Set a low allocation interval to speed up this test.
-  master::Flags flags = MesosTest::CreateMasterFlags();
-  flags.allocation_interval = Milliseconds(50);
-
-  Try<Owned<cluster::Master>> master = StartMaster(&allocator, flags);
+  Try<Owned<cluster::Master>> master = StartMaster(&allocator);
   ASSERT_SOME(master);
 
   Future<SlaveID> slaveId;
@@ -1130,9 +1134,6 @@ TEST_P(MasterAPITest, UnreserveResources)
   EXPECT_TRUE(Resources(offer.resources()).contains(
       allocatedResources(dynamicallyReserved, frameworkInfo.role())));
 
-  EXPECT_CALL(sched, resourceOffers(&driver, _))
-    .WillOnce(FutureArg<1>(&offers));
-
   // Expect an offer to be rescinded!
   EXPECT_CALL(sched, offerRescinded(_, _));
 
@@ -1154,6 +1155,12 @@ TEST_P(MasterAPITest, UnreserveResources)
     stringify(contentType));
 
   AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::Accepted().status, unreserveResponse);
+
+  // Summon an offer.
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers));
+
+  driver.reviveOffers();
 
   AWAIT_READY(offers);
 
@@ -1326,20 +1333,14 @@ TEST_P(MasterAPITest, GetMaintenanceStatus)
     v1UpdateScheduleCall.mutable_update_maintenance_schedule();
   maintenanceSchedule->mutable_schedule()->CopyFrom(v1Schedule);
 
-  Future<Nothing> v1UpdateScheduleResponse = http::post(
+  Future<http::Response> v1UpdateScheduleResponse = http::post(
       master.get()->pid,
       "api/v1",
       headers,
       serialize(contentType, v1UpdateScheduleCall),
-      stringify(contentType))
-    .then([](const http::Response& response) -> Future<Nothing> {
-      if (response.status != http::OK().status) {
-        return Failure("Unexpected response status " + response.status);
-      }
-      return Nothing();
-    });
+      stringify(contentType));
 
-  AWAIT_READY(v1UpdateScheduleResponse);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, v1UpdateScheduleResponse);
 
   // Query maintenance status.
   v1::master::Call v1GetStatusCall;
@@ -2211,11 +2212,9 @@ TEST_P(MasterAPITest, EventAuthorizationFiltering)
     acl->mutable_users()->set_type(mesos::ACL::Entity::NONE);
   }
 
-  master::Flags masterFlags = CreateMasterFlags();
   Result<Authorizer*> authorizer = Authorizer::create(acls);
 
-  Try<Owned<cluster::Master>> master =
-    StartMaster(authorizer.get(), masterFlags);
+  Try<Owned<cluster::Master>> master = StartMaster(authorizer.get());
 
   ASSERT_SOME(master);
 
@@ -2387,11 +2386,6 @@ TEST_P(MasterAPITest, EventAuthorizationFiltering)
     v1::scheduler::Call::Accept* accept = call.mutable_accept();
     accept->add_offer_ids()->CopyFrom(offer1.id());
 
-    // Set 0s filter to immediately get another offer.
-    v1::Filters filters;
-    filters.set_refuse_seconds(0);
-    accept->mutable_filters()->CopyFrom(filters);
-
     v1::Offer::Operation* operation = accept->add_operations();
     operation->set_type(v1::Offer::Operation::LAUNCH);
 
@@ -2433,14 +2427,19 @@ TEST_P(MasterAPITest, EventAuthorizationFiltering)
   ASSERT_EQ(task1.task_id(),
             event->get().task_updated().status().task_id());
 
+  // Summon an offer.
   Future<v1::scheduler::Event::Offers> offers2;
   EXPECT_CALL(*scheduler, offers(_, _))
     .WillOnce(FutureArg<1>(&offers2))
     .WillRepeatedly(Return()); // Ignore further offers.
 
-  Clock::pause();
-  Clock::advance(masterFlags.allocation_interval);
-  Clock::resume();
+  {
+    v1::scheduler::Call call;
+    call.mutable_framework_id()->CopyFrom(frameworkId);
+    call.set_type(v1::scheduler::Call::REVIVE);
+
+    mesos.send(call);
+  }
 
   AWAIT_READY(offers2);
   ASSERT_FALSE(offers2->offers().empty());
@@ -3012,20 +3011,16 @@ TEST_P(MasterAPITest, CreateAndDestroyVolumes)
   http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
   headers["Accept"] = stringify(contentType);
 
-  Future<Nothing> v1CreateVolumesResponse = http::post(
+  Future<http::Response> v1CreateVolumesResponse = http::post(
       master.get()->pid,
       "api/v1",
       headers,
       serialize(contentType, v1CreateVolumesCall),
-      stringify(contentType))
-    .then([](const http::Response& response) -> Future<Nothing> {
-      if (response.status != http::Accepted().status) {
-        return Failure("Unexpected response status " + response.status);
-      }
-      return Nothing();
-    });
+      stringify(contentType));
 
-  AWAIT_READY(v1CreateVolumesResponse);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      http::Accepted().status,
+      v1CreateVolumesResponse);
 
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_role("role1");
@@ -3084,20 +3079,16 @@ TEST_P(MasterAPITest, CreateAndDestroyVolumes)
   destroyVolumes->mutable_agent_id()->CopyFrom(evolve(slaveId));
   destroyVolumes->add_volumes()->CopyFrom(evolve(volume));
 
-  Future<Nothing> v1DestroyVolumesResponse = http::post(
+  Future<http::Response> v1DestroyVolumesResponse = http::post(
       master.get()->pid,
       "api/v1",
       headers,
       serialize(contentType, v1DestroyVolumesCall),
-      stringify(contentType))
-    .then([](const http::Response& response) -> Future<Nothing> {
-      if (response.status != http::Accepted().status) {
-        return Failure("Unexpected response status " + response.status);
-      }
-      return Nothing();
-    });
+      stringify(contentType));
 
-  AWAIT_READY(v1DestroyVolumesResponse);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(
+      http::Accepted().status,
+      v1DestroyVolumesResponse);
 
   EXPECT_CALL(exec, shutdown(_))
     .Times(AtMost(1));
@@ -3164,20 +3155,14 @@ TEST_P(MasterAPITest, UpdateWeights)
   http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
   headers["Accept"] = stringify(contentType);
 
-  Future<Nothing> updateResponse = http::post(
+  Future<http::Response> updateResponse = http::post(
       master.get()->pid,
       "api/v1",
       headers,
       serialize(contentType, updateCall),
-      stringify(contentType))
-    .then([](const http::Response& response) -> Future<Nothing> {
-      if (response.status != http::OK().status) {
-        return Failure("Unexpected response status " + response.status);
-      }
-      return Nothing();
-    });
+      stringify(contentType));
 
-  AWAIT_READY(updateResponse);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, updateResponse);
 
   getResponse = post(master.get()->pid, getCall, contentType);
 
@@ -3771,6 +3756,15 @@ class AgentAPITest
     public WithParamInterface<ContentType>
 {
 public:
+  virtual master::Flags CreateMasterFlags()
+  {
+    // Turn off periodic allocations to avoid the race between
+    // `HierarchicalAllocator::updateAvailable()` and periodic allocations.
+    master::Flags flags = MesosTest::CreateMasterFlags();
+    flags.allocation_interval = Seconds(1000);
+    return flags;
+  }
+
   // Helper function to post a request to "/api/v1" agent endpoint and return
   // the response.
   Future<v1::agent::Response> post(
@@ -4045,20 +4039,14 @@ TEST_P(AgentAPITest, SetLoggingLevel)
   http::Headers headers = createBasicAuthHeaders(DEFAULT_CREDENTIAL);
   headers["Accept"] = stringify(contentType);
 
-  Future<Nothing> v1Response = http::post(
+  Future<http::Response> v1Response = http::post(
       slave.get()->pid,
       "api/v1",
       headers,
       serialize(contentType, v1Call),
-      stringify(contentType))
-    .then([](const http::Response& response) -> Future<Nothing> {
-      if (response.status != http::OK().status) {
-        return Failure("Unexpected response status " + response.status);
-      }
-      return Nothing();
-    });
+      stringify(contentType));
 
-  AWAIT_READY(v1Response);
+  AWAIT_EXPECT_RESPONSE_STATUS_EQ(http::OK().status, v1Response);
   ASSERT_EQ(toggleLevel, static_cast<uint32_t>(FLAGS_v));
 
   // Speedup the logging level revert.
